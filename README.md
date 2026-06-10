@@ -46,34 +46,42 @@ bun run format        # dprint
 Local Cloudflare runtime is **[lopata](https://github.com/contember/lopata)** (a `wrangler dev`
 drop-in on Bun). Bindings (D1, static assets) are backed by SQLite + files under `.lopata/`.
 
-```bash
-cd packages/admin-ui && bun run build        # produce admin-ui/dist (the worker serves it)
-cd ../worker
-bun run oblaka                               # generate wrangler.jsonc from oblaka.ts
-bunx lopata d1 migrations apply propustka    # apply the schema to the local D1
-bun run dev                                  # lopata dev on http://127.0.0.1:18191
-```
-
-For the admin UI with hot reload, run the worker (above) and in another shell:
+### Click through the admin demo
 
 ```bash
-cd packages/admin-ui && bun run dev          # vite on http://127.0.0.1:18192, proxies /admin → :18191
+cd packages/admin-ui && bun run build                  # build the admin SPA the worker serves
+cd ../worker && bun run oblaka                          # generate the worker's wrangler.jsonc
+(cd ../../examples/app && bun run oblaka)               # generate the example app's wrangler.jsonc
+bunx lopata d1 migrations apply propustka               # create the local D1 schema
+bunx lopata d1 execute propustka --file seed.dev.sql    # load sample data (optional, but populates the UI)
+bun run dev                                             # http://127.0.0.1:18191
 ```
 
-**What works locally without Access:** the SPA is served (`GET /` and deep links like
-`/principals` → `index.html`), and the JSON API gates correctly — a request with no Access JWT
-returns `401 {"error":"missing_token"}`. Smoke-verified:
+Open **http://127.0.0.1:18191** — the admin UI, fully clickable. There is no Cloudflare Access
+locally, so the worker runs a **dev bypass**: when `ENVIRONMENT=local` and no Access JWT is
+present it resolves a fixed `local-dev-admin` global admin (see `src/auth.ts`). Strictly local —
+a real token still validates normally, so stage/prod never reach this branch.
 
-```
-GET /              → 200 (SPA)
-GET /principals    → 200 (SPA deep-link fallback)
-GET /admin/me      → 401 {"error":"missing_token"}
-GET /admin/roles   → 401 {"error":"missing_token"}
+`packages/worker`'s `lopata.config.ts` also runs the [example app](./examples/app) as an
+auxiliary worker at **`/demo`**, so the example's audit writes land in the same local D1 the
+admin UI reads:
+
+```bash
+curl http://127.0.0.1:18191/demo     # the example authenticates + emits an `example.viewed` audit event
 ```
 
-**What needs real Cloudflare Access** (cannot be exercised locally): validating a real Access
-JWT, resolving IdP group membership via `get-identity`, and the service-token provisioning
-flow. See _Status_ below.
+…then open the admin **Audit** page (or `GET /admin/audit?action=example.viewed`) to watch the
+records appear — the app → IAM `audit()` path over the service binding, end to end.
+
+For the admin UI with hot reload, run the worker as above and in another shell:
+
+```bash
+cd packages/admin-ui && bun run dev  # vite on http://127.0.0.1:18192, proxies /admin → :18191
+```
+
+**What still needs real Cloudflare Access** (cannot be exercised locally): validating a real
+Access JWT, resolving IdP group membership via `get-identity`, and service-token provisioning.
+See _Status_ below.
 
 ## Using the SDK in an app
 

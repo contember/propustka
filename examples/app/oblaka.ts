@@ -14,6 +14,10 @@ export default define(() =>
 		compatibility_flags: ['nodejs_compat_v2'],
 		compatibility_date: '2025-10-01',
 		observability: { enabled: true },
+		// Path routes so this app is reachable under the combined local demo (lopata runs the
+		// IAM Worker as the main/fallback serving the admin UI, this app as an auxiliary worker).
+		// Domain is stripped locally — only the `/demo` path matters.
+		routes: ['*/demo', '*/demo/*'],
 		bindings: {
 			IAM: new ServiceReference('propustka-worker'),
 		},

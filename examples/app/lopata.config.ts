@@ -1,7 +1,8 @@
-// Multi-worker local dev: this example app is the main worker; the IAM Worker runs
-// alongside it as an auxiliary worker so the `IAM` service binding resolves in-process.
-// Run `bun run oblaka` in BOTH this dir and packages/worker first to generate the
-// wrangler.jsonc files referenced below.
+// Standalone run of just this example app, with the IAM Worker as an auxiliary worker, to
+// exercise the app→IAM RPC path in isolation (`env.IAM.authenticate()` over the binding).
+//
+// For the FULL demo — the admin UI plus this app sharing one local D1 — run `bun run dev` from
+// `packages/worker` instead (its lopata.config.ts runs this app as an auxiliary at `/demo`).
 export default {
 	main: 'wrangler.jsonc',
 	workers: [

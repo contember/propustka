@@ -22,7 +22,36 @@ export interface ResolveOutcome {
 	groupsUnavailable: boolean
 }
 
+/**
+ * Fixed identity for the local dev bypass below. A row with this id is seeded into
+ * `principals` (see `seed.dev.sql`) so audit/auth-log foreign keys resolve.
+ */
+export const LOCAL_DEV_ADMIN_ID = 'local-dev-admin'
+
 export async function resolveRequest(services: Services, input: AuthenticateInput): Promise<ResolveOutcome> {
+	// LOCAL DEV BYPASS. There is no Cloudflare Access in front of `lopata`/`wrangler dev`, so no
+	// JWT is forwarded and the admin UI + example app would be unusable. When ENVIRONMENT='local'
+	// AND no token was presented, resolve a fixed global-admin identity. Strictly local: a real
+	// token (if one is somehow present) still validates normally below, so stage/prod NEVER reach
+	// this branch. Mirrors opice's "local is open" dev mode.
+	if (services.config.environment === 'local' && input.token === null) {
+		return {
+			result: {
+				ok: true,
+				principal: {
+					id: LOCAL_DEV_ADMIN_ID,
+					type: 'user',
+					label: 'local-dev-admin',
+					permissions: [{ action: '*', projectId: null, source: 'bootstrap' }],
+					requestId: input.requestId,
+				},
+			},
+			verifiedApp: null,
+			logReason: 'local_bypass',
+			groupsUnavailable: false,
+		}
+	}
+
 	const validation = await services.jwt.validate(input.token)
 	if (!validation.ok) {
 		return {
