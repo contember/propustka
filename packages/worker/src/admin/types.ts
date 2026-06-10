@@ -230,4 +230,4 @@ export interface MeDto {
 	groupsUnavailable: boolean
 }
 
-export type { PermissionEntry, PermissionSource }
+export type { PermissionEntry, PermissionSource, PrincipalType }
