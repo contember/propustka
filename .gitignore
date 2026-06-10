@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.lopata/
+*.tsbuildinfo
+**/buzola.gen.ts
+**/wrangler.jsonc
+**/worker-configuration.d.ts
+.wrangler/
+*.log
+.DS_Store

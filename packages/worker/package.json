@@ -1,0 +1,35 @@
+{
+	"name": "@propustka/worker",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"exports": {
+		".": {
+			"bun": "./src/index.ts",
+			"types": "./src/index.ts",
+			"default": "./src/index.ts"
+		},
+		"./admin": {
+			"bun": "./src/admin/types.ts",
+			"types": "./src/admin/types.ts",
+			"default": "./src/admin/types.ts"
+		}
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"dev": "bunx lopata dev --env local --port 18191 --listen 0.0.0.0",
+		"oblaka": "bunx oblaka oblaka.ts",
+		"oblaka:deploy": "bunx oblaka oblaka.ts --remote"
+	},
+	"dependencies": {
+		"@propustka/core": "workspace:*",
+		"jose": "^5.9.0"
+	},
+	"devDependencies": {
+		"@cloudflare/workers-types": "^4.20251001.0",
+		"@types/bun": "latest",
+		"lopata": "latest",
+		"oblaka-iac": "latest",
+		"wrangler": "^4.24.0"
+	}
+}

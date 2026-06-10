@@ -1,0 +1,22 @@
+{
+	"name": "propustka",
+	"private": true,
+	"type": "module",
+	"workspaces": [
+		"packages/*"
+	],
+	"scripts": {
+		"typecheck": "bun run --filter '*' typecheck",
+		"test": "bun test",
+		"lint": "biome lint .",
+		"format": "dprint fmt",
+		"format:check": "dprint check"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.3.13",
+		"@types/bun": "latest",
+		"dprint": "^0.51.1",
+		"typescript": "^5.9.3"
+	},
+	"license": "MIT"
+}
