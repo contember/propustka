@@ -1,5 +1,5 @@
-import type { AuditEventDto, CursorList } from '@propustka/worker/admin'
 import { createPage, Link, useNavigate } from '@buzola/router'
+import type { AuditEventDto, CursorList } from '@propustka/worker/admin'
 import { useState } from 'react'
 import { JsonView } from '../../components/JsonView'
 import { Table } from '../../components/Table'
@@ -84,15 +84,11 @@ export default createPage()
 						</tr>
 					}
 				>
-					{events.map((event) => (
-						<AuditRow key={event.id} event={event} />
-					))}
+					{events.map((event) => <AuditRow key={event.id} event={event} />)}
 				</Table>
 
 				<div className="pager">
-					{params.before && (
-						<button type="button" onClick={() => applyFilters(current)}>First page</button>
-					)}
+					{params.before && <button type="button" onClick={() => applyFilters(current)}>First page</button>}
 					<span className="pull" />
 					<button type="button" onClick={nextPage} disabled={data.page.nextCursor === null}>
 						Next page
@@ -124,11 +120,21 @@ function AuditFilters({ params, onApply }: { params: FilterParams; onApply: (nex
 
 	return (
 		<form className="panel filters" onSubmit={submit}>
-			<label>Resource type<input value={resourceType} onChange={(e) => setResourceType(e.target.value)} /></label>
-			<label>Resource id<input value={resourceId} onChange={(e) => setResourceId(e.target.value)} /></label>
-			<label>Principal id<input value={principalId} onChange={(e) => setPrincipalId(e.target.value)} /></label>
-			<label>Action<input value={action} onChange={(e) => setAction(e.target.value)} /></label>
-			<label>Request id<input value={requestId} onChange={(e) => setRequestId(e.target.value)} /></label>
+			<label>
+				Resource type<input value={resourceType} onChange={(e) => setResourceType(e.target.value)} />
+			</label>
+			<label>
+				Resource id<input value={resourceId} onChange={(e) => setResourceId(e.target.value)} />
+			</label>
+			<label>
+				Principal id<input value={principalId} onChange={(e) => setPrincipalId(e.target.value)} />
+			</label>
+			<label>
+				Action<input value={action} onChange={(e) => setAction(e.target.value)} />
+			</label>
+			<label>
+				Request id<input value={requestId} onChange={(e) => setRequestId(e.target.value)} />
+			</label>
 			<div className="filter-actions">
 				<button type="submit" className="primary small">Filter</button>
 				<button type="button" className="small" onClick={clear}>Clear</button>
@@ -148,11 +154,17 @@ function AuditRow({ event }: { event: AuditEventDto }) {
 				<td>{fmtDate(event.createdAt)}</td>
 				<td>
 					{event.capabilityTokenId
-						? <span title={event.capabilityTokenId}>capability <code className="small">{event.capabilityTokenId}</code></span>
+						? (
+							<span title={event.capabilityTokenId}>
+								capability <code className="small">{event.capabilityTokenId}</code>
+							</span>
+						)
 						: event.principalLabel}
 				</td>
 				<td>{event.app}</td>
-				<td><code>{event.action}</code></td>
+				<td>
+					<code>{event.action}</code>
+				</td>
 				<td>
 					<code>{event.resourceType}</code>
 					{event.resourceId && <span className="muted">{' '}#{event.resourceId}</span>}

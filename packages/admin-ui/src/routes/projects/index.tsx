@@ -1,13 +1,8 @@
-import type {
-	CreateProjectRequest,
-	ListResponse,
-	ProjectDto,
-	UpdateProjectRequest,
-} from '@propustka/worker/admin'
 import { createPage } from '@buzola/router'
+import type { CreateProjectRequest, ListResponse, ProjectDto, UpdateProjectRequest } from '@propustka/worker/admin'
 import { useState } from 'react'
 import { Table } from '../../components/Table'
-import { ApiError, api } from '../../lib/api'
+import { api, ApiError } from '../../lib/api'
 import { fmtDate } from '../../lib/format'
 
 export default createPage()
@@ -21,8 +16,7 @@ export default createPage()
 			<div className="page-head">
 				<h1>Projects</h1>
 				<p className="hint">
-					Projects scope grants and mappings. Admin-managed; no delete in v1 (projects are
-					referenced by grants and mappings).
+					Projects scope grants and mappings. Admin-managed; no delete in v1 (projects are referenced by grants and mappings).
 				</p>
 			</div>
 
@@ -41,9 +35,7 @@ export default createPage()
 					</tr>
 				}
 			>
-				{data.projects.map((project) => (
-					<ProjectRow key={project.id} project={project} onDone={invalidate} />
-				))}
+				{data.projects.map((project) => <ProjectRow key={project.id} project={project} onDone={invalidate} />)}
 			</Table>
 		</>
 	))
@@ -112,14 +104,26 @@ function ProjectRow({ project, onDone }: { project: ProjectDto; onDone: () => vo
 
 	return (
 		<tr>
-			<td><code>{project.slug}</code></td>
+			<td>
+				<code>{project.slug}</code>
+			</td>
 			<td>
 				{editing
 					? (
 						<form className="inline-edit" onSubmit={save}>
 							<input value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
 							<button type="submit" className="small primary" disabled={busy}>Save</button>
-							<button type="button" className="small" onClick={() => { setEditing(false); setName(project.name) }} disabled={busy}>Cancel</button>
+							<button
+								type="button"
+								className="small"
+								onClick={() => {
+									setEditing(false)
+									setName(project.name)
+								}}
+								disabled={busy}
+							>
+								Cancel
+							</button>
 							{error && <span className="error-text small">{error}</span>}
 						</form>
 					)

@@ -36,9 +36,7 @@ export function Modal({ title, children, onClose, blocking }: ModalProps) {
 			>
 				<div className="modal-head">
 					<h2>{title}</h2>
-					{!blocking && onClose && (
-						<button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>×</button>
-					)}
+					{!blocking && onClose && <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>×</button>}
 				</div>
 				<div className="modal-body">{children}</div>
 			</div>

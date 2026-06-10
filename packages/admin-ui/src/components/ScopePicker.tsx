@@ -68,14 +68,10 @@ export function ScopePicker({ projects, value, onChange, idPrefix = 'scope' }: S
 					value={value.projectId}
 					onChange={(e) => onChange({ kind: 'project', projectId: e.target.value })}
 				>
-					{projects.map((p) => (
-						<option key={p.id} value={p.id}>{p.name} ({p.slug})</option>
-					))}
+					{projects.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.slug})</option>)}
 				</select>
 			)}
-			{projects.length === 0 && (
-				<p className="hint">No projects yet — create one to scope grants to a project.</p>
-			)}
+			{projects.length === 0 && <p className="hint">No projects yet — create one to scope grants to a project.</p>}
 		</fieldset>
 	)
 }

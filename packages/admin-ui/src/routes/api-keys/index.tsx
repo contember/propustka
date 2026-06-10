@@ -1,3 +1,4 @@
+import { createPage } from '@buzola/router'
 import type {
 	ApiKeyDto,
 	GrantDto,
@@ -8,15 +9,14 @@ import type {
 	RoleDto,
 	RotateApiKeyResponse,
 } from '@propustka/worker/admin'
-import { createPage } from '@buzola/router'
 import { useState } from 'react'
 import { StatusBadge } from '../../components/Badge'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { RolePicker } from '../../components/RolePicker'
-import { type ScopeValue, resolveScope, ScopePicker } from '../../components/ScopePicker'
+import { resolveScope, ScopePicker, type ScopeValue } from '../../components/ScopePicker'
 import { SecretModal } from '../../components/SecretModal'
 import { Table } from '../../components/Table'
-import { ApiError, api } from '../../lib/api'
+import { api, ApiError } from '../../lib/api'
 import { fmtExpiry, parseDateTimeLocal } from '../../lib/format'
 
 export default createPage()
@@ -78,7 +78,9 @@ export default createPage()
 								)}
 							</td>
 							<td>{key.clientId ? <code>{key.clientId}</code> : <span className="muted">—</span>}</td>
-							<td><StatusBadge status={key.status} /></td>
+							<td>
+								<StatusBadge status={key.status} />
+							</td>
 							<td>
 								{grantSummary(key.grants)}
 								{key.grants.length > 0 && (
@@ -173,17 +175,14 @@ function ProvisionForm({ roles, projects, onDone }: { roles: RoleDto[]; projects
 						{ label: 'Client ID', value: secret.clientId },
 						{ label: 'Client secret', value: secret.clientSecret, multiline: true },
 					]}
-					note={
-						secret.policyInclusion === 'manual'
-							? (
-								<p className="warn-text">
-									<strong>Manual step required:</strong> this token was <em>not</em> added to the app's
-									Service Auth policy automatically. Add the Client ID to the policy in the Cloudflare
-									dashboard, or it won't be accepted.
-								</p>
-							)
-							: undefined
-					}
+					note={secret.policyInclusion === 'manual'
+						? (
+							<p className="warn-text">
+								<strong>Manual step required:</strong> this token was <em>not</em>{' '}
+								added to the app's Service Auth policy automatically. Add the Client ID to the policy in the Cloudflare dashboard, or it won't be accepted.
+							</p>
+						)
+						: undefined}
 					onClose={() => setSecret(null)}
 				/>
 			)}
@@ -209,7 +208,11 @@ function RotateButton({ apiKey }: { apiKey: ApiKeyDto }) {
 				<ConfirmDialog
 					title="Rotate secret"
 					confirmLabel="Rotate"
-					body={<p>Rotate the secret for <strong>{apiKey.label}</strong>? The old secret stops working immediately.</p>}
+					body={
+						<p>
+							Rotate the secret for <strong>{apiKey.label}</strong>? The old secret stops working immediately.
+						</p>
+					}
 					onConfirm={rotate}
 					onClose={() => setConfirming(false)}
 				/>
@@ -245,8 +248,7 @@ function RevokeButton({ apiKey, onDone }: { apiKey: ApiKeyDto; onDone: () => voi
 					confirmLabel="Revoke"
 					body={
 						<p>
-							Revoke <strong>{apiKey.label}</strong>? This deletes the Access service token and its
-							grants immediately — any caller using it stops working.
+							Revoke <strong>{apiKey.label}</strong>? This deletes the Access service token and its grants immediately — any caller using it stops working.
 						</p>
 					}
 					onConfirm={revoke}

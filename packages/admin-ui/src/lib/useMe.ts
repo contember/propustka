@@ -1,6 +1,6 @@
 import type { MeDto } from '@propustka/worker/admin'
 import { useEffect, useState } from 'react'
-import { ApiError, api } from './api'
+import { api, ApiError } from './api'
 
 export type MeState =
 	| { status: 'loading' }

@@ -1,5 +1,5 @@
-import type { AuthLogDto, CursorList } from '@propustka/worker/admin'
 import { createPage, useNavigate } from '@buzola/router'
+import type { AuthLogDto, CursorList } from '@propustka/worker/admin'
 import { useState } from 'react'
 import { Badge } from '../../components/Badge'
 import { Table } from '../../components/Table'
@@ -54,8 +54,8 @@ export default createPage()
 				<div className="page-head">
 					<h1>Audit — auth log</h1>
 					<p className="hint">
-						Outcomes of <code>authenticate()</code> / <code>redeemCapability()</code>. This is where you
-						debug "login looks broken" — e.g. <code>aud_not_configured</code> or <code>groups_unavailable</code>.
+						Outcomes of <code>authenticate()</code> / <code>redeemCapability()</code>. This is where you debug "login looks broken" — e.g.{' '}
+						<code>aud_not_configured</code> or <code>groups_unavailable</code>.
 					</p>
 				</div>
 
@@ -83,10 +83,14 @@ export default createPage()
 							<td>{row.kind}</td>
 							<td>
 								{row.capabilityTokenId
-									? <span title={row.capabilityTokenId}>capability <code className="small">{row.capabilityTokenId}</code></span>
+									? (
+										<span title={row.capabilityTokenId}>
+											capability <code className="small">{row.capabilityTokenId}</code>
+										</span>
+									)
 									: row.principalId
-										? <code className="small">{row.principalId}</code>
-										: <span className="muted">—</span>}
+									? <code className="small">{row.principalId}</code>
+									: <span className="muted">—</span>}
 							</td>
 							<td>
 								<Badge tone={row.decision === 'allow' ? 'good' : 'bad'}>{row.decision}</Badge>
@@ -97,9 +101,7 @@ export default createPage()
 				</Table>
 
 				<div className="pager">
-					{params.before && (
-						<button type="button" onClick={() => applyFilters(params)}>First page</button>
-					)}
+					{params.before && <button type="button" onClick={() => applyFilters(params)}>First page</button>}
 					<span className="pull" />
 					<button type="button" onClick={nextPage} disabled={data.page.nextCursor === null}>
 						Next page
@@ -133,8 +135,12 @@ function AuthLogFilters({ params, onApply }: { params: AuthFilterParams; onApply
 
 	return (
 		<form className="panel filters" onSubmit={submit}>
-			<label>Principal id<input value={principalId} onChange={(e) => setPrincipalId(e.target.value)} /></label>
-			<label>Request id<input value={requestId} onChange={(e) => setRequestId(e.target.value)} /></label>
+			<label>
+				Principal id<input value={principalId} onChange={(e) => setPrincipalId(e.target.value)} />
+			</label>
+			<label>
+				Request id<input value={requestId} onChange={(e) => setRequestId(e.target.value)} />
+			</label>
 			<label>
 				Decision
 				<select value={decision} onChange={(e) => setDecision(e.target.value)}>

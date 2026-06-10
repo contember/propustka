@@ -19,9 +19,9 @@ D1 is the datastore. No Pipelines/Iceberg/Zanzibar/graph models.
 ## Hard requirements & non-negotiables
 
 1. **Stack:** Cloudflare Workers (TypeScript), `WorkerEntrypoint` RPC, D1. No external auth libs except `jose` for JWT validation. Generate all self-owned string ids as **UUIDv7** (time-sortable).
-2. **Provisioning needs Cloudflare API access:** the admin service-token flow calls the Cloudflare Access API, so the Worker holds a scoped Cloudflare API token (*Access: Service Tokens Edit*, and Access policy edit if we automate policy inclusion) plus account id as secrets (`CF_API_TOKEN`, `CF_ACCOUNT_ID`). These are admin-only; never expose to app callers.
+2. **Provisioning needs Cloudflare API access:** the admin service-token flow calls the Cloudflare Access API, so the Worker holds a scoped Cloudflare API token (_Access: Service Tokens Edit_, and Access policy edit if we automate policy inclusion) plus account id as secrets (`CF_API_TOKEN`, `CF_ACCOUNT_ID`). These are admin-only; never expose to app callers.
 3. **Caller app identity: verified where a token exists, self-asserted elsewhere.** Service bindings carry no caller metadata; Cloudflare does not provide one. But on any call that forwards a valid Access JWT (`authenticate()`, `issueCapability()`), the token's verified `aud` identifies the Access application, and the IAM Worker derives the app id from the `ACCESS_APPS` map (see JWT section) — that value, not the SDK-passed one, goes into the auth log and the request context. Only where no valid token exists (`audit()`, `redeemCapability()`, failure-path log rows) is the SDK-passed app id used: a trust-the-internal-network value for **audit labeling only** — it is NOT a security boundary. Do not build per-app secret auth; the security perimeter is Access at the edge. Document this split in code comments. **Principal identity is never app-asserted:** wherever the principal matters for a server-side check (authentication, capability issuance), the IAM Worker resolves it from the forwarded Access credentials itself — it never trusts an app-passed principal id for a permission decision.
-4. **`can()` must evaluate locally.** `authenticate()` returns the principal *with* their resolved permissions in one RPC; `can()` is a pure function over that array. No round-trip per permission check.
+4. **`can()` must evaluate locally.** `authenticate()` returns the principal _with_ their resolved permissions in one RPC; `can()` is a pure function over that array. No round-trip per permission check.
 5. **Distinguish 401 from 403.** `authenticate()` returns either a valid principal OR a structured failure reason. Missing/invalid token → 401 (not authenticated). A credential that validates but maps to an unknown or disabled principal → 403 (authenticated, not allowed). A valid principal lacking a permission is `can()` → false → app responds 403. Never collapse these into one exception; the SDK failure object carries the suggested HTTP status.
 6. **Audit writes are fire-and-forget.** Use `ctx.waitUntil()`; a failed audit write must never fail or delay the user-facing operation.
 7. **Fail-closed.** If policy evaluation cannot complete, deny.
@@ -44,7 +44,7 @@ reached through the `@firma/iam-client` SDK.
 - Read the Access app token from the `Cf-Access-Jwt-Assertion` header value (passed in by the SDK).
 - Validate with `jose`: `createRemoteJWKSet(new URL(`${TEAM}/cdn-cgi/access/certs`))`, verifying `issuer` (team domain) and `audience`.
 - **`audience` is a set, not a single value — and it identifies the calling app.** Each Access application has its own AUD tag, and the IAM Worker serves many apps. Configure the mapping as env (`ACCESS_APPS`, JSON object `{ "<aud-tag>": "<app-id>" }`) and validate the token's `aud` against its keys (`jose` accepts `audience: string[]` — pass `Object.keys(ACCESS_APPS)`). A single-AUD env var would only ever validate tokens for one app.
-- **The verified `aud` yields a verified app identity.** On a successfully validated token, resolve `app = ACCESS_APPS[aud]` and use *that* — not the SDK-passed value — for `auth_log.app` and the request context. App identity on every authenticated call is then cryptographically grounded instead of self-asserted. The SDK-passed `app` is used only where no valid token exists (failure-path log rows, `audit()`, `redeemCapability()` — see hard requirement 3). If the self-asserted `app` differs from the aud-derived one, proceed with the aud-derived value but log the mismatch — it indicates a misconfigured SDK constructor, not an attack.
+- **The verified `aud` yields a verified app identity.** On a successfully validated token, resolve `app = ACCESS_APPS[aud]` and use _that_ — not the SDK-passed value — for `auth_log.app` and the request context. App identity on every authenticated call is then cryptographically grounded instead of self-asserted. The SDK-passed `app` is used only where no valid token exists (failure-path log rows, `audit()`, `redeemCapability()` — see hard requirement 3). If the self-asserted `app` differs from the aud-derived one, proceed with the aud-derived value but log the mismatch — it indicates a misconfigured SDK constructor, not an attack.
 - **Distinguish "unknown AUD" from a genuinely bad token.** A token that verifies cryptographically but whose `aud` is not a key of `ACCESS_APPS` is an expected misconfiguration: a newly onboarded app whose AUD nobody added to the env. Return `invalid_token` to the caller (apps should not branch on it), but record `reason = 'aud_not_configured'` in `auth_log` and emit an explicit log line — otherwise a forgotten onboarding step looks like a broken login and wastes debugging time.
 - JWKS set is cached per-isolate (jose handles this) — this is a reason validation lives in one Worker.
 - Identity login → `payload.email` (label) and `payload.sub` (stable external id).
@@ -65,8 +65,8 @@ group→role mapping, the IAM Worker calls the Access get-identity endpoint:
   `<team>.cloudflareaccess.com/cdn-cgi/access/get-identity` with an app-domain cookie
   would not authenticate. The `/cdn-cgi/access/*` path is served by the Access edge layer
   on every protected hostname and never reaches the app Worker, so there is no recursion.
-  *(Implementer: verify this server-side fetch against a real Access-protected host early —
-  it is the one external integration point in group resolution.)*
+  _(Implementer: verify this server-side fetch against a real Access-protected host early —
+  it is the one external integration point in group resolution.)_
 - Parse GitHub org/team membership from the returned identity data and normalize each to the
   `<org>/<team>` lowercase `group_ref` form used in `group_role_mappings`.
 - **Only for `type='user'` principals.** Skip entirely for service tokens.
@@ -83,7 +83,7 @@ group→role mapping, the IAM Worker calls the Access get-identity endpoint:
 - If get-identity fails, fall back to explicit grants only (do not hard-fail auth) but record
   that group resolution was unavailable — set a `groupsUnavailable: true` flag on the
   `authenticate()` result and write it to the auth log — so a missing-permission denial isn't
-  silently caused by a transient identity-endpoint error. Still fail-closed on the *permission*
+  silently caused by a transient identity-endpoint error. Still fail-closed on the _permission_
   decision itself.
 
 ## Roles: defined in code
@@ -94,13 +94,17 @@ and deployed like everything else.
 
 ```ts
 // roles.ts — single source of truth
-export interface RoleDef { name: string; description?: string; permissions: string[] }
+export interface RoleDef {
+	name: string
+	description?: string
+	permissions: string[]
+}
 
 export const ROLES: Record<string, RoleDef> = {
-  admin:  { name: 'Admin',  permissions: ['*'] },
-  editor: { name: 'Editor', permissions: ['project.*', 'report.*'] },
-  viewer: { name: 'Viewer', permissions: ['project.read', 'report.read'] },
-};
+	admin: { name: 'Admin', permissions: ['*'] },
+	editor: { name: 'Editor', permissions: ['project.*', 'report.*'] },
+	viewer: { name: 'Viewer', permissions: ['project.read', 'report.read'] },
+}
 ```
 
 - Implement resolution against a small `RoleSource` interface (`getRole(key)`,
@@ -262,7 +266,7 @@ Schema rationale the implementer must preserve:
 - **Different ID strategies are intentional:** UUIDv7 for `audit_events`/`principals`/`projects`
   (time-sortable, generated in-Worker), plain `INTEGER PRIMARY KEY` (rowid) for `auth_log`
   (densest table, cheapest insert, never referenced). Note: do **not** use `AUTOINCREMENT` —
-  in SQLite it is the *more* expensive variant and buys nothing here. Use UUIDv7 everywhere we
+  in SQLite it is the _more_ expensive variant and buys nothing here. Use UUIDv7 everywhere we
   generate our own string ids — including `grants.id` and any other entity above.
 - **Per-`can()` decision logging is deliberately out of scope for v1.** `can()` is a local pure
   function (hard requirement 4), so the IAM Worker cannot observe individual checks, and a
@@ -283,7 +287,7 @@ per-`can()` decision logging.
 ### Capability tokens (anonymous, scoped, short-lived)
 
 A third credential type alongside user/service principals, for **anonymous, scoped, short-lived
-access** — e.g. a shareable link that lets a client view report Q2 *and* submit feedback on it,
+access** — e.g. a shareable link that lets a client view report Q2 _and_ submit feedback on it,
 expiring in 30 days. The distinguishing question is: **does the credential carry an identity and
 a role (→ principal), or just a set of concrete capabilities and a short lifecycle
 (→ capability token)?** A long-lived API key with a role is a service principal, not a
@@ -332,7 +336,7 @@ Rules the implementer must preserve:
   (`report:`, `invoice:`, …) are a single shared namespace: maintain the list of resource
   types alongside the action naming convention, one owner app per type. No enforcement
   mechanism in v1 — convention only.
-- **Delegation rule: you can only delegate what you can do.** Capabilities live *outside* Access
+- **Delegation rule: you can only delegate what you can do.** Capabilities live _outside_ Access
   on a public path, so issuance is the escalation point. The issuer is resolved server-side from
   forwarded Access credentials (never a self-asserted principal id), and `issueCapability()`
   verifies the issuer holds **every** delegated action via the same matching as `can()` — see
@@ -347,7 +351,7 @@ Rules the implementer must preserve:
   share". For write-carrying capabilities: shorter expiry, consider per-token rate limiting, and
   audit both the redeem and each resulting domain action.
 - **Capability lives outside Access** (the redeeming endpoint is on a Bypass path / a domain not
-  behind Access). The capability token *is* the authorization; the path being public just means
+  behind Access). The capability token _is_ the authorization; the path being public just means
   Access isn't gating it. This is the report-share-link pattern — do not use a bare Bypass prefix
   without a token for anything that isn't meant to be permanently, fully public.
 - **Token-in-URL leakage is accepted, with mitigations.** A token in the URL path is what makes
@@ -418,8 +422,8 @@ issueCapability(input: {
      each `group_ref` against `group_role_mappings`, expand the matched roles into permissions.
      Source: `` `group:${group_ref}` ``.
   3. **Bootstrap admins** (users only) — see Admin surface. Source: `'bootstrap'`.
-  Dedupe the union. The `source` field exists for debuggability ("why does this user have this
-  permission?" in the admin UI) — `can()`/`scopedTo()` ignore it.
+     Dedupe the union. The `source` field exists for debuggability ("why does this user have this
+     permission?" in the admin UI) — `can()`/`scopedTo()` ignore it.
 - Every `authenticate()` call writes one `auth_log` row (`kind='authenticate'`,
   decision allow/deny, failure reason on deny) via `ctx.waitUntil()`. The `app` column holds
   the aud-derived id when the token validated, the self-asserted id on failure paths.
@@ -427,7 +431,7 @@ issueCapability(input: {
   principal in three ordered steps:
   1. **By `sub`** — `(type='user', external_id = sub)`. A returning user; refresh `email`/`label`
      if the token's email changed.
-  2. **By invited email (claim)** — no `sub` match → look for an *invited* row
+  2. **By invited email (claim)** — no `sub` match → look for an _invited_ row
      `(type='user', email = payload.email, external_id IS NULL)`. If found, **claim it**: set
      `external_id = sub` and `label = payload.email` in one statement. The principal — and any
      grants an admin pre-created on it (see Admin surface → invite) — was waiting for this login;
@@ -479,41 +483,49 @@ never forget or mistype it.
 
 ```ts
 export class IamClient {
-  constructor(private binding: Service, private appId: string) {}
-  // reads Cf-Access-Jwt-Assertion, CF_Authorization cookie, origin, cf-ray from the request
-  async authenticate(req: Request): Promise<AuthContext | AuthFailure> { /* ... */ }
-  async redeemCapability(req: Request, token: string): Promise<Capability | CapabilityFailure> { /* ... */ }
-  // forwards the requester's credentials as the issuer — see delegation rule
-  async issueCapability(req: Request, input: IssueCapabilityRequest): Promise<IssuedCapability | IssueFailure> { /* ... */ }
+	constructor(private binding: Service, private appId: string) {}
+	// reads Cf-Access-Jwt-Assertion, CF_Authorization cookie, origin, cf-ray from the request
+	async authenticate(req: Request): Promise<AuthContext | AuthFailure> {
+		/* ... */
+	}
+	async redeemCapability(
+		req: Request,
+		token: string,
+	): Promise<Capability | CapabilityFailure> {/* ... */}
+	// forwards the requester's credentials as the issuer — see delegation rule
+	async issueCapability(
+		req: Request,
+		input: IssueCapabilityRequest,
+	): Promise<IssuedCapability | IssueFailure> {/* ... */}
 }
 
 export interface AuthFailure {
-  ok: false;
-  reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled';
-  status: 401 | 403;   // missing/invalid → 401; unknown_principal/disabled → 403
+	ok: false
+	reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled'
+	status: 401 | 403 // missing/invalid → 401; unknown_principal/disabled → 403
 }
 
 export class AuthContext {
-  readonly ok: true;
-  can(action: string, scope?: { project?: string }): boolean;   // local, pure: point check; no scope → global perms only
-  scopedTo(action: string, dimension?: string): string[] | null; // local, pure: set of scope ids
-  audit(event: DomainEvent): Promise<void>;                     // attaches app/principal/requestId
+	readonly ok: true
+	can(action: string, scope?: { project?: string }): boolean // local, pure: point check; no scope → global perms only
+	scopedTo(action: string, dimension?: string): string[] | null // local, pure: set of scope ids
+	audit(event: DomainEvent): Promise<void> // attaches app/principal/requestId
 }
 
 // Anonymous capability — no identity, just a set of (action, resource) abilities.
 // Same can() ergonomics as AuthContext, but exact-match and resource-keyed (no wildcards).
 export class Capability {
-  readonly ok: true;
-  can(action: string, resource: string): boolean;   // local, pure: exact match
-  audit(event: DomainEvent): Promise<void>;          // attaches capabilityTokenId + label, principalId = null
+	readonly ok: true
+	can(action: string, resource: string): boolean // local, pure: exact match
+	audit(event: DomainEvent): Promise<void> // attaches capabilityTokenId + label, principalId = null
 }
 
 // SDK utility — resolves the three-state scope into a single value the app controls
 export function applyScope<T>(scope: string[] | null, branches: {
-  all: () => T;                  // scope === null  → unrestricted (admin / global grant)
-  some: (ids: string[]) => T;    // scope.length > 0 → filter to these ids
-  none: () => T;                 // scope === []    → no access; return empty, do NOT query
-}): T;
+	all: () => T // scope === null  → unrestricted (admin / global grant)
+	some: (ids: string[]) => T // scope.length > 0 → filter to these ids
+	none: () => T // scope === []    → no access; return empty, do NOT query
+}): T
 ```
 
 - `authenticate()` reads `Cf-Access-Jwt-Assertion`, the `CF_Authorization` cookie (parsed from
@@ -540,9 +552,9 @@ export function applyScope<T>(scope: string[] | null, branches: {
   filters permissions whose `action` matches (wildcards included, `project.*` matches
   `project.read`) and collects their `projectId`.
 - **`scopedTo()` returns `string[] | null` and the `null` is load-bearing.** `null` means
-  *unrestricted* — the principal holds the permission globally (a grant or group mapping with
+  _unrestricted_ — the principal holds the permission globally (a grant or group mapping with
   `projectId === null`, e.g. an admin) and may see **all** projects. An empty array `[]` means
-  *no access to any project*. These are three distinct states; never collapse `null` into `[]` or
+  _no access to any project_. These are three distinct states; never collapse `null` into `[]` or
   vice versa: `null` → no filter, `[]` → empty result, non-empty → `WHERE id IN (...)`.
 - **Use `applyScope()` to consume the result** so the three-state logic (and the empty-`IN ()`
   SQL trap) is handled once in the SDK, not re-implemented per app. The app supplies what `all` /
@@ -556,7 +568,7 @@ export function applyScope<T>(scope: string[] | null, branches: {
 - **v1 has a single scope dimension: project.** `scopedTo`'s `dimension` parameter defaults to
   `'project'` and is forward-looking only. Do not build a generic `scope_type`/`scope_id` model
   now — grants keep `project_id`. Generalizing to multiple scope dimensions is an additive change
-  to make *when a second scope type actually appears*, not before. Building the abstraction over a
+  to make _when a second scope type actually appears_, not before. Building the abstraction over a
   single case is the anti-pattern to avoid.
 - Ship `FakeIamClient` with identical interface, selected by an env flag for `wrangler dev`:
   fixed identity, `can()` → true, `scopedTo()` → `null`, `redeemCapability()` → a fake
@@ -571,39 +583,46 @@ export function applyScope<T>(scope: string[] | null, branches: {
 App usage target:
 
 ```ts
-const iam = new IamClient(env.IAM, "app-projects");          // once
-const auth = await iam.authenticate(req);
-if (!auth.ok) return new Response(auth.reason, { status: auth.status });   // 401 or 403
-if (!auth.can("project.settings.update", { project: id }))
-  return new Response("forbidden", { status: 403 });
+const iam = new IamClient(env.IAM, 'app-projects') // once
+const auth = await iam.authenticate(req)
+if (!auth.ok) return new Response(auth.reason, { status: auth.status }) // 401 or 403
+if (!auth.can('project.settings.update', { project: id })) {
+	return new Response('forbidden', { status: 403 })
+}
 // ... do the work ...
-ctx.waitUntil(auth.audit({ action: "project.settings.update", resourceType: "project",
-  resourceId: id, diff }));
+ctx.waitUntil(
+	auth.audit({
+		action: 'project.settings.update',
+		resourceType: 'project',
+		resourceId: id,
+		diff,
+	}),
+)
 ```
 
 Listing/filtering by scope:
 
 ```ts
-const scope = auth.scopedTo("project.read");
+const scope = auth.scopedTo('project.read')
 const projects = applyScope(scope, {
-  all:  () => db.listAllProjects(),
-  some: (ids) => db.listProjects({ ids }),   // WHERE id IN (...)
-  none: () => [],                            // empty result, no query issued
-});
+	all: () => db.listAllProjects(),
+	some: (ids) => db.listProjects({ ids }), // WHERE id IN (...)
+	none: () => [], // empty result, no query issued
+})
 ```
 
 Minting a share link in-flow (delegation-checked against the current user):
 
 ```ts
 const issued = await iam.issueCapability(req, {
-  grants: [
-    { action: "report.read",            resource: `report:${id}`, projectId },
-    { action: "report.feedback.create", resource: `report:${id}`, projectId },
-  ],
-  label: `Share: report ${id}`,
-  expiresAt: in30Days,
-});
-if (!issued.ok) return new Response("forbidden", { status: 403 });  // e.g. not_allowed
+	grants: [
+		{ action: 'report.read', resource: `report:${id}`, projectId },
+		{ action: 'report.feedback.create', resource: `report:${id}`, projectId },
+	],
+	label: `Share: report ${id}`,
+	expiresAt: in30Days,
+})
+if (!issued.ok) return new Response('forbidden', { status: 403 }) // e.g. not_allowed
 // issued.token — show once, never persisted
 ```
 
@@ -611,17 +630,26 @@ Public share-link endpoint (capability, no Access, no identity):
 
 ```ts
 // on a Bypass path e.g. reports.firma.cz/r/<token>
-const cap = await iam.redeemCapability(req, token);
-if (!cap.ok) return new Response("invalid or expired link", { status: 404 });
+const cap = await iam.redeemCapability(req, token)
+if (!cap.ok) return new Response('invalid or expired link', { status: 404 })
 
-if (req.method === "GET" && cap.can("report.read", `report:${id}`)) return renderReport(id);
-if (req.method === "POST" && cap.can("report.feedback.create", `report:${id}`)) {
-  await saveFeedback(id, body);
-  ctx.waitUntil(cap.audit({ action: "report.feedback.create",
-    resourceType: "report", resourceId: id }));   // principalId null, capabilityTokenId attached
-  return new Response(null, { status: 201 });
+if (req.method === 'GET' && cap.can('report.read', `report:${id}`)) {
+	return renderReport(id)
 }
-return new Response("forbidden", { status: 403 });
+if (
+	req.method === 'POST' && cap.can('report.feedback.create', `report:${id}`)
+) {
+	await saveFeedback(id, body)
+	ctx.waitUntil(
+		cap.audit({
+			action: 'report.feedback.create',
+			resourceType: 'report',
+			resourceId: id,
+		}),
+	) // principalId null, capabilityTokenId attached
+	return new Response(null, { status: 201 })
+}
+return new Response('forbidden', { status: 403 })
 ```
 
 ## Admin surface
@@ -636,7 +664,7 @@ IAM-entity changes are the most audit-sensitive of all. Keep it boring REST.
 
 **Inviting a user before first login.** Users are otherwise lazily created on first
 `authenticate()`, so an admin cannot grant to someone who has never logged in. To pre-authorize a
-specific person, `POST /admin/principals` with `{ email }` creates an *invited* user principal
+specific person, `POST /admin/principals` with `{ email }` creates an _invited_ user principal
 (`external_id` NULL) that grants can immediately target; the stable Access `sub` is bound on that
 user's first login (the claim step — see RPC section). Writes `iam.principal.invite`. The admin
 then adds grants to the invited principal exactly like any other. (Team-wide pre-authorization is
@@ -681,7 +709,8 @@ without a bootstrap, nobody can ever create the first grant. Solve it statelessl
 The admin must be able to issue API keys for machine callers. An API key here **is** an Access
 service token — we do not invent our own key format. Provisioning is a single admin action that
 orchestrates two systems: it mints the credential in Cloudflare Access and records the principal
-+ grants in IAM, in one flow.
+
+- grants in IAM, in one flow.
 
 Endpoint: `POST /admin/api-keys` with body `{ label, type: 'service', projectId?, roleKey, expiresAt? }`.
 (`roleKey` is validated against the code role registry before anything is minted.)
@@ -691,7 +720,7 @@ Flow (server-side, in the IAM Worker):
 1. **Mint the service token in Access** via the Cloudflare API:
    `POST /accounts/{account_id}/access/service_tokens` with the chosen `name` (use the IAM
    principal label) and optional `duration`. The call needs a Cloudflare API token with the
-   *Access: Service Tokens Edit* permission, stored as a Worker secret (`CF_API_TOKEN`,
+   _Access: Service Tokens Edit_ permission, stored as a Worker secret (`CF_API_TOKEN`,
    `CF_ACCOUNT_ID`).
 2. The response returns `client_id`, `client_secret`, and the token id. **`client_secret` is
    shown by Cloudflare exactly once** — surface it in the API response and the UI immediately,

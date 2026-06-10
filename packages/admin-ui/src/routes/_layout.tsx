@@ -35,8 +35,7 @@ export default function RootLayout() {
 				<h1>Not an IAM admin</h1>
 				<p>
 					Your session is valid, but your account does not hold the <code>iam.admin</code>{' '}
-					permission, so the admin tool is unavailable. Ask an existing IAM admin to grant
-					you the <code>admin</code> role.
+					permission, so the admin tool is unavailable. Ask an existing IAM admin to grant you the <code>admin</code> role.
 				</p>
 			</div>
 		)

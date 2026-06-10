@@ -1,18 +1,11 @@
-import type {
-	CreateGrantRequest,
-	InviteRequest,
-	ListResponse,
-	PrincipalListItem,
-	ProjectDto,
-	RoleDto,
-} from '@propustka/worker/admin'
 import { createPage, Link, useNavigate } from '@buzola/router'
+import type { CreateGrantRequest, InviteRequest, ListResponse, PrincipalListItem, ProjectDto, RoleDto } from '@propustka/worker/admin'
 import { useState } from 'react'
-import { RolePicker } from '../../components/RolePicker'
-import { type ScopeValue, resolveScope, ScopePicker } from '../../components/ScopePicker'
 import { StatusBadge } from '../../components/Badge'
+import { RolePicker } from '../../components/RolePicker'
+import { resolveScope, ScopePicker, type ScopeValue } from '../../components/ScopePicker'
 import { Table } from '../../components/Table'
-import { ApiError, api } from '../../lib/api'
+import { api, ApiError } from '../../lib/api'
 import { fmtDate, parseDateTimeLocal } from '../../lib/format'
 
 /** '' = all types, otherwise a principal type. */
@@ -97,7 +90,9 @@ export default createPage()
 								{p.email && <div className="muted small">{p.email}</div>}
 							</td>
 							<td>{p.externalId ?? <span className="muted">—</span>}</td>
-							<td><StatusBadge status={p.status} /></td>
+							<td>
+								<StatusBadge status={p.status} />
+							</td>
 							<td>{fmtDate(p.createdAt)}</td>
 						</tr>
 					))}
@@ -173,8 +168,7 @@ function InviteForm({ roles, projects, onDone }: InviteFormProps) {
 			<div className="panel">
 				<button type="button" className="primary" onClick={() => setOpen(true)}>Invite user</button>
 				<p className="hint">
-					Pre-create an invited user so you can grant a role before their first login. For
-					team-wide pre-authorization, use group mappings instead.
+					Pre-create an invited user so you can grant a role before their first login. For team-wide pre-authorization, use group mappings instead.
 				</p>
 			</div>
 		)

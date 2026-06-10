@@ -10,9 +10,7 @@ interface BadgeProps {
 
 /** A small inline status pill. */
 export function Badge({ tone = 'neutral', children, title }: BadgeProps) {
-	return (
-		<span className={`badge badge-${tone}`} title={title}>{children}</span>
-	)
+	return <span className={`badge badge-${tone}`} title={title}>{children}</span>
 }
 
 /** Map a principal/api-key status string to a toned badge. */

@@ -1,5 +1,5 @@
-import type { ListResponse, RoleDto } from '@propustka/worker/admin'
 import { createPage } from '@buzola/router'
+import type { ListResponse, RoleDto } from '@propustka/worker/admin'
 import { Table } from '../components/Table'
 import { api } from '../lib/api'
 
@@ -14,8 +14,7 @@ export default createPage()
 			<div className="page-head">
 				<h1>Roles</h1>
 				<p className="hint">
-					Roles live in code, not editable here. This is the reference for what each role
-					expands to — and the legend for the role pickers elsewhere.
+					Roles live in code, not editable here. This is the reference for what each role expands to — and the legend for the role pickers elsewhere.
 				</p>
 			</div>
 
@@ -35,7 +34,9 @@ export default createPage()
 					<tr key={role.key}>
 						<td>
 							<strong>{role.name}</strong>
-							<div className="muted small"><code>{role.key}</code></div>
+							<div className="muted small">
+								<code>{role.key}</code>
+							</div>
 						</td>
 						<td>{role.description ?? <span className="muted">—</span>}</td>
 						<td>

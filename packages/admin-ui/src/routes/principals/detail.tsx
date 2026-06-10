@@ -1,3 +1,4 @@
+import { createPage } from '@buzola/router'
 import type {
 	CreateGrantRequest,
 	GrantDto,
@@ -8,14 +9,13 @@ import type {
 	RoleDto,
 	UpdatePrincipalRequest,
 } from '@propustka/worker/admin'
-import { createPage } from '@buzola/router'
 import { useState } from 'react'
 import { Badge, StatusBadge } from '../../components/Badge'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { RolePicker } from '../../components/RolePicker'
-import { type ScopeValue, resolveScope, ScopePicker } from '../../components/ScopePicker'
+import { resolveScope, ScopePicker, type ScopeValue } from '../../components/ScopePicker'
 import { Table } from '../../components/Table'
-import { ApiError, api } from '../../lib/api'
+import { api, ApiError } from '../../lib/api'
 import { fmtDate, fmtExpiry, parseDateTimeLocal } from '../../lib/format'
 
 export default createPage()
@@ -46,9 +46,9 @@ export default createPage()
 					</div>
 					<div className="subtitle muted">
 						{principal.type}
-						{principal.email && <> · {principal.email}</>}
-						{principal.externalId && <> · {principal.externalId}</>}
-						<> · created {fmtDate(principal.createdAt)}</>
+						{principal.email && <>· {principal.email}</>}
+						{principal.externalId && <>· {principal.externalId}</>}
+						<>· created {fmtDate(principal.createdAt)}</>
 					</div>
 					<DisableToggle principal={principal} onDone={invalidate} />
 				</div>
@@ -70,9 +70,13 @@ export default createPage()
 					>
 						{principal.permissions.map((perm, i) => (
 							<tr key={`${perm.action}:${perm.projectId ?? 'global'}:${perm.source}:${i}`}>
-								<td><code>{perm.action}</code></td>
+								<td>
+									<code>{perm.action}</code>
+								</td>
 								<td>{projectName(perm.projectId)}</td>
-								<td><SourceBadge source={perm.source} /></td>
+								<td>
+									<SourceBadge source={perm.source} />
+								</td>
 							</tr>
 						))}
 					</Table>
@@ -192,8 +196,7 @@ function GrantRow({ grant, scopeLabel, onDone }: { grant: GrantDto; scopeLabel: 
 						confirmLabel="Revoke"
 						body={
 							<p>
-								Revoke the <code>{grant.roleKey}</code> grant scoped to <strong>{scopeLabel}</strong>?
-								This is immediate and audited.
+								Revoke the <code>{grant.roleKey}</code> grant scoped to <strong>{scopeLabel}</strong>? This is immediate and audited.
 							</p>
 						}
 						onConfirm={revoke}

@@ -19,18 +19,18 @@ served by a Worker via the `ASSETS` binding, oblaka provisioning, lopata local d
 ## Topology
 
 ```
-                          ┌───────────────────────────── Cloudflare ─────────────────────────────┐
-   browser (admin) ──▶ Access (admin-only policy) ──▶ Propustka Worker ── D1 (propustka)
-                                                        │  • fetch(): admin SPA + /admin/*
-                                                        │  • cron: prune auth_log
-                                                        │  • RPC (WorkerEntrypoint):
-   app worker ───────────── env.IAM (ServiceReference) ─┤      authenticate / audit
-     (behind its own Access)                            │      redeemCapability / issueCapability
-                                                        │
-   browser (end user) ──▶ Access (app policy) ──▶ App Worker ──┘
-                                                        │
-   browser (anon, share link) ──▶ [Bypass path on App Worker] ─┘  (App calls iam.redeemCapability)
-                          └───────────────────────────────────────────────────────────────────────┘
+                       ┌───────────────────────────── Cloudflare ─────────────────────────────┐
+browser (admin) ──▶ Access (admin-only policy) ──▶ Propustka Worker ── D1 (propustka)
+                                                     │  • fetch(): admin SPA + /admin/*
+                                                     │  • cron: prune auth_log
+                                                     │  • RPC (WorkerEntrypoint):
+app worker ───────────── env.IAM (ServiceReference) ─┤      authenticate / audit
+  (behind its own Access)                            │      redeemCapability / issueCapability
+                                                     │
+browser (end user) ──▶ Access (app policy) ──▶ App Worker ──┘
+                                                     │
+browser (anon, share link) ──▶ [Bypass path on App Worker] ─┘  (App calls iam.redeemCapability)
+                       └───────────────────────────────────────────────────────────────────────┘
 ```
 
 Key boundary facts:
@@ -41,7 +41,7 @@ Key boundary facts:
 - **The IAM Worker's only HTTP surface is the admin** (SPA + `/admin/*`), behind Access +
   an in-Worker `can('iam.admin')` re-check. It exposes **no public HTTP**.
 - **Capability redeem is RPC, not an IAM HTTP route.** The public Bypass path lives on the
-  *app* Worker (e.g. `reports.firma.cz/r/<token>`); the app calls `iam.redeemCapability()`
+  _app_ Worker (e.g. `reports.firma.cz/r/<token>`); the app calls `iam.redeemCapability()`
   over the binding. The IAM Worker never needs a public, Access-free path.
 - **`can()` / `scopedTo()` run in the app**, in `@propustka/client`, over the permissions
   array returned by one `authenticate()` RPC. No per-check round-trip.
@@ -92,7 +92,7 @@ The deliberately small shared package — only things that **must not drift** be
 Worker and the SDK:
 
 - **Permission matcher** — wildcard matching (`*`, `prefix.*`) used by both `can()` in the SDK
-  *and* the `issueCapability()` delegation check in the Worker (core spec: "Wildcard matching
+  _and_ the `issueCapability()` delegation check in the Worker (core spec: "Wildcard matching
   happens in TypeScript, not SQL"). One implementation, one set of tests.
 - **Shared types** — `DomainEvent`, the `permissions[]` entry shape (`{action, projectId,
   source}`), failure-reason unions, the `RoleDef`/`RoleSource` interface, and the **`IamRpc`
@@ -105,7 +105,7 @@ Worker and the SDK:
   the SDK, but the underlying types are here.
 
 Pure, no Cloudflare deps, no I/O — so it's trivially unit-testable and safe to bundle into
-the published SDK. This is the *only* abstraction we pre-build; everything else stays concrete.
+the published SDK. This is the _only_ abstraction we pre-build; everything else stays concrete.
 
 ### `@propustka/worker` — the IAM Worker
 
@@ -169,7 +169,7 @@ section. Framework-agnostic, runs inside app Workers; **the only package publish
 Depends **only on `@propustka/core`** (a normal runtime dependency: the matcher powers
 `can()`/`scopedTo()`; `IamRpc`/`DomainEvent`/permission types come from there). It does **not**
 depend on `@propustka/worker`: the constructor takes the service binding typed as
-`Service<IamRpc>`, and `authenticate()`/`audit()`/etc. are RPC calls to the *deployed* Worker
+`Service<IamRpc>`, and `authenticate()`/`audit()`/etc. are RPC calls to the _deployed_ Worker
 over that binding. The Worker's runtime (D1, jose, the CF Access client) is never imported, so
 adopting apps don't bundle any of it — they ship the thin SDK and reach the real Worker through
 the binding.
@@ -194,50 +194,54 @@ routes `/admin/*` to the API handlers, everything else falls through to the SPA 
 import { D1Database, define, Worker } from 'oblaka-iac'
 
 export default define(({ env }) => {
-  // local: inline dev values; stage/prod: read secrets from process.env (CI sets them),
-  // throw loudly if missing — same pattern as opice's envVarsFor().
-  const vars = buildVars(env)
+	// local: inline dev values; stage/prod: read secrets from process.env (CI sets them),
+	// throw loudly if missing — same pattern as opice's envVarsFor().
+	const vars = buildVars(env)
 
-  return new Worker({
-    dir: '.',
-    name: 'propustka-worker',                       // ← app workers reference this name
-    main: './src/index.ts',
-    compatibility_flags: ['nodejs_compat_v2'],
-    compatibility_date: '2025-10-01',
-    observability: { enabled: true },
-    triggers: { crons: ['0 3 * * *'] },             // prune auth_log (retention: weeks)
-    assets: {
-      directory: '../admin-ui/dist',
-      binding: 'ASSETS',
-      not_found_handling: 'single-page-application', // SPA deep links → index.html
-      run_worker_first: true,                        // fetch() runs before static: route /admin/* + Access gate
-    },
-    bindings: {
-      DB: new D1Database({ name: 'propustka', migrationsDir: './migrations', locationHint: 'weur' }),
-    },
-    vars,                                            // ENVIRONMENT, ACCESS_APPS, TEAM, IAM_BOOTSTRAP_ADMINS, ...
-    // secrets (CF_API_TOKEN, CF_ACCOUNT_ID) injected via vars from process.env on stage/prod
-  })
+	return new Worker({
+		dir: '.',
+		name: 'propustka-worker', // ← app workers reference this name
+		main: './src/index.ts',
+		compatibility_flags: ['nodejs_compat_v2'],
+		compatibility_date: '2025-10-01',
+		observability: { enabled: true },
+		triggers: { crons: ['0 3 * * *'] }, // prune auth_log (retention: weeks)
+		assets: {
+			directory: '../admin-ui/dist',
+			binding: 'ASSETS',
+			not_found_handling: 'single-page-application', // SPA deep links → index.html
+			run_worker_first: true, // fetch() runs before static: route /admin/* + Access gate
+		},
+		bindings: {
+			DB: new D1Database({
+				name: 'propustka',
+				migrationsDir: './migrations',
+				locationHint: 'weur',
+			}),
+		},
+		vars, // ENVIRONMENT, ACCESS_APPS, TEAM, IAM_BOOTSTRAP_ADMINS, ...
+		// secrets (CF_API_TOKEN, CF_ACCOUNT_ID) injected via vars from process.env on stage/prod
+	})
 })
 ```
 
 **One D1 (`propustka`)** holds both table groups. The core spec's "keep them separate" is a
-*logical* separation (mutable policy state vs. append-only audit) realized as distinct tables +
+_logical_ separation (mutable policy state vs. append-only audit) realized as distinct tables +
 retention, not separate databases — internal scale doesn't warrant two D1s. (Additive later if
 ever needed.)
 
 **Env & secrets** (`src/env.ts` is the typed source of truth):
 
-| Name | Kind | Purpose |
-|---|---|---|
-| `DB` | binding | D1 |
-| `ASSETS` | binding | admin SPA static assets |
-| `ACCESS_APPS` | var (JSON) | `{ "<aud>": "<app-id>" }` — JWT audience set + app identity |
-| `TEAM` | var | Access team domain (JWKS issuer) |
-| `IAM_BOOTSTRAP_ADMINS` | var (JSON) | bootstrap admin emails (normally empty) |
-| `CF_API_TOKEN` | **secret** | Access service-token provisioning (admin-only) |
-| `CF_ACCOUNT_ID` | **secret** | account id for the Access API |
-| `ENVIRONMENT` | var | `local` / `stage` / `prod` |
+| Name                   | Kind       | Purpose                                                     |
+| ---------------------- | ---------- | ----------------------------------------------------------- |
+| `DB`                   | binding    | D1                                                          |
+| `ASSETS`               | binding    | admin SPA static assets                                     |
+| `ACCESS_APPS`          | var (JSON) | `{ "<aud>": "<app-id>" }` — JWT audience set + app identity |
+| `TEAM`                 | var        | Access team domain (JWKS issuer)                            |
+| `IAM_BOOTSTRAP_ADMINS` | var (JSON) | bootstrap admin emails (normally empty)                     |
+| `CF_API_TOKEN`         | **secret** | Access service-token provisioning (admin-only)              |
+| `CF_ACCOUNT_ID`        | **secret** | account id for the Access API                               |
+| `ENVIRONMENT`          | var        | `local` / `stage` / `prod`                                  |
 
 Local provides safe inline values; stage/prod read from `process.env` in `oblaka.ts` and throw
 if missing (opice precedent) so we never ship a half-configured deploy.
@@ -269,7 +273,7 @@ Caveats specific to IAM:
 
 - **Access doesn't exist locally.** App-side, the `FakeIamClient` covers `wrangler dev` (fixed
   identity, `can()`→true, deny-list for 403 paths) — no Access, no IAM Worker. For exercising
-  the *real* IAM Worker locally, feed fixture JWTs/cookies; full Access integration
+  the _real_ IAM Worker locally, feed fixture JWTs/cookies; full Access integration
   (especially `get-identity`) **must be verified against a real Access-protected host early** —
   the core spec flags this as the one external integration point.
 - D1 migrations apply locally and remotely via wrangler (opice scripts):
@@ -327,4 +331,6 @@ Inherits the core spec's out-of-scope list, plus:
 - No custom key format, no per-app secret auth, no runtime role store (all per core spec).
 - No `@propustka/core` over-reach: it holds only logic that must agree across packages; resist
   growing it into a junk-drawer.
+
+```
 ```

@@ -1,18 +1,12 @@
-import type {
-	CreateGroupMappingRequest,
-	GroupMappingDto,
-	ListResponse,
-	ProjectDto,
-	RoleDto,
-} from '@propustka/worker/admin'
 import { createPage } from '@buzola/router'
+import type { CreateGroupMappingRequest, GroupMappingDto, ListResponse, ProjectDto, RoleDto } from '@propustka/worker/admin'
 import { useState } from 'react'
 import { Badge } from '../../components/Badge'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { RolePicker } from '../../components/RolePicker'
-import { type ScopeValue, resolveScope, ScopePicker } from '../../components/ScopePicker'
+import { resolveScope, ScopePicker, type ScopeValue } from '../../components/ScopePicker'
 import { Table } from '../../components/Table'
-import { ApiError, api } from '../../lib/api'
+import { api, ApiError } from '../../lib/api'
 
 export default createPage()
 	.loader(async () => {
@@ -36,9 +30,8 @@ export default createPage()
 				<div className="page-head">
 					<h1>Group mappings</h1>
 					<p className="hint">
-						Map an IdP group to a role. These are applied <strong>at login time, not live</strong>:
-						removing a mapping takes effect on the next <code>authenticate()</code> within cache
-						TTL, and removing team membership only after the user's Access session refreshes.
+						Map an IdP group to a role. These are applied <strong>at login time, not live</strong>: removing a mapping takes effect on the next{' '}
+						<code>authenticate()</code> within cache TTL, and removing team membership only after the user's Access session refreshes.
 					</p>
 				</div>
 
@@ -130,8 +123,7 @@ function CreateMappingForm({ roles, projects, onDone }: { roles: RoleDto[]; proj
 					placeholder="acme-org/platform-team"
 				/>
 				<span className="hint">
-					Use the <code>&lt;org&gt;/&lt;team&gt;</code> form, lowercased, so it matches the
-					normalized identity data.
+					Use the <code>&lt;org&gt;/&lt;team&gt;</code> form, lowercased, so it matches the normalized identity data.
 				</span>
 			</label>
 			<label>
@@ -158,12 +150,12 @@ function MappingRow({ mapping, scopeLabel, onDone }: { mapping: GroupMappingDto;
 	return (
 		<tr>
 			<td>{mapping.provider}</td>
-			<td><code>{mapping.groupRef}</code></td>
+			<td>
+				<code>{mapping.groupRef}</code>
+			</td>
 			<td>
 				<code>{mapping.roleKey}</code>
-				{mapping.dangling && (
-					<Badge tone="bad" title="This role_key is no longer in the code role registry.">dangling</Badge>
-				)}
+				{mapping.dangling && <Badge tone="bad" title="This role_key is no longer in the code role registry.">dangling</Badge>}
 			</td>
 			<td>{scopeLabel}</td>
 			<td className="row-actions">
@@ -174,8 +166,7 @@ function MappingRow({ mapping, scopeLabel, onDone }: { mapping: GroupMappingDto;
 						confirmLabel="Delete"
 						body={
 							<p>
-								Delete the mapping <code>{mapping.groupRef}</code> → <code>{mapping.roleKey}</code>?
-								Takes effect at the next login within cache TTL.
+								Delete the mapping <code>{mapping.groupRef}</code> → <code>{mapping.roleKey}</code>? Takes effect at the next login within cache TTL.
 							</p>
 						}
 						onConfirm={remove}

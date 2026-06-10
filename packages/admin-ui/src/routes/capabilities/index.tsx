@@ -1,17 +1,11 @@
-import type {
-	CapabilityListItem,
-	IssueCapabilityRequest,
-	IssuedCapabilityResponse,
-	ListResponse,
-	ProjectDto,
-} from '@propustka/worker/admin'
 import { createPage } from '@buzola/router'
+import type { CapabilityListItem, IssueCapabilityRequest, IssuedCapabilityResponse, ListResponse, ProjectDto } from '@propustka/worker/admin'
 import { useState } from 'react'
 import { Badge } from '../../components/Badge'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { SecretModal } from '../../components/SecretModal'
 import { Table } from '../../components/Table'
-import { ApiError, api } from '../../lib/api'
+import { api, ApiError } from '../../lib/api'
 import { fmtExpiry, parseDateTimeLocal } from '../../lib/format'
 
 /** Known capability resource-type prefixes (app-owned shared namespace). */
@@ -40,8 +34,8 @@ export default createPage()
 			<div className="page-head">
 				<h1>Capabilities</h1>
 				<p className="hint">
-					Scoped, short-lived tokens granting specific <code>(action, resource)</code> pairs.
-					Resources are an app-owned shared namespace. Token plaintext is shown once at issue and never stored.
+					Scoped, short-lived tokens granting specific <code>(action, resource)</code>{' '}
+					pairs. Resources are an app-owned shared namespace. Token plaintext is shown once at issue and never stored.
 				</p>
 			</div>
 
@@ -62,9 +56,7 @@ export default createPage()
 					</tr>
 				}
 			>
-				{data.capabilities.map((cap) => (
-					<CapabilityRow key={cap.id} cap={cap} onDone={invalidate} />
-				))}
+				{data.capabilities.map((cap) => <CapabilityRow key={cap.id} cap={cap} onDone={invalidate} />)}
 			</Table>
 		</>
 	))
@@ -91,16 +83,20 @@ function CapabilityRow({ cap, onDone }: { cap: CapabilityListItem; onDone: () =>
 			</td>
 			<td>{fmtExpiry(cap.expiresAt)}</td>
 			<td>{cap.usedCount}{cap.maxUses !== null ? ` / ${cap.maxUses}` : ''}</td>
-			<td><Badge tone={tone}>{status}</Badge></td>
+			<td>
+				<Badge tone={tone}>{status}</Badge>
+			</td>
 			<td className="row-actions">
-				{status !== 'revoked' && (
-					<button type="button" className="danger small" onClick={() => setConfirming(true)}>Revoke</button>
-				)}
+				{status !== 'revoked' && <button type="button" className="danger small" onClick={() => setConfirming(true)}>Revoke</button>}
 				{confirming && (
 					<ConfirmDialog
 						title="Revoke capability"
 						confirmLabel="Revoke"
-						body={<p>Revoke the capability token <strong>{cap.label ?? cap.id}</strong>? Effective immediately.</p>}
+						body={
+							<p>
+								Revoke the capability token <strong>{cap.label ?? cap.id}</strong>? Effective immediately.
+							</p>
+						}
 						onConfirm={revoke}
 						onClose={() => setConfirming(false)}
 					/>
@@ -218,9 +214,7 @@ function IssueForm({ projects, onDone }: { projects: ProjectDto[]; onDone: () =>
 								onChange={(e) => updateRow(i, { projectId: e.target.value })}
 							>
 								<option value="">Global</option>
-								{projects.map((p) => (
-									<option key={p.id} value={p.id}>{p.name} ({p.slug})</option>
-								))}
+								{projects.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.slug})</option>)}
 							</select>
 							<button type="button" className="small" onClick={() => removeRow(i)} disabled={rows.length === 1}>
 								Remove
@@ -254,7 +248,11 @@ function IssueForm({ projects, onDone }: { projects: ProjectDto[]; onDone: () =>
 				<SecretModal
 					title="Capability issued"
 					fields={[{ label: 'Token', value: token.token, multiline: true }]}
-					note={<p className="hint">Hand this token to the holder over a trusted channel. It is the only secret — anyone with it can redeem the granted actions.</p>}
+					note={
+						<p className="hint">
+							Hand this token to the holder over a trusted channel. It is the only secret — anyone with it can redeem the granted actions.
+						</p>
+					}
 					onClose={() => setToken(null)}
 				/>
 			)}

@@ -1,8 +1,8 @@
 # IAM Admin UI — Implementation Spec (v1, basic)
 
 Companion to `iam-service-spec.md`. That spec already defines a **minimal admin
-REST API** on the IAM Worker ("Admin surface") but leaves the UI as *optionally a small
-UI*. This document specifies that UI at a basic, implementable level.
+REST API** on the IAM Worker ("Admin surface") but leaves the UI as _optionally a small
+UI_. This document specifies that UI at a basic, implementable level.
 
 Scope: a small **SPA built on [buzola](https://github.com/.../buzola)** that drives the
 existing `/admin/*` API — a handful of pages to manage principals, grants, projects,
@@ -92,18 +92,18 @@ src/routes/
 The core spec enumerates the **write/CRUD** endpoints (they emit audit events). The SPA also
 needs **read** endpoints; add these GETs (read-only, same admin gate, no audit event):
 
-| Method & path | Returns |
-|---|---|
-| `GET /admin/me` | current admin principal + resolved permissions (for nav + gate) |
-| `GET /admin/principals?type=&status=&q=` | list principals (filter by type, status invited/active/disabled, search label/email/external_id) |
-| `GET /admin/principals/{id}` | principal (incl. status, email, external_id) + its grants + **effective permissions with `source`** (grant / bootstrap / `group:<org/team>`) + `disabled_at` |
-| `GET /admin/projects` | list projects |
-| `GET /admin/group-mappings` | list group→role mappings |
-| `GET /admin/roles` | code role registry (already specified: `GET /admin/roles`) |
-| `GET /admin/api-keys` | list service principals provisioned as API keys (no secrets) |
-| `GET /admin/capabilities` | list capability tokens (metadata only: label, expiry, used_count, revoked_at — **never** hash/plaintext) + their `(action, resource)` grants |
-| `GET /admin/audit?resourceType=&resourceId=&principalId=&action=&requestId=&before=&limit=` | page of `audit_events` (cursor by UUIDv7 / `created_at`) |
-| `GET /admin/auth-log?principalId=&requestId=&decision=&before=&limit=` | page of `auth_log` rows |
+| Method & path                                                                               | Returns                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /admin/me`                                                                             | current admin principal + resolved permissions (for nav + gate)                                                                                              |
+| `GET /admin/principals?type=&status=&q=`                                                    | list principals (filter by type, status invited/active/disabled, search label/email/external_id)                                                             |
+| `GET /admin/principals/{id}`                                                                | principal (incl. status, email, external_id) + its grants + **effective permissions with `source`** (grant / bootstrap / `group:<org/team>`) + `disabled_at` |
+| `GET /admin/projects`                                                                       | list projects                                                                                                                                                |
+| `GET /admin/group-mappings`                                                                 | list group→role mappings                                                                                                                                     |
+| `GET /admin/roles`                                                                          | code role registry (already specified: `GET /admin/roles`)                                                                                                   |
+| `GET /admin/api-keys`                                                                       | list service principals provisioned as API keys (no secrets)                                                                                                 |
+| `GET /admin/capabilities`                                                                   | list capability tokens (metadata only: label, expiry, used_count, revoked_at — **never** hash/plaintext) + their `(action, resource)` grants                 |
+| `GET /admin/audit?resourceType=&resourceId=&principalId=&action=&requestId=&before=&limit=` | page of `audit_events` (cursor by UUIDv7 / `created_at`)                                                                                                     |
+| `GET /admin/auth-log?principalId=&requestId=&decision=&before=&limit=`                      | page of `auth_log` rows                                                                                                                                      |
 
 Writes are the ones already in the core spec (`POST/DELETE/PATCH` for grants, projects,
 group-mappings, api-keys, capabilities), namespaced under `/admin/`.
@@ -114,16 +114,17 @@ UUIDv7; auth_log is rowid). No total counts.
 ## Pages
 
 ### 1. Principals (`/principals`)
+
 - **List:** table of principals — type (user/service) badge, label, external_id, status
   (**invited** / active / disabled), created_at. Filter by type; text search. Service
   principals link to the API-keys view where relevant.
 - **Invite user** (`POST /admin/principals` with `{ email }` → `iam.principal.invite`):
-  pre-creates an *invited* user principal (no `sub` yet) so an admin can grant **before the
+  pre-creates an _invited_ user principal (no `sub` yet) so an admin can grant **before the
   person's first login**; the form optionally adds a grant in the same flow. Invited rows show
   an `invited` badge until the user's first `authenticate()` claims them (binds their Access
   `sub`). For team-wide pre-authorization use group→role mappings instead.
 - **Detail (`/principals/:id`):** the core authorization screen.
-  - **Effective permissions** table: `action`, scope (project name or *Global*), and
+  - **Effective permissions** table: `action`, scope (project name or _Global_), and
     **`source`** (`grant` / `bootstrap` / `group:<org/team>`). This is the "why does this
     user have this permission?" view the core spec calls out — render `source` verbatim.
   - **Grants** table (explicit rows only): role, scope, expiry, granted_by, created_at, with
@@ -132,17 +133,19 @@ UUIDv7; auth_log is rowid). No total counts.
     note below), optional expiry → `POST` grant (`iam.grant.create`).
   - **Disable / enable** principal (soft-disable via `disabled_at`).
   - **Dangling role flag:** if a grant's `role_key` is no longer in the code registry, show
-    it highlighted as *dangling (resolves to zero permissions)* — core spec requirement.
+    it highlighted as _dangling (resolves to zero permissions)_ — core spec requirement.
   - Users are lazily created on first login, or pre-created via **Invite** (above). Grant/revoke
     works the same on an `invited` principal as on an active one — grants pre-created on an
     invite take effect the moment that user first logs in (claim).
 
 ### 2. Projects (`/projects`)
+
 - List slug, name, created_at. **Create** (`POST` → `iam.project.create`) and **rename**
   (`PATCH` → `iam.project.update`). Admin-managed only in v1; no delete in v1 (projects are
   referenced by grants/mappings — out of scope, note it).
 
 ### 3. Group → role mappings (`/group-mappings`)
+
 - List provider (github), `group_ref`, role, scope. **Create** form: provider (github, fixed
   v1), `group_ref` input with inline hint on the **`<org>/<team>` lowercase** normalization
   (so admin input matches identity data), role picker, scope picker → `POST`
@@ -152,6 +155,7 @@ UUIDv7; auth_log is rowid). No total counts.
   session refresh) — sets admin expectations, straight from the core spec.
 
 ### 4. API keys / service tokens (`/api-keys`)
+
 - List provisioned service principals: label, status, role/scope, expiry.
 - **Provision** form: label, role, optional project scope, optional expiry → `POST
   /admin/api-keys`. On success the response carries `client_id` + **`client_secret` shown
@@ -166,6 +170,7 @@ UUIDv7; auth_log is rowid). No total counts.
   reconciliation warning row.
 
 ### 5. Capabilities (`/capabilities`)
+
 - List tokens: label, grants `(action, resource)`, expiry, used_count, max_uses, status
   (active / expired / revoked). **Never** show hash or plaintext.
 - **Issue** form: repeatable `(action, resource)` rows, optional per-row `projectId` (used
@@ -179,8 +184,9 @@ UUIDv7; auth_log is rowid). No total counts.
   known resource-type prefixes.
 
 ### 6. Audit log (`/audit` + `/audit/auth-log`)
+
 - **`/audit` — domain events (`audit_events`):** table of created_at, actor
-  (`principal_label`, or *capability* + `capability_token_id`), `app`, `action`,
+  (`principal_label`, or _capability_ + `capability_token_id`), `app`, `action`,
   `resource_type`/`resource_id`, with an **expandable `diff`/`metadata`** (rendered as
   read-only JSON). Filters: resource type+id, principal, action, request_id, time range.
   `request_id` is a link that pivots to all rows (audit + auth) for that request.
@@ -193,6 +199,7 @@ UUIDv7; auth_log is rowid). No total counts.
   just reflects what's there.
 
 ### 7. Roles (`/roles`)
+
 - Read-only reference of the **code-defined** roles (`GET /admin/roles`): name, description,
   permission patterns. Copy: "roles live in code, not editable here." Doubles as the legend
   for role pickers elsewhere and the place to see what `*`/`project.*` expand to.
@@ -211,7 +218,7 @@ UUIDv7; auth_log is rowid). No total counts.
   "Global / all projects" option distinct from "pick a project" — this is the `null` vs.
   project-id distinction that the core spec treats as load-bearing. Never default silently to
   global; make the admin choose. (The read-side three-state — `null` / `[]` / non-empty from
-  `scopedTo()` — is an SDK concern, not the admin UI's, but the *grant* side must not blur
+  `scopedTo()` — is an SDK concern, not the admin UI's, but the _grant_ side must not blur
   global vs. scoped.)
 - **Confirm destructive actions** (revoke grant / API key / capability, disable principal)
   with a small confirm dialog naming the target. These are the most audit-sensitive
@@ -247,4 +254,6 @@ All prior open questions are now decided:
 5. **Capability issue form:** **raw `(action, resource)` inputs** for v1, with a hint listing
    known resource-type prefixes — no curated picker yet.
 6. **Admin gate:** in-Worker `can('iam.admin')` sentinel, on top of the Access admin policy.
+
+```
 ```
