@@ -1,0 +1,20 @@
+{
+	"name": "@propustka/example-app",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "bunx lopata dev --env local --port 18190 --listen 127.0.0.1",
+		"oblaka": "bunx oblaka oblaka.ts",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@propustka/client": "workspace:*"
+	},
+	"devDependencies": {
+		"@cloudflare/workers-types": "^4.20251001.0",
+		"@types/bun": "latest",
+		"lopata": "latest",
+		"oblaka-iac": "latest",
+		"wrangler": "^4.24.0"
+	}
+}

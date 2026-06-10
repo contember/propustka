@@ -8,11 +8,11 @@ and a small admin UI. Apps call it through a thin SDK over a **service binding**
 
 Division of responsibility:
 
-| Layer | Owns |
-|---|---|
-| **Cloudflare Access** (not built here) | authentication (who you are) + coarse edge gate |
-| **Propustka Worker** | authorization (RBAC), auth log, audit ingest, capabilities, request context |
-| **Apps** | emit domain audit events; call `authenticate()` / `can()` / `audit()` |
+| Layer                                  | Owns                                                                        |
+| -------------------------------------- | --------------------------------------------------------------------------- |
+| **Cloudflare Access** (not built here) | authentication (who you are) + coarse edge gate                             |
+| **Propustka Worker**                   | authorization (RBAC), auth log, audit ingest, capabilities, request context |
+| **Apps**                               | emit domain audit events; call `authenticate()` / `can()` / `audit()`       |
 
 Design docs: [`iam-service-spec.md`](./iam-service-spec.md) ·
 [`admin-ui-spec.md`](./admin-ui-spec.md) · [`architecture.md`](./architecture.md).
@@ -22,12 +22,12 @@ Design docs: [`iam-service-spec.md`](./iam-service-spec.md) ·
 Bun monorepo (`packages/*`). Acyclic graph: everything depends on `core`; `client` and
 `admin-ui` never depend on each other.
 
-| Package | What it is |
-|---|---|
-| **`@propustka/core`** | Pure shared lib: action matcher (`*` / `prefix.*` / exact), `permits()`, `uuidv7()`, shared types, and the **`IamRpc`** contract the worker implements and the SDK consumes. No I/O, no deps. |
-| **`@propustka/worker`** | The IAM Worker. `WorkerEntrypoint` implementing the RPC surface + the `/admin/*` REST API + the admin SPA assets + a cron that prunes the auth log. D1 datastore, `jose` JWT validation, Cloudflare Access provisioning, `oblaka` provisioning. |
-| **`@propustka/client`** | The app-facing SDK (the only published package): `IamClient`, `AuthContext`, `Capability`, `applyScope`, and `FakeIamClient` for `wrangler dev`. Depends only on `core`. |
-| **`@propustka/admin-ui`** | buzola + React admin SPA served by the worker at `/`. Manages principals, grants, projects, group→role mappings, API keys, capabilities; views the audit + auth logs. |
+| Package                   | What it is                                                                                                                                                                                                                                      |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`@propustka/core`**     | Pure shared lib: action matcher (`*` / `prefix.*` / exact), `permits()`, `uuidv7()`, shared types, and the **`IamRpc`** contract the worker implements and the SDK consumes. No I/O, no deps.                                                   |
+| **`@propustka/worker`**   | The IAM Worker. `WorkerEntrypoint` implementing the RPC surface + the `/admin/*` REST API + the admin SPA assets + a cron that prunes the auth log. D1 datastore, `jose` JWT validation, Cloudflare Access provisioning, `oblaka` provisioning. |
+| **`@propustka/client`**   | The app-facing SDK (the only published package): `IamClient`, `AuthContext`, `Capability`, `applyScope`, and `FakeIamClient` for `wrangler dev`. Depends only on `core`.                                                                        |
+| **`@propustka/admin-ui`** | buzola + React admin SPA served by the worker at `/`. Manages principals, grants, projects, group→role mappings, API keys, capabilities; views the audit + auth logs.                                                                           |
 
 ## Quick start
 
@@ -73,7 +73,7 @@ GET /admin/roles   → 401 {"error":"missing_token"}
 
 **What needs real Cloudflare Access** (cannot be exercised locally): validating a real Access
 JWT, resolving IdP group membership via `get-identity`, and the service-token provisioning
-flow. See *Status* below.
+flow. See _Status_ below.
 
 ## Using the SDK in an app
 
@@ -90,27 +90,35 @@ bindings: {
 In app code:
 
 ```ts
-import { IamClient, FakeIamClient, applyScope } from '@propustka/client'
+import { applyScope, FakeIamClient, IamClient } from '@propustka/client'
 
 const iam = env.DEV
-  ? new FakeIamClient({ deny: ['project.settings.update'] }) // wrangler dev: no Access, no IAM Worker
-  : new IamClient(env.IAM, 'app-projects')
+	? new FakeIamClient({ deny: ['project.settings.update'] }) // wrangler dev: no Access, no IAM Worker
+	: new IamClient(env.IAM, 'app-projects')
 
 const auth = await iam.authenticate(req)
 if (!auth.ok) return new Response(auth.reason, { status: auth.status }) // 401 or 403
 
-if (!auth.can('project.settings.update', { project: id }))
-  return new Response('forbidden', { status: 403 })
+if (!auth.can('project.settings.update', { project: id })) {
+	return new Response('forbidden', { status: 403 })
+}
 
 // list filtering by scope (three-state: all / some / none)
 const scope = auth.scopedTo('project.read')
 const projects = applyScope(scope, {
-  all: () => db.listAllProjects(),
-  some: (ids) => db.listProjects({ ids }), // WHERE id IN (...)
-  none: () => [],
+	all: () => db.listAllProjects(),
+	some: (ids) => db.listProjects({ ids }), // WHERE id IN (...)
+	none: () => [],
 })
 
-ctx.waitUntil(auth.audit({ action: 'project.settings.update', resourceType: 'project', resourceId: id, diff }))
+ctx.waitUntil(
+	auth.audit({
+		action: 'project.settings.update',
+		resourceType: 'project',
+		resourceId: id,
+		diff,
+	}),
+)
 ```
 
 ## Deploy
@@ -129,13 +137,12 @@ those users resolve to global `admin` until removed from the env var.
 
 ## Status
 
-Implemented and verified (typecheck, 97 unit tests, admin-ui build, `oblaka` config gen, and a
-local `lopata` HTTP smoke). Three integration points depend on a live Cloudflare/Access
-environment and are **implemented to spec but not yet verified against real infrastructure**:
+Implemented and verified (typecheck, 97 unit tests, admin-ui build, `oblaka` config gen, a local
+`lopata` HTTP smoke, and the app↔IAM RPC path via [`examples/app`](./examples/app)). Two
+integration points depend on a live Cloudflare/Access environment and are **implemented to spec
+but not yet verified against real infrastructure**:
 
 1. **`get-identity`** group resolution — must be checked against a real Access-protected host.
 2. **Service-token provisioning** — the mint/principal/grant flow is implemented; adding the
-   token to the app's *Service Auth policy* is left **manual for v1** (`policyInclusion:
+   token to the app's _Service Auth policy_ is left **manual for v1** (`policyInclusion:
    'manual'`) pending confirmation that the Access policy API supports it.
-3. **App↔IAM RPC under lopata** — RPC is reached via a `ServiceReference`; the local multi-worker
-   RPC path hasn't been exercised here (apps use `FakeIamClient` in dev anyway).

@@ -11,6 +11,19 @@
         "typescript": "^5.9.3",
       },
     },
+    "examples/app": {
+      "name": "@propustka/example-app",
+      "dependencies": {
+        "@propustka/client": "workspace:*",
+      },
+      "devDependencies": {
+        "@cloudflare/workers-types": "^4.20251001.0",
+        "@types/bun": "latest",
+        "lopata": "latest",
+        "oblaka-iac": "latest",
+        "wrangler": "^4.24.0",
+      },
+    },
     "packages/admin-ui": {
       "name": "@propustka/admin-ui",
       "version": "0.0.1",
@@ -286,6 +299,8 @@
     "@propustka/client": ["@propustka/client@workspace:packages/client"],
 
     "@propustka/core": ["@propustka/core@workspace:packages/core"],
+
+    "@propustka/example-app": ["@propustka/example-app@workspace:examples/app"],
 
     "@propustka/worker": ["@propustka/worker@workspace:packages/worker"],
 
