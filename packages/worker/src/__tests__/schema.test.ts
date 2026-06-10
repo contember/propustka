@@ -1,7 +1,7 @@
 import { Database } from 'bun:sqlite'
+import { expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test } from 'bun:test'
 
 // Apply the real migration to an in-memory SQLite and assert the schema contract
 // the Worker relies on: the table set, the partial unique indexes (the NULL-in-UNIQUE
@@ -108,8 +108,10 @@ test('audit_events.diff rejects non-JSON via the json_valid CHECK', () => {
 			 VALUES ('a1', 'r1', 'a@x.cz', 'app', 'x.update', 'x', ${diff})`,
 		)
 	expect(() => insert("'not json'")).toThrow()
-	expect(() => db.run(
-		`INSERT INTO audit_events (id, request_id, principal_label, app, action, resource_type, diff)
+	expect(() =>
+		db.run(
+			`INSERT INTO audit_events (id, request_id, principal_label, app, action, resource_type, diff)
 		 VALUES ('a2', 'r1', 'a@x.cz', 'app', 'x.update', 'x', '{"field":["old","new"]}')`,
-	)).not.toThrow()
+		)
+	).not.toThrow()
 })
