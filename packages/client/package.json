@@ -2,6 +2,18 @@
 	"name": "@propustka/client",
 	"version": "0.0.1",
 	"type": "module",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/contember/propustka.git",
+		"directory": "packages/client"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"files": [
+		"src",
+		"!src/**/__tests__/**"
+	],
 	"exports": {
 		".": {
 			"bun": "./src/index.ts",

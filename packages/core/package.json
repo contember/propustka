@@ -1,8 +1,19 @@
 {
 	"name": "@propustka/core",
 	"version": "0.0.1",
-	"private": true,
 	"type": "module",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/contember/propustka.git",
+		"directory": "packages/core"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"files": [
+		"src",
+		"!src/**/__tests__/**"
+	],
 	"exports": {
 		".": {
 			"bun": "./src/index.ts",

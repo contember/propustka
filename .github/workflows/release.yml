@@ -1,0 +1,77 @@
+name: Release
+
+# Publishes @propustka/core + @propustka/client to public npm on a v* tag.
+# Mirrors opice/release.yml: OIDC trusted publishing (token-less, --provenance),
+# so there is NO npm token in repo secrets. One-time setup: create the @propustka
+# npm org and register this repo+workflow as a trusted publisher for both packages.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.x"
+          registry-url: "https://registry.npmjs.org"
+
+      # OIDC trusted publishing (token-less publish) needs npm >= 11.5.1;
+      # the npm bundled with the runner's Node can be older.
+      - name: Upgrade npm
+        run: npm install --global npm@latest
+
+      - name: Parse tag
+        id: tag
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Publishing v${VERSION}"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      # Stamp the tag version and turn each `workspace:*` dep into `^<version>` so the
+      # published client depends on the published core (npm rejects workspace: ranges).
+      - name: Set version and resolve workspace deps
+        run: |
+          node -e "
+            const fs = require('fs');
+            const version = '${{ steps.tag.outputs.version }}';
+            for (const p of ['packages/core/package.json', 'packages/client/package.json']) {
+              const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
+              pkg.version = version;
+              for (const field of ['dependencies', 'peerDependencies']) {
+                for (const [dep, val] of Object.entries(pkg[field] ?? {})) {
+                  if (String(val).startsWith('workspace:')) pkg[field][dep] = '^' + version;
+                }
+              }
+              fs.writeFileSync(p, JSON.stringify(pkg, null, '\t') + '\n');
+            }
+          "
+
+      # core first — client depends on it.
+      - name: Publish @propustka/core
+        working-directory: packages/core
+        run: npm publish --provenance --access public
+
+      - name: Publish @propustka/client
+        working-directory: packages/client
+        run: npm publish --provenance --access public
