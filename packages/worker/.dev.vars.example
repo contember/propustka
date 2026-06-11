@@ -1,0 +1,12 @@
+# Template for packages/worker/.dev.vars (which is gitignored). Copy it to
+# `.dev.vars` for local dev: `cp .dev.vars.example .dev.vars`.
+#
+# lopata loads `.dev.vars` on top of the wrangler `vars` (`.dev.vars` overrides
+# `vars`), so the Worker boots locally without these secrets living in the
+# generated wrangler.jsonc. Access doesn't exist locally; these are dummy values,
+# never real credentials. Do NOT put real secrets here.
+#
+# Remote (stage/prod) provisioning is out-of-band: `wrangler secret put CF_API_TOKEN`
+# and `wrangler secret put CF_ACCOUNT_ID`. See packages/worker/oblaka.ts.
+CF_API_TOKEN=local-cf-api-token
+CF_ACCOUNT_ID=local-cf-account-id

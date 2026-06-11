@@ -6,5 +6,7 @@ dist/
 **/wrangler.jsonc
 **/worker-configuration.d.ts
 .wrangler/
+.dev.vars
+.env
 *.log
 .DS_Store

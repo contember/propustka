@@ -1,34 +1,42 @@
 import { D1Database, define, Worker } from 'oblaka-iac'
 
 /**
- * Vars (and the two CF secrets, carried via vars on non-local) for each env.
- * Local inlines safe dev values; stage/prod read from `process.env` (CI sets them)
- * and throw loudly if missing — the opice `envVarsFor` pattern — so we never ship a
- * half-configured deploy. See architecture.md → Provisioning.
+ * Non-secret vars for each env. Local inlines safe dev values; stage/prod read from
+ * `process.env` (CI sets them) and throw loudly if missing — the opice `envVarsFor`
+ * pattern — so we never ship a half-configured deploy. See architecture.md → Provisioning.
+ *
+ * `CF_API_TOKEN` / `CF_ACCOUNT_ID` are SECRETS and deliberately NOT part of this object:
+ * they must never be written into the generated `wrangler.jsonc` `vars` (plaintext, visible
+ * in the dashboard). oblaka serializes the whole Worker config verbatim, so anything in
+ * `vars` ships unencrypted. Following the oblaka idiom (see project-portfolio-manager's
+ * `oblaka.ts`), secret values are provisioned out-of-band:
+ *   - remote (stage/prod): `wrangler secret put CF_API_TOKEN` / `CF_ACCOUNT_ID`
+ *   - local: a `packages/worker/.dev.vars` file, which lopata loads on top of `vars`.
+ * We still validate their presence in `process.env` on stage/prod so a misconfigured
+ * deploy fails loudly, but we never place the values into the Worker config.
  */
 interface PropustkaVars {
 	ACCESS_APPS: string
 	TEAM: string
 	IAM_BOOTSTRAP_ADMINS: string
-	CF_API_TOKEN: string
-	CF_ACCOUNT_ID: string
 }
 
 function buildVars(env: string): PropustkaVars {
 	if (env === 'local') {
 		// Access doesn't exist locally; these are placeholders so the Worker boots.
 		// Real JWT/get-identity integration is exercised against a real Access host.
+		// CF_API_TOKEN / CF_ACCOUNT_ID come from `.dev.vars` (see comment above), not here.
 		return {
 			ACCESS_APPS: '{}',
 			TEAM: 'https://example.cloudflareaccess.com',
 			IAM_BOOTSTRAP_ADMINS: '[]',
-			CF_API_TOKEN: 'local-cf-api-token',
-			CF_ACCOUNT_ID: 'local-cf-account-id',
 		}
 	}
 
 	const accessApps = process.env['PROPUSTKA_ACCESS_APPS']
 	const team = process.env['PROPUSTKA_TEAM']
+	// Validate the secrets are available to the deploy environment (provisioned separately
+	// via `wrangler secret put`), but do NOT include their values in the Worker config.
 	const cfApiToken = process.env['CF_API_TOKEN']
 	const cfAccountId = process.env['CF_ACCOUNT_ID']
 	const missing = [
@@ -48,8 +56,6 @@ function buildVars(env: string): PropustkaVars {
 		TEAM: team as string,
 		// Normally empty; the first admin is bootstrapped, then the var is emptied.
 		IAM_BOOTSTRAP_ADMINS: process.env['PROPUSTKA_BOOTSTRAP_ADMINS'] ?? '[]',
-		CF_API_TOKEN: cfApiToken as string,
-		CF_ACCOUNT_ID: cfAccountId as string,
 	}
 }
 
