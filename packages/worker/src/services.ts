@@ -1,5 +1,3 @@
-import type { PermissionEntry } from '@propustka/core'
-import { RESOLUTION_TTL_MS, TtlCache } from './cache'
 import { Db } from './db'
 import type { Env } from './env'
 import { IdentityClient } from './identity'
@@ -10,17 +8,15 @@ import { type AccessApps, JwtValidator } from './jwt'
  * (or pick what they need off it) instead of reaching into `env` directly —
  * keeps them decoupled from the CF binding shape and easier to test.
  *
- * Per-isolate state (the jose JWKS cache inside `JwtValidator`, the get-identity
- * cache inside `IdentityClient`, and the resolved-principal cache) is memoised at
- * module scope and reused across requests in the same isolate — `buildServices`
- * is cheap to call per request.
+ * Per-isolate state (the jose JWKS cache inside `JwtValidator` and the
+ * group-membership cache inside `IdentityClient`) is memoised at module scope and
+ * reused across requests in the same isolate — `buildServices` is cheap to call
+ * per request.
  */
 export interface Services {
 	readonly db: Db
 	readonly jwt: JwtValidator
 	readonly identity: IdentityClient
-	/** Per-isolate cache of resolved principal permissions; safe to be empty (falls to D1). */
-	readonly resolutionCache: TtlCache<{ permissions: PermissionEntry[]; groupsUnavailable: boolean }>
 	readonly config: Config
 }
 
@@ -37,12 +33,11 @@ export interface Config {
 }
 
 // ── Per-isolate memoised state ────────────────────────────────────────────────
-// One validator/identity-client/cache per isolate. Keyed by the config string that
+// One validator/identity-client per isolate. Keyed by the config string that
 // shapes them, so a (hypothetical) env change rebuilds rather than serving stale.
 
 let cachedJwt: { key: string; validator: JwtValidator } | undefined
 let cachedIdentity: IdentityClient | undefined
-let cachedResolution: TtlCache<{ permissions: PermissionEntry[]; groupsUnavailable: boolean }> | undefined
 
 function getJwtValidator(team: string, accessApps: AccessApps): JwtValidator {
 	const key = `${team}::${Object.keys(accessApps).sort().join(',')}`
@@ -87,14 +82,10 @@ export function buildServices(env: Env): Services {
 	if (!cachedIdentity) {
 		cachedIdentity = new IdentityClient()
 	}
-	if (!cachedResolution) {
-		cachedResolution = new TtlCache(RESOLUTION_TTL_MS)
-	}
 	return {
 		db: new Db(env.DB),
 		jwt: getJwtValidator(env.TEAM, accessApps),
 		identity: cachedIdentity,
-		resolutionCache: cachedResolution,
 		config: {
 			accessApps,
 			team: env.TEAM,

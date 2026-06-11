@@ -1,9 +1,9 @@
 /**
- * Per-isolate cache with a short TTL (tens of seconds). Used for resolved
- * principals (incl. group membership) and group-membership lookups. The TTL
- * matches Access session-revocation latency anyway, so staleness here is in line
- * with the rest of the system. The cache must be safe to be empty: a miss simply
- * falls through to D1 / get-identity, so an empty isolate is always correct.
+ * Per-isolate cache with a short TTL (tens of seconds). Used for IdP
+ * group-membership lookups (get-identity). The TTL matches Access
+ * session-revocation latency anyway, so staleness here is in line with the rest
+ * of the system. The cache must be safe to be empty: a miss simply falls through
+ * to get-identity, so an empty isolate is always correct.
  *
  * Lives at module scope (one map per isolate, like jose's JWKS cache) so it
  * survives across requests handled by the same isolate.
@@ -34,5 +34,5 @@ export class TtlCache<V> {
 	}
 }
 
-/** Short TTL for resolved principals and group membership (tens of seconds). */
+/** Short TTL for IdP group-membership lookups (tens of seconds). */
 export const RESOLUTION_TTL_MS = 30_000
