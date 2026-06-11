@@ -1,9 +1,8 @@
 import { Database } from 'bun:sqlite'
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { LOCAL_DEV_ADMIN_ID } from '../auth'
 import type { Env } from '../env'
+import { allMigrations } from './helpers/migrations'
 
 // TEST-4: the RPC entrypoint (`Propustka` in src/index.ts) wires several spec-mandated
 // behaviors that nothing else exercises:
@@ -30,7 +29,7 @@ mock.module('cloudflare:workers', () => ({
 
 const { Propustka } = await import('../index')
 
-const migration = readFileSync(join(import.meta.dir, '..', '..', 'migrations', '0001_init.sql'), 'utf8')
+const migration = allMigrations()
 
 // ── bun:sqlite → minimal D1Database adapter ───────────────────────────────────
 // The `Db` class only uses prepare().bind().{first,all,run} and db.batch(...). We wrap

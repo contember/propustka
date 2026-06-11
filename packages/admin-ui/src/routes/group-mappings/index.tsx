@@ -1,6 +1,7 @@
 import { createPage } from '@buzola/router'
-import type { CreateGroupMappingRequest, GroupMappingDto, ListResponse, ProjectDto, RoleDto } from '@propustka/worker/admin'
+import type { AppDto, CreateGroupMappingRequest, GroupMappingDto, ListResponse, ProjectDto, RoleDto } from '@propustka/worker/admin'
 import { useState } from 'react'
+import { AppPicker, type AppValue, resolveApp } from '../../components/AppPicker'
 import { Badge } from '../../components/Badge'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { RolePicker } from '../../components/RolePicker'
@@ -10,12 +11,13 @@ import { api, ApiError } from '../../lib/api'
 
 export default createPage()
 	.loader(async () => {
-		const [mappings, roles, projects] = await Promise.all([
+		const [mappings, roles, projects, apps] = await Promise.all([
 			api.get<ListResponse<GroupMappingDto>>('/group-mappings'),
 			api.get<ListResponse<RoleDto>>('/roles'),
 			api.get<ListResponse<ProjectDto>>('/projects'),
+			api.get<ListResponse<AppDto>>('/apps'),
 		])
-		return { mappings: mappings.items, roles: roles.items, projects: projects.items }
+		return { mappings: mappings.items, roles: roles.items, projects: projects.items, apps: apps.items }
 	})
 	.route('/group-mappings')
 	.render(({ data, invalidate }) => {
@@ -35,10 +37,10 @@ export default createPage()
 					</p>
 				</div>
 
-				<CreateMappingForm roles={data.roles} projects={data.projects} onDone={invalidate} />
+				<CreateMappingForm roles={data.roles} projects={data.projects} apps={data.apps} onDone={invalidate} />
 
 				<Table
-					colSpan={5}
+					colSpan={6}
 					isEmpty={data.mappings.length === 0}
 					empty="No group mappings yet."
 					head={
@@ -46,6 +48,7 @@ export default createPage()
 							<th>Provider</th>
 							<th>Group ref</th>
 							<th>Role</th>
+							<th>App</th>
 							<th>Scope</th>
 							<th />
 						</tr>
@@ -64,10 +67,13 @@ export default createPage()
 		)
 	})
 
-function CreateMappingForm({ roles, projects, onDone }: { roles: RoleDto[]; projects: ProjectDto[]; onDone: () => void }) {
+function CreateMappingForm(
+	{ roles, projects, apps, onDone }: { roles: RoleDto[]; projects: ProjectDto[]; apps: AppDto[]; onDone: () => void },
+) {
 	const [groupRef, setGroupRef] = useState('')
 	const [roleKey, setRoleKey] = useState('')
 	const [scope, setScope] = useState<ScopeValue>({ kind: 'unset' })
+	const [appValue, setAppValue] = useState<AppValue>({ kind: 'unset' })
 	const [busy, setBusy] = useState(false)
 	const [error, setError] = useState<string | null>(null)
 
@@ -85,6 +91,13 @@ function CreateMappingForm({ roles, projects, onDone }: { roles: RoleDto[]; proj
 			setError('Pick a scope.')
 			return
 		}
+		let app: string | null
+		try {
+			app = resolveApp(appValue)
+		} catch {
+			setError('Pick an app.')
+			return
+		}
 		setBusy(true)
 		try {
 			const body: CreateGroupMappingRequest = {
@@ -92,11 +105,13 @@ function CreateMappingForm({ roles, projects, onDone }: { roles: RoleDto[]; proj
 				groupRef: groupRef.trim(),
 				roleKey,
 				projectId,
+				app,
 			}
 			await api.post('/group-mappings', body)
 			setGroupRef('')
 			setRoleKey('')
 			setScope({ kind: 'unset' })
+			setAppValue({ kind: 'unset' })
 			onDone()
 		} catch (cause) {
 			setError(cause instanceof ApiError ? cause.message : 'Create failed.')
@@ -130,6 +145,7 @@ function CreateMappingForm({ roles, projects, onDone }: { roles: RoleDto[]; proj
 				Role
 				<RolePicker roles={roles} value={roleKey} onChange={setRoleKey} />
 			</label>
+			<AppPicker apps={apps} value={appValue} onChange={setAppValue} idPrefix="mapping-app" />
 			<ScopePicker projects={projects} value={scope} onChange={setScope} idPrefix="mapping-scope" />
 			{error && <p className="error-text" role="alert">{error}</p>}
 			<div className="form-actions">
@@ -157,6 +173,7 @@ function MappingRow({ mapping, scopeLabel, onDone }: { mapping: GroupMappingDto;
 				<code>{mapping.roleKey}</code>
 				{mapping.dangling && <Badge tone="bad" title="This role_key is no longer in the code role registry.">dangling</Badge>}
 			</td>
+			<td>{mapping.app ? <code>{mapping.app}</code> : <span className="muted">All apps</span>}</td>
 			<td>{scopeLabel}</td>
 			<td className="row-actions">
 				<button type="button" className="danger small" onClick={() => setConfirming(true)}>Delete</button>

@@ -14,6 +14,7 @@ import {
 	handleMe,
 	invitePrincipal,
 	listApiKeys,
+	listApps,
 	listAudit,
 	listAuthLog,
 	listCapabilities,
@@ -211,6 +212,9 @@ async function dispatch(c: AdminContext): Promise<Response> {
 
 		case 'roles':
 			return method === 'GET' ? listRoles() : methodNotAllowed()
+
+		case 'apps':
+			return method === 'GET' ? listApps(c) : methodNotAllowed()
 
 		case 'api-keys':
 			if (idOrSub === undefined) {

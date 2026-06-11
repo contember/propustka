@@ -1,13 +1,12 @@
 import { Database } from 'bun:sqlite'
 import { expect, test } from 'bun:test'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { allMigrations } from './helpers/migrations'
 
-// Apply the real migration to an in-memory SQLite and assert the schema contract
+// Apply the real migrations to an in-memory SQLite and assert the schema contract
 // the Worker relies on: the table set, the partial unique indexes (the NULL-in-UNIQUE
 // traps), the atomic redeem UPDATE…RETURNING, and the json_valid CHECK on diff.
 
-const migration = readFileSync(join(import.meta.dir, '..', '..', 'migrations', '0001_init.sql'), 'utf8')
+const migration = allMigrations()
 
 function freshDb(): Database {
 	const db = new Database(':memory:')
@@ -52,6 +51,19 @@ test('two project-scoped grants for the same (principal, role) on DIFFERENT proj
 	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, project_id) VALUES ('g2', 'p1', 'editor', 'pr2')")).not.toThrow()
 	// …but the SAME project twice is rejected.
 	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, project_id) VALUES ('g3', 'p1', 'editor', 'pr1')")).toThrow()
+})
+
+test('the same GLOBAL role for DIFFERENT apps is allowed; the same app twice is rejected', () => {
+	const db = freshDb()
+	db.run("INSERT INTO principals (id, type, external_id, email, label) VALUES ('p1', 'user', 'sub1', 'a@x.cz', 'a@x.cz')")
+	db.run("INSERT INTO grants (id, principal_id, role_key, project_id, app) VALUES ('g1', 'p1', 'editor', NULL, 'opice')")
+	// Same (principal, role) for a different app — allowed (the app dimension differentiates).
+	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, project_id, app) VALUES ('g2', 'p1', 'editor', NULL, 'poplach')")).not.toThrow()
+	// …but the same app twice is rejected.
+	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, project_id, app) VALUES ('g3', 'p1', 'editor', NULL, 'opice')")).toThrow()
+	// A NULL-app (all-apps) grant collides with another NULL-app one (COALESCE folds NULL→'*').
+	db.run("INSERT INTO grants (id, principal_id, role_key, project_id, app) VALUES ('g4', 'p1', 'viewer', NULL, NULL)")
+	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, project_id, app) VALUES ('g5', 'p1', 'viewer', NULL, NULL)")).toThrow()
 })
 
 test('at most one user principal per email (invite target uniqueness)', () => {

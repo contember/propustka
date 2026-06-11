@@ -1,6 +1,7 @@
 import { createPage } from '@buzola/router'
 import type {
 	ApiKeyDto,
+	AppDto,
 	GrantDto,
 	ListResponse,
 	ProjectDto,
@@ -10,6 +11,7 @@ import type {
 	RotateApiKeyResponse,
 } from '@propustka/worker/admin'
 import { useState } from 'react'
+import { AppPicker, type AppValue, resolveApp } from '../../components/AppPicker'
 import { StatusBadge } from '../../components/Badge'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { RolePicker } from '../../components/RolePicker'
@@ -21,12 +23,13 @@ import { fmtExpiry, parseDateTimeLocal } from '../../lib/format'
 
 export default createPage()
 	.loader(async () => {
-		const [apiKeys, roles, projects] = await Promise.all([
+		const [apiKeys, roles, projects, apps] = await Promise.all([
 			api.get<ListResponse<ApiKeyDto>>('/api-keys'),
 			api.get<ListResponse<RoleDto>>('/roles'),
 			api.get<ListResponse<ProjectDto>>('/projects'),
+			api.get<ListResponse<AppDto>>('/apps'),
 		])
-		return { apiKeys: apiKeys.items, roles: roles.items, projects: projects.items }
+		return { apiKeys: apiKeys.items, roles: roles.items, projects: projects.items, apps: apps.items }
 	})
 	.route('/api-keys')
 	.render(({ data, invalidate }) => {
@@ -39,7 +42,7 @@ export default createPage()
 			if (grants.length === 0) return <span className="muted">no grants</span>
 			return grants.map((g) => (
 				<div key={g.id} className="grant-chip">
-					<code>{g.roleKey}</code> <span className="muted">@ {projectName(g.projectId)}</span>
+					<code>{g.roleKey}</code> <span className="muted">@ {g.app ?? 'all apps'} · {projectName(g.projectId)}</span>
 				</div>
 			))
 		}
@@ -51,7 +54,7 @@ export default createPage()
 					<p className="hint">Service principals provisioned as Cloudflare Access service tokens. Secrets are never stored or shown after creation.</p>
 				</div>
 
-				<ProvisionForm roles={data.roles} projects={data.projects} onDone={invalidate} />
+				<ProvisionForm roles={data.roles} projects={data.projects} apps={data.apps} onDone={invalidate} />
 
 				<Table
 					colSpan={5}
@@ -100,10 +103,13 @@ export default createPage()
 		)
 	})
 
-function ProvisionForm({ roles, projects, onDone }: { roles: RoleDto[]; projects: ProjectDto[]; onDone: () => void }) {
+function ProvisionForm(
+	{ roles, projects, apps, onDone }: { roles: RoleDto[]; projects: ProjectDto[]; apps: AppDto[]; onDone: () => void },
+) {
 	const [label, setLabel] = useState('')
 	const [roleKey, setRoleKey] = useState('')
 	const [scope, setScope] = useState<ScopeValue>({ kind: 'unset' })
+	const [appValue, setAppValue] = useState<AppValue>({ kind: 'unset' })
 	const [expiry, setExpiry] = useState('')
 	const [busy, setBusy] = useState(false)
 	const [error, setError] = useState<string | null>(null)
@@ -123,6 +129,13 @@ function ProvisionForm({ roles, projects, onDone }: { roles: RoleDto[]; projects
 			setError('Pick a scope.')
 			return
 		}
+		let app: string | null
+		try {
+			app = resolveApp(appValue)
+		} catch {
+			setError('Pick an app.')
+			return
+		}
 		setBusy(true)
 		try {
 			const body: ProvisionApiKeyRequest = {
@@ -130,6 +143,7 @@ function ProvisionForm({ roles, projects, onDone }: { roles: RoleDto[]; projects
 				type: 'service',
 				roleKey,
 				projectId,
+				app,
 				expiresAt: parseDateTimeLocal(expiry),
 			}
 			const result = await api.post<ProvisionApiKeyResponse>('/api-keys', body)
@@ -137,6 +151,7 @@ function ProvisionForm({ roles, projects, onDone }: { roles: RoleDto[]; projects
 			setLabel('')
 			setRoleKey('')
 			setScope({ kind: 'unset' })
+			setAppValue({ kind: 'unset' })
 			setExpiry('')
 			onDone()
 		} catch (cause) {
@@ -158,6 +173,7 @@ function ProvisionForm({ roles, projects, onDone }: { roles: RoleDto[]; projects
 					Role
 					<RolePicker roles={roles} value={roleKey} onChange={setRoleKey} />
 				</label>
+				<AppPicker apps={apps} value={appValue} onChange={setAppValue} idPrefix="apikey-app" />
 				<ScopePicker projects={projects} value={scope} onChange={setScope} idPrefix="apikey-scope" />
 				<label>
 					Expires (optional)

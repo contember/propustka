@@ -1,4 +1,4 @@
-import type { AuthenticateInput } from '@propustka/core'
+import { type AuthenticateInput, permits } from '@propustka/core'
 import { describe, expect, test } from 'bun:test'
 import { LOCAL_DEV_ADMIN_ID, resolveRequest } from '../auth'
 import { createHarness, DEFAULT_AUD, seedGrant, seedProject, seedUser } from './helpers/harness'
@@ -91,5 +91,49 @@ describe('resolveRequest — local dev bypass (SEC-1 guard)', () => {
 		// No global-admin `*` leaked in from the bypass.
 		expect(outcome.result.principal.permissions.some((p) => p.action === '*')).toBe(false)
 		expect(outcome.logReason).not.toBe('local_bypass')
+	})
+})
+
+// The cross-app isolation contract: a grant carries an `app` dimension and
+// authenticate() filters a principal's permissions to the aud-verified calling app
+// (or NULL = cross-app). A grant for one app must never confer permissions in another.
+describe('resolveRequest — app-scoped grants (cross-app isolation)', () => {
+	test('grants for OTHER apps do not apply; calling-app + cross-app (NULL) grants do', async () => {
+		const h = createHarness()
+		const principalId = seedUser(h.sqlite, { sub: 'sub-bob', email: 'bob@example.com' })
+		// DEFAULT_AUD → 'iam-admin', the verified app for the default signed token.
+		seedGrant(h.sqlite, principalId, 'editor', null, 'iam-admin') // applies (same app)
+		seedGrant(h.sqlite, principalId, 'admin', null, 'other-app') // must NOT apply (different app)
+		seedGrant(h.sqlite, principalId, 'viewer', null, null) // applies (cross-app)
+
+		const services = h.makeServices({ environment: 'stage', accessApps: { [DEFAULT_AUD]: 'iam-admin' } })
+		const token = await h.signToken({ email: 'bob@example.com', sub: 'sub-bob' })
+		const outcome = await resolveRequest(services, input({ token }))
+
+		expect(outcome.result.ok).toBe(true)
+		if (!outcome.result.ok) throw new Error('expected ok')
+		const perms = outcome.result.principal.permissions
+		expect(permits(perms, 'project.write')).toBe(true) // editor@iam-admin applied
+		expect(permits(perms, 'report.read')).toBe(true) // viewer (cross-app) applied
+		expect(permits(perms, 'iam.admin')).toBe(false) // admin@other-app did NOT leak across apps
+	})
+
+	test('authenticating as a DIFFERENT app drops the other-app grant, keeps only cross-app', async () => {
+		const h = createHarness()
+		const principalId = seedUser(h.sqlite, { sub: 'sub-carol', email: 'carol@example.com' })
+		seedGrant(h.sqlite, principalId, 'admin', null, 'iam-admin') // admin ONLY for iam-admin
+		seedGrant(h.sqlite, principalId, 'viewer', null, null) // cross-app viewer
+
+		// The token's aud maps to 'poplach', not 'iam-admin'.
+		const services = h.makeServices({ environment: 'stage', accessApps: { 'aud-poplach': 'poplach' } })
+		const token = await h.signToken({ email: 'carol@example.com', sub: 'sub-carol' }, { audience: 'aud-poplach' })
+		const outcome = await resolveRequest(services, input({ token }))
+
+		expect(outcome.result.ok).toBe(true)
+		if (!outcome.result.ok) throw new Error('expected ok')
+		const perms = outcome.result.principal.permissions
+		expect(permits(perms, 'iam.admin')).toBe(false) // admin@iam-admin did NOT apply as poplach
+		expect(permits(perms, 'project.read')).toBe(true) // cross-app viewer applied
+		expect(permits(perms, 'project.write')).toBe(false) // and nothing editor/admin-level
 	})
 })

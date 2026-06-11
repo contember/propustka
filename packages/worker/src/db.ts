@@ -24,6 +24,8 @@ export interface GrantRow {
 	principal_id: string
 	role_key: string
 	project_id: string | null
+	/** App id (ACCESS_APPS value) this grant applies to; NULL = all apps (cross-app). */
+	app: string | null
 	granted_by: string | null
 	expires_at: number | null
 	created_at: number
@@ -35,6 +37,8 @@ export interface GroupMappingRow {
 	group_ref: string
 	role_key: string
 	project_id: string | null
+	/** App id this mapping applies to; NULL = all apps. */
+	app: string | null
 	created_at: number
 }
 
@@ -264,12 +268,28 @@ export class Db {
 
 	// ── Grants ──────────────────────────────────────────────────────────────
 
-	/** Active (non-expired) grants for a principal. */
+	/** Active (non-expired) grants for a principal, ALL apps (admin/effective view). */
 	async getActiveGrants(principalId: string): Promise<GrantRow[]> {
 		const { results } = await this.d1
 			.prepare(`SELECT * FROM grants
 				WHERE principal_id = ? AND (expires_at IS NULL OR expires_at > unixepoch())`)
 			.bind(principalId)
+			.all<GrantRow>()
+		return results
+	}
+
+	/**
+	 * Active grants that apply to the calling `app` — the authz path. A grant counts
+	 * when its `app` is NULL (cross-app) OR equals the verified calling app. When `app`
+	 * is null (no verified app), only cross-app (NULL) grants match — fail-safe.
+	 */
+	async getActiveGrantsForApp(principalId: string, app: string | null): Promise<GrantRow[]> {
+		const { results } = await this.d1
+			.prepare(`SELECT * FROM grants
+				WHERE principal_id = ?
+					AND (app IS NULL OR app = ?)
+					AND (expires_at IS NULL OR expires_at > unixepoch())`)
+			.bind(principalId, app)
 			.all<GrantRow>()
 		return results
 	}
@@ -291,15 +311,24 @@ export class Db {
 		principalId: string
 		roleKey: string
 		projectId?: string | null
+		app?: string | null
 		grantedBy?: string | null
 		expiresAt?: number | null
 	}): Promise<GrantRow> {
 		const id = uuidv7()
 		return firstRow<GrantRow>(
 			this.d1
-				.prepare(`INSERT INTO grants (id, principal_id, role_key, project_id, granted_by, expires_at)
-					VALUES (?, ?, ?, ?, ?, ?) RETURNING *`)
-				.bind(id, input.principalId, input.roleKey, input.projectId ?? null, input.grantedBy ?? null, input.expiresAt ?? null),
+				.prepare(`INSERT INTO grants (id, principal_id, role_key, project_id, app, granted_by, expires_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`)
+				.bind(
+					id,
+					input.principalId,
+					input.roleKey,
+					input.projectId ?? null,
+					input.app ?? null,
+					input.grantedBy ?? null,
+					input.expiresAt ?? null,
+				),
 		)
 	}
 
@@ -315,15 +344,19 @@ export class Db {
 
 	// ── Group → role mappings ─────────────────────────────────────────────────
 
-	/** Mappings matching any of the given normalized group refs (users only). */
-	async getMappingsForGroups(provider: string, groupRefs: string[]): Promise<GroupMappingRow[]> {
+	/**
+	 * Mappings matching any of the given normalized group refs (users only),
+	 * scoped to the calling `app` (NULL app = cross-app). Mirrors getActiveGrantsForApp.
+	 */
+	async getMappingsForGroups(provider: string, groupRefs: string[], app: string | null): Promise<GroupMappingRow[]> {
 		if (groupRefs.length === 0) {
 			return []
 		}
 		const placeholders = groupRefs.map(() => '?').join(', ')
 		const { results } = await this.d1
-			.prepare(`SELECT * FROM group_role_mappings WHERE provider = ? AND group_ref IN (${placeholders})`)
-			.bind(provider, ...groupRefs)
+			.prepare(`SELECT * FROM group_role_mappings
+				WHERE provider = ? AND group_ref IN (${placeholders}) AND (app IS NULL OR app = ?)`)
+			.bind(provider, ...groupRefs, app)
 			.all<GroupMappingRow>()
 		return results
 	}
@@ -340,13 +373,14 @@ export class Db {
 		groupRef: string
 		roleKey: string
 		projectId?: string | null
+		app?: string | null
 	}): Promise<GroupMappingRow> {
 		const id = uuidv7()
 		return firstRow<GroupMappingRow>(
 			this.d1
-				.prepare(`INSERT INTO group_role_mappings (id, provider, group_ref, role_key, project_id)
-					VALUES (?, ?, ?, ?, ?) RETURNING *`)
-				.bind(id, input.provider, input.groupRef, input.roleKey, input.projectId ?? null),
+				.prepare(`INSERT INTO group_role_mappings (id, provider, group_ref, role_key, project_id, app)
+					VALUES (?, ?, ?, ?, ?, ?) RETURNING *`)
+				.bind(id, input.provider, input.groupRef, input.roleKey, input.projectId ?? null, input.app ?? null),
 		)
 	}
 

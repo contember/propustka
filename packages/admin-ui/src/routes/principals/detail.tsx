@@ -1,5 +1,6 @@
 import { createPage } from '@buzola/router'
 import type {
+	AppDto,
 	CreateGrantRequest,
 	GrantDto,
 	ListResponse,
@@ -10,6 +11,7 @@ import type {
 	UpdatePrincipalRequest,
 } from '@propustka/worker/admin'
 import { useState } from 'react'
+import { AppPicker, type AppValue, resolveApp } from '../../components/AppPicker'
 import { Badge, StatusBadge } from '../../components/Badge'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { RolePicker } from '../../components/RolePicker'
@@ -21,16 +23,17 @@ import { fmtDate, fmtExpiry, parseDateTimeLocal } from '../../lib/format'
 export default createPage()
 	.params({ id: 'string' })
 	.loader(async ({ params }) => {
-		const [principal, roles, projects] = await Promise.all([
+		const [principal, roles, projects, apps] = await Promise.all([
 			api.get<PrincipalDetail>(`/principals/${params.id}`),
 			api.get<ListResponse<RoleDto>>('/roles'),
 			api.get<ListResponse<ProjectDto>>('/projects'),
+			api.get<ListResponse<AppDto>>('/apps'),
 		])
-		return { principal, roles: roles.items, projects: projects.items }
+		return { principal, roles: roles.items, projects: projects.items, apps: apps.items }
 	})
 	.route('/principals/:id')
 	.render(({ data, invalidate }) => {
-		const { principal, roles, projects } = data
+		const { principal, roles, projects, apps } = data
 		const projectName = (id: string | null): string => {
 			if (id === null) return 'Global'
 			const match = projects.find((p) => p.id === id)
@@ -85,12 +88,13 @@ export default createPage()
 				<section>
 					<h2>Grants</h2>
 					<Table
-						colSpan={6}
+						colSpan={7}
 						isEmpty={principal.grants.length === 0}
 						empty="No explicit grants. Add one below."
 						head={
 							<tr>
 								<th>Role</th>
+								<th>App</th>
 								<th>Scope</th>
 								<th>Expires</th>
 								<th>Granted by</th>
@@ -114,6 +118,7 @@ export default createPage()
 					principalId={principal.id}
 					roles={roles}
 					projects={projects}
+					apps={apps}
 					onDone={invalidate}
 				/>
 			</>
@@ -184,6 +189,7 @@ function GrantRow({ grant, scopeLabel, onDone }: { grant: GrantDto; scopeLabel: 
 					</Badge>
 				)}
 			</td>
+			<td>{grant.app ? <code>{grant.app}</code> : <span className="muted">All apps</span>}</td>
 			<td>{scopeLabel}</td>
 			<td>{fmtExpiry(grant.expiresAt)}</td>
 			<td>{grant.grantedBy ?? <span className="muted">—</span>}</td>
@@ -212,12 +218,14 @@ interface AddGrantFormProps {
 	principalId: string
 	roles: RoleDto[]
 	projects: ProjectDto[]
+	apps: AppDto[]
 	onDone: () => void
 }
 
-function AddGrantForm({ principalId, roles, projects, onDone }: AddGrantFormProps) {
+function AddGrantForm({ principalId, roles, projects, apps, onDone }: AddGrantFormProps) {
 	const [roleKey, setRoleKey] = useState('')
 	const [scope, setScope] = useState<ScopeValue>({ kind: 'unset' })
+	const [appValue, setAppValue] = useState<AppValue>({ kind: 'unset' })
 	const [expiry, setExpiry] = useState('')
 	const [busy, setBusy] = useState(false)
 	const [error, setError] = useState<string | null>(null)
@@ -236,12 +244,20 @@ function AddGrantForm({ principalId, roles, projects, onDone }: AddGrantFormProp
 			setError('Pick a scope.')
 			return
 		}
+		let app: string | null
+		try {
+			app = resolveApp(appValue)
+		} catch {
+			setError('Pick an app.')
+			return
+		}
 		setBusy(true)
 		try {
-			const body: CreateGrantRequest = { principalId, roleKey, projectId, expiresAt: parseDateTimeLocal(expiry) }
+			const body: CreateGrantRequest = { principalId, roleKey, projectId, app, expiresAt: parseDateTimeLocal(expiry) }
 			await api.post('/grants', body)
 			setRoleKey('')
 			setScope({ kind: 'unset' })
+			setAppValue({ kind: 'unset' })
 			setExpiry('')
 			onDone()
 		} catch (cause) {
@@ -258,6 +274,7 @@ function AddGrantForm({ principalId, roles, projects, onDone }: AddGrantFormProp
 				Role
 				<RolePicker roles={roles} value={roleKey} onChange={setRoleKey} />
 			</label>
+			<AppPicker apps={apps} value={appValue} onChange={setAppValue} idPrefix="grant-app" />
 			<ScopePicker projects={projects} value={scope} onChange={setScope} idPrefix="grant-scope" />
 			<label>
 				Expires (optional)

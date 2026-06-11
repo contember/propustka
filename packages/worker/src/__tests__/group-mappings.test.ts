@@ -1,8 +1,7 @@
 import { Database } from 'bun:sqlite'
 import { expect, test } from 'bun:test'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { normalizeGroupRef } from '../identity'
+import { allMigrations } from './helpers/migrations'
 
 // CORR-2: store-time normalization must be symmetric with resolution. `createGroupMapping`
 // persists the admin-supplied ref NORMALIZED (lowercased/trimmed `<org>/<team>` via
@@ -14,7 +13,7 @@ import { normalizeGroupRef } from '../identity'
 // isolation, so we replicate its exact normalization steps and the db layer's lookup SQL
 // against the real migration (the schema.test.ts bun:sqlite pattern) to prove the contract.
 
-const migration = readFileSync(join(import.meta.dir, '..', '..', 'migrations', '0001_init.sql'), 'utf8')
+const migration = allMigrations()
 
 function freshDb(): Database {
 	const db = new Database(':memory:')

@@ -8,6 +8,7 @@ const grant = (roleKey: string, projectId: string | null): GrantRow => ({
 	principal_id: 'p1',
 	role_key: roleKey,
 	project_id: projectId,
+	app: null,
 	granted_by: null,
 	expires_at: null,
 	created_at: 0,
@@ -21,6 +22,7 @@ const mapping = (roleKey: string, groupRef: string, projectId: string | null): {
 		group_ref: groupRef,
 		role_key: roleKey,
 		project_id: projectId,
+		app: null,
 		created_at: 0,
 	},
 })

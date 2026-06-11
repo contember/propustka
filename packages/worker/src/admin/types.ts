@@ -42,6 +42,8 @@ export interface GrantDto {
 	principalId: string
 	roleKey: string
 	projectId: string | null
+	/** App id this grant applies to; null = all apps (cross-app). */
+	app: string | null
 	grantedBy: string | null
 	expiresAt: number | null
 	createdAt: number
@@ -68,8 +70,10 @@ export interface UpdatePrincipalRequest {
 export interface CreateGrantRequest {
 	principalId: string
 	roleKey: string
-	/** null / omitted = global. */
+	/** null / omitted = global (all projects). */
 	projectId?: string | null
+	/** App id (an ACCESS_APPS value); null / omitted = all apps (cross-app). */
+	app?: string | null
 	expiresAt?: number | null
 }
 
@@ -99,6 +103,8 @@ export interface GroupMappingDto {
 	groupRef: string
 	roleKey: string
 	projectId: string | null
+	/** App id this mapping applies to; null = all apps. */
+	app: string | null
 	createdAt: number
 	/** True when `roleKey` is no longer in the code role registry. */
 	dangling: boolean
@@ -109,6 +115,15 @@ export interface CreateGroupMappingRequest {
 	groupRef: string
 	roleKey: string
 	projectId?: string | null
+	/** App id (an ACCESS_APPS value); null / omitted = all apps. */
+	app?: string | null
+}
+
+// ── Apps (read-only; derived from ACCESS_APPS) ────────────────────────────────
+
+/** The set of app ids propustka serves — the choices for a grant/mapping's `app`. */
+export interface AppDto {
+	id: string
 }
 
 // ── Roles (read-only; live in code) ───────────────────────────────────────────
@@ -137,6 +152,8 @@ export interface ProvisionApiKeyRequest {
 	label: string
 	type: 'service'
 	projectId?: string | null
+	/** App id (an ACCESS_APPS value); null / omitted = all apps. */
+	app?: string | null
 	roleKey: string
 	expiresAt?: number | null
 }

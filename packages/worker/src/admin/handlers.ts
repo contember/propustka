@@ -21,6 +21,7 @@ import type { Services } from '../services'
 import { error, json, readJson } from './http'
 import type {
 	ApiKeyDto,
+	AppDto,
 	AuditEventDto,
 	AuthLogDto,
 	CapabilityListItem,
@@ -75,6 +76,7 @@ function toGrantDto(row: GrantRow): GrantDto {
 		principalId: row.principal_id,
 		roleKey: row.role_key,
 		projectId: row.project_id,
+		app: row.app,
 		grantedBy: row.granted_by,
 		expiresAt: row.expires_at,
 		createdAt: row.created_at,
@@ -89,9 +91,24 @@ function toGroupMappingDto(row: GroupMappingRow): GroupMappingDto {
 		groupRef: row.group_ref,
 		roleKey: row.role_key,
 		projectId: row.project_id,
+		app: row.app,
 		createdAt: row.created_at,
 		dangling: !isKnownRole(row.role_key),
 	}
+}
+
+/** The set of app ids propustka serves (the value side of ACCESS_APPS). */
+function knownApps(c: AdminContext): string[] {
+	return [...new Set(Object.values(c.services.config.accessApps))]
+}
+
+/** Validate an admin-supplied `app`: null (all apps) or a configured ACCESS_APPS value. */
+function appField(c: AdminContext, body: unknown): { ok: true; app: string | null } | { ok: false } {
+	const app = nullableStringField(body, 'app') ?? null
+	if (app !== null && !knownApps(c).includes(app)) {
+		return { ok: false }
+	}
+	return { ok: true, app }
 }
 
 function toProjectDto(row: ProjectRow): ProjectDto {
@@ -291,6 +308,11 @@ export async function createGrant(c: AdminContext): Promise<Response> {
 		return error(400, `unknown role: ${roleKey}`)
 	}
 	const projectId = nullableStringField(body, 'projectId') ?? null
+	const appResult = appField(c, body)
+	if (!appResult.ok) {
+		return error(400, 'unknown app')
+	}
+	const app = appResult.app
 	const expiresAt = numberField(body, 'expiresAt') ?? null
 	const principal = await c.services.db.getPrincipalById(principalId)
 	if (!principal) {
@@ -306,6 +328,7 @@ export async function createGrant(c: AdminContext): Promise<Response> {
 		principalId,
 		roleKey,
 		projectId,
+		app,
 		grantedBy: c.admin.id,
 		expiresAt,
 	})
@@ -313,7 +336,7 @@ export async function createGrant(c: AdminContext): Promise<Response> {
 		action: 'iam.grant.create',
 		resourceType: 'grant',
 		resourceId: grant.id,
-		metadata: { principalId, roleKey, projectId },
+		metadata: { principalId, roleKey, projectId, app },
 	})
 	return json(toGrantDto(grant), { status: 201 })
 }
@@ -412,6 +435,11 @@ export async function createGroupMapping(c: AdminContext): Promise<Response> {
 	const normalizedGroupRef = normalizeGroupRef(org, team)
 	const normalizedProvider = provider.trim().toLowerCase()
 	const projectId = nullableStringField(body, 'projectId') ?? null
+	const appResult = appField(c, body)
+	if (!appResult.ok) {
+		return error(400, 'unknown app')
+	}
+	const app = appResult.app
 	if (projectId != null) {
 		const project = await c.services.db.getProjectById(projectId)
 		if (!project) {
@@ -423,12 +451,13 @@ export async function createGroupMapping(c: AdminContext): Promise<Response> {
 		groupRef: normalizedGroupRef,
 		roleKey,
 		projectId,
+		app,
 	})
 	await adminAudit(c, {
 		action: 'iam.groupmapping.create',
 		resourceType: 'group_mapping',
 		resourceId: mapping.id,
-		metadata: { provider: normalizedProvider, groupRef: normalizedGroupRef, roleKey, projectId },
+		metadata: { provider: normalizedProvider, groupRef: normalizedGroupRef, roleKey, projectId, app },
 	})
 	return json(toGroupMappingDto(mapping), { status: 201 })
 }
@@ -446,6 +475,14 @@ export async function deleteGroupMapping(c: AdminContext, id: string): Promise<R
 		metadata: { provider: mapping.provider, groupRef: mapping.group_ref, roleKey: mapping.role_key },
 	})
 	return json({ ok: true })
+}
+
+// ── Apps (read-only; derived from ACCESS_APPS) ────────────────────────────────
+
+/** The app ids a grant/mapping can be scoped to — the configured ACCESS_APPS values. */
+export function listApps(c: AdminContext): Response {
+	const items: AppDto[] = knownApps(c).map((id) => ({ id }))
+	return json({ items } satisfies { items: AppDto[] })
 }
 
 // ── Roles (read-only) ─────────────────────────────────────────────────────────
@@ -500,6 +537,11 @@ export async function provisionApiKey(c: AdminContext): Promise<Response> {
 		return error(400, `unknown role: ${roleKey}`)
 	}
 	const projectId = nullableStringField(body, 'projectId') ?? null
+	const appResult = appField(c, body)
+	if (!appResult.ok) {
+		return error(400, 'unknown app')
+	}
+	const app = appResult.app
 	const expiresAt = numberField(body, 'expiresAt') ?? null
 	if (projectId != null) {
 		const project = await c.services.db.getProjectById(projectId)
@@ -526,6 +568,7 @@ export async function provisionApiKey(c: AdminContext): Promise<Response> {
 			principalId: principal.id,
 			roleKey,
 			projectId,
+			app,
 			grantedBy: c.admin.id,
 			expiresAt,
 		})
@@ -533,13 +576,13 @@ export async function provisionApiKey(c: AdminContext): Promise<Response> {
 			action: 'iam.apikey.create',
 			resourceType: 'principal',
 			resourceId: principal.id,
-			metadata: { tokenId: minted.id, label, roleKey, projectId },
+			metadata: { tokenId: minted.id, label, roleKey, projectId, app },
 		})
 		await adminAudit(c, {
 			action: 'iam.grant.create',
 			resourceType: 'grant',
 			resourceId: grant.id,
-			metadata: { principalId: principal.id, roleKey, projectId },
+			metadata: { principalId: principal.id, roleKey, projectId, app },
 		})
 
 		const response: ProvisionApiKeyResponse = {

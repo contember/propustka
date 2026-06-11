@@ -193,15 +193,17 @@ export async function resolveUserPermissions(args: {
 	cookie: string | null
 	origin: string | null
 	bootstrapAdmins: ReadonlySet<string>
+	/** Verified calling app (aud-derived); grants/mappings are filtered to it (or NULL = cross-app). */
+	app: string | null
 }): Promise<ResolvedPermissions> {
-	const { db, identity, principal, cookie, origin, bootstrapAdmins } = args
+	const { db, identity, principal, cookie, origin, bootstrapAdmins, app } = args
 
-	const grants = await db.getActiveGrants(principal.id)
+	const grants = await db.getActiveGrantsForApp(principal.id, app)
 
 	const groupResult = await identity.getGroups(principal.id, cookie, origin)
 	let groupMappings: { mapping: GroupMappingRow; groupRef: string }[] = []
 	if (!groupResult.unavailable && groupResult.groups.length > 0) {
-		const mappings = await db.getMappingsForGroups(GITHUB_PROVIDER, groupResult.groups)
+		const mappings = await db.getMappingsForGroups(GITHUB_PROVIDER, groupResult.groups, app)
 		groupMappings = mappings.map((mapping) => ({ mapping, groupRef: mapping.group_ref }))
 	}
 
@@ -211,8 +213,11 @@ export async function resolveUserPermissions(args: {
 	return { permissions, groupsUnavailable: groupResult.unavailable }
 }
 
-/** Service principals: explicit grants only — no groups, no bootstrap. */
-export async function resolveServicePermissions(db: Db, principal: PrincipalRow): Promise<PermissionEntry[]> {
-	const grants = await db.getActiveGrants(principal.id)
+/**
+ * Service principals: explicit grants only — no groups, no bootstrap — scoped to the
+ * calling app (NULL = cross-app).
+ */
+export async function resolveServicePermissions(db: Db, principal: PrincipalRow, app: string | null): Promise<PermissionEntry[]> {
+	const grants = await db.getActiveGrantsForApp(principal.id, app)
 	return computePermissions({ grants, groupMappings: [], isBootstrapAdmin: false })
 }

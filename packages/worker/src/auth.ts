@@ -91,7 +91,7 @@ export async function resolveRequest(services: Services, input: AuthenticateInpu
 		if (principalStatus(principal) === 'disabled') {
 			return { result: { ok: false, reason: 'disabled' }, verifiedApp, logReason: null, groupsUnavailable: false }
 		}
-		const permissions = await resolveServicePermissions(services.db, principal)
+		const permissions = await resolveServicePermissions(services.db, principal, verifiedApp)
 		return {
 			result: {
 				ok: true,
@@ -123,6 +123,7 @@ export async function resolveRequest(services: Services, input: AuthenticateInpu
 		cookie: input.cookie,
 		origin: input.origin,
 		bootstrapAdmins: services.config.bootstrapAdmins,
+		app: verifiedApp,
 	})
 
 	const result: AuthenticateResult = {

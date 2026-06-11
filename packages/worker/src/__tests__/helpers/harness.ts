@@ -1,8 +1,7 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
 import { createLocalJWKSet, exportJWK, generateKeyPair, type JSONWebKeySet, type JWTPayload, SignJWT } from 'jose'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { Db } from '../../db'
+import { allMigrations } from './migrations'
 import { IdentityClient } from '../../identity'
 import { type AccessApps, JwtValidator } from '../../jwt'
 import type { Config, Services } from '../../services'
@@ -203,7 +202,7 @@ function toBinding(value: unknown): SQLQueryBindings {
 
 // ── DB + services assembly ────────────────────────────────────────────────────
 
-const migration = readFileSync(join(import.meta.dir, '..', '..', '..', 'migrations', '0001_init.sql'), 'utf8')
+const migration = allMigrations()
 
 export interface Harness {
 	/** Raw sqlite connection — seed rows directly with `.run(...)`. */
@@ -310,17 +309,18 @@ export function seedProject(sqlite: Database, slug: string, name?: string): stri
 	return id
 }
 
-/** Insert a grant for a principal; returns its id. `projectId` null → global. */
+/** Insert a grant for a principal; returns its id. `projectId` null → global, `app` null → all apps. */
 export function seedGrant(
 	sqlite: Database,
 	principalId: string,
 	roleKey: string,
 	projectId: string | null = null,
+	app: string | null = null,
 ): string {
 	const id = nextId('grant')
 	sqlite.run(
-		'INSERT INTO grants (id, principal_id, role_key, project_id) VALUES (?, ?, ?, ?)',
-		[id, principalId, roleKey, projectId],
+		'INSERT INTO grants (id, principal_id, role_key, project_id, app) VALUES (?, ?, ?, ?, ?)',
+		[id, principalId, roleKey, projectId, app],
 	)
 	return id
 }
