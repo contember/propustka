@@ -46,6 +46,13 @@ export interface FakeIamConfig {
 	personaHeader?: string
 	/** Persona key used when neither cookie nor header is present. */
 	defaultPersona?: string
+	/**
+	 * Dynamic per-request persona resolver — the most flexible mode (takes precedence over
+	 * `personas`/`deny`). The app derives the persona however it likes (e.g. a dev cookie →
+	 * a directory lookup), so personas need not be enumerated up front. Returning `null`
+	 * resolves to `unknown_principal` (403), like a real unrecognised principal.
+	 */
+	resolve?: (req: Request) => FakePersona | null | Promise<FakePersona | null>
 }
 
 interface FakeIdentity {
@@ -173,6 +180,7 @@ export class FakeIamClient {
 	private readonly personaCookie: string
 	private readonly personaHeader: string
 	private readonly defaultPersona?: string
+	private readonly resolve?: (req: Request) => FakePersona | null | Promise<FakePersona | null>
 
 	constructor(config?: FakeIamConfig) {
 		this.deny = config?.deny ?? []
@@ -181,20 +189,29 @@ export class FakeIamClient {
 		this.personaCookie = config?.personaCookie ?? DEFAULT_PERSONA_COOKIE
 		this.personaHeader = config?.personaHeader ?? DEFAULT_PERSONA_HEADER
 		this.defaultPersona = config?.defaultPersona
+		this.resolve = config?.resolve
 	}
 
-	authenticate(req: Request): Promise<AuthContext | AuthFailure> {
+	async authenticate(req: Request): Promise<AuthContext | AuthFailure> {
+		// Dynamic resolver wins — the app decides the persona per request.
+		if (this.resolve) {
+			const persona = await this.resolve(req)
+			if (!persona) {
+				return { ok: false, reason: 'unknown_principal', status: 403 }
+			}
+			return new PersonaAuthContext(persona)
+		}
 		if (this.personas) {
 			const key = readCookie(req, this.personaCookie) ?? req.headers.get(this.personaHeader) ?? this.defaultPersona
 			const persona = key ? this.personas[key] : undefined
 			if (!persona) {
 				// Selected an unknown persona (or none, with no default) → behave like a real
 				// authenticated-but-unrecognised principal.
-				return Promise.resolve({ ok: false, reason: 'unknown_principal', status: 403 })
+				return { ok: false, reason: 'unknown_principal', status: 403 }
 			}
-			return Promise.resolve(new PersonaAuthContext(persona))
+			return new PersonaAuthContext(persona)
 		}
-		return Promise.resolve(new FakeAuthContext(this.deny, this.identity))
+		return new FakeAuthContext(this.deny, this.identity)
 	}
 
 	redeemCapability(_req: Request, _token: string): Promise<Capability | CapabilityFailure> {

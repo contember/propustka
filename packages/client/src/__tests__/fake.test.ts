@@ -123,6 +123,25 @@ describe('FakeIamClient persona mode', () => {
 		const auth = await noDefault.authenticate(new Request('https://app.example.com/'))
 		expect(auth.ok).toBe(false)
 	})
+
+	test('resolve callback drives the persona dynamically (takes precedence)', async () => {
+		const dynamic = new FakeIamClient({
+			resolve: (req) => {
+				const id = req.headers.get('X-Who')
+				if (!id) return null
+				return { id, label: `${id}@x.test`, permissions: [{ action: 'project.read', projectId: id, source: 'grant' as const }] }
+			},
+		})
+		const ok = await dynamic.authenticate(new Request('https://app.example.com/', { headers: { 'X-Who': 'proj-42' } }))
+		if (!ok.ok) throw new Error('unreachable')
+		expect(ok.principal.id).toBe('proj-42')
+		expect(ok.scopedTo('project.read')).toEqual(['proj-42'])
+		expect(ok.can('project.read', { project: 'proj-42' })).toBe(true)
+		expect(ok.can('project.read', { project: 'other' })).toBe(false)
+
+		const denied = await dynamic.authenticate(new Request('https://app.example.com/'))
+		expect(denied.ok).toBe(false)
+	})
 })
 
 describe('FakeIamClient.redeemCapability', () => {
