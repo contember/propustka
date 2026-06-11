@@ -62,8 +62,16 @@ describe('FakeIamClient.authenticate', () => {
 describe('FakeIamClient persona mode', () => {
 	const personas = {
 		'admin@x.test': { id: 'p-admin', label: 'admin@x.test', permissions: [{ action: '*', projectId: null, source: 'grant' as const }] },
-		'appwide@x.test': { id: 'p-appwide', label: 'appwide@x.test', permissions: [{ action: 'project.read', projectId: null, source: 'grant' as const }] },
-		'scoped@x.test': { id: 'p-scoped', label: 'scoped@x.test', permissions: [{ action: 'project.read', projectId: 'proj-web', source: 'grant' as const }] },
+		'appwide@x.test': {
+			id: 'p-appwide',
+			label: 'appwide@x.test',
+			permissions: [{ action: 'project.read', projectId: null, source: 'grant' as const }],
+		},
+		'scoped@x.test': {
+			id: 'p-scoped',
+			label: 'scoped@x.test',
+			permissions: [{ action: 'project.read', projectId: 'proj-web', source: 'grant' as const }],
+		},
 	}
 	const client = new FakeIamClient({ personas, defaultPersona: 'appwide@x.test' })
 

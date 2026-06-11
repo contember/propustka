@@ -1,7 +1,16 @@
 import type { DomainEvent, IamRpc, ResolvedPrincipal } from '@propustka/core'
 import { permits, scopedProjects } from '@propustka/core'
 import { readCredentials } from './request'
-import type { AuthContext, AuthFailure, Capability, CapabilityFailure, IssueCapabilityRequest, IssuedCapability, IssueFailure, PrincipalIdentity } from './types'
+import type {
+	AuthContext,
+	AuthFailure,
+	Capability,
+	CapabilityFailure,
+	IssueCapabilityRequest,
+	IssuedCapability,
+	IssueFailure,
+	PrincipalIdentity,
+} from './types'
 
 // ── AuthContext (real) ─────────────────────────────────────────────────────────
 

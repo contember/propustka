@@ -1,6 +1,15 @@
 import type { DomainEvent, PermissionEntry, PrincipalType } from '@propustka/core'
 import { matchAction, permits, scopedProjects } from '@propustka/core'
-import type { AuthContext, AuthFailure, Capability, CapabilityFailure, IssueCapabilityRequest, IssuedCapability, IssueFailure, PrincipalIdentity } from './types'
+import type {
+	AuthContext,
+	AuthFailure,
+	Capability,
+	CapabilityFailure,
+	IssueCapabilityRequest,
+	IssuedCapability,
+	IssueFailure,
+	PrincipalIdentity,
+} from './types'
 
 /**
  * A fixed dev persona: an identity plus a real permissions array. When `FakeIamConfig.personas`

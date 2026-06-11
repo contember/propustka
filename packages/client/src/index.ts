@@ -7,7 +7,16 @@ export { IamClient } from './client'
 export { FakeIamClient } from './fake'
 export type { FakeIamConfig, FakePersona } from './fake'
 export { applyScope } from './scope'
-export type { AuthContext, AuthFailure, Capability, CapabilityFailure, IssueCapabilityRequest, IssuedCapability, IssueFailure, PrincipalIdentity } from './types'
+export type {
+	AuthContext,
+	AuthFailure,
+	Capability,
+	CapabilityFailure,
+	IssueCapabilityRequest,
+	IssuedCapability,
+	IssueFailure,
+	PrincipalIdentity,
+} from './types'
 
 // Re-export from core so apps need only depend on the SDK: DomainEvent (one event shape) and
 // IamRpc (the binding contract — apps type their `env.IAM` as IamRpc without importing core).
