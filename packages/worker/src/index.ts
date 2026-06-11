@@ -35,33 +35,53 @@ const AUTH_LOG_RETENTION_SECONDS = 30 * 24 * 60 * 60 // 30 days
 export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 	async authenticate(input: AuthenticateInput): Promise<AuthenticateResult> {
 		const services = buildServices(this.env)
-		const outcome = await resolveRequest(services, input)
+		try {
+			const outcome = await resolveRequest(services, input)
 
-		// One auth_log row per call, fire-and-forget (never delays/fails the user op).
-		// The app column is the verified aud-derived id on success, the self-asserted
-		// id on failure paths (no valid token there).
-		const app = outcome.verifiedApp ?? input.app
-		const resolved = principalFromOutcome(outcome)
-		const reason = outcome.result.ok
-			? (outcome.logReason ?? undefined)
-			: (outcome.logReason ?? outcome.result.reason)
-		this.ctx.waitUntil(
-			services.db.writeAuthLog({
-				requestId: input.requestId,
-				app,
-				kind: 'authenticate',
-				principalId: resolved?.id ?? null,
-				decision: outcome.result.ok ? 'allow' : 'deny',
-				reason: reason ?? null,
-			}),
-		)
+			// One auth_log row per call, fire-and-forget (never delays/fails the user op).
+			// The app column is the verified aud-derived id on success, the self-asserted
+			// id on failure paths (no valid token there).
+			const app = outcome.verifiedApp ?? input.app
+			const resolved = principalFromOutcome(outcome)
+			const reason = outcome.result.ok
+				? (outcome.logReason ?? undefined)
+				: (outcome.logReason ?? outcome.result.reason)
+			this.ctx.waitUntil(
+				services.db.writeAuthLog({
+					requestId: input.requestId,
+					app,
+					kind: 'authenticate',
+					principalId: resolved?.id ?? null,
+					decision: outcome.result.ok ? 'allow' : 'deny',
+					reason: reason ?? null,
+				}),
+			)
 
-		// Log an SDK/aud app mismatch — a misconfigured SDK constructor, not an attack.
-		if (outcome.verifiedApp && outcome.verifiedApp !== input.app) {
-			console.warn(`app mismatch: sdk='${input.app}' aud='${outcome.verifiedApp}' request='${input.requestId}'`)
+			// Log an SDK/aud app mismatch — a misconfigured SDK constructor, not an attack.
+			if (outcome.verifiedApp && outcome.verifiedApp !== input.app) {
+				console.warn(`app mismatch: sdk='${input.app}' aud='${outcome.verifiedApp}' request='${input.requestId}'`)
+			}
+
+			return outcome.result
+		} catch (err) {
+			// resolveRequest is documented as never-throws, but a transient D1 error can still
+			// propagate. Fail closed: never surface a 500. Record a deny auth_log row (the precise
+			// 'internal_error' lives only in the free-string reason column — the AuthenticateResult
+			// reason union has no such variant and must not gain one) and return unknown_principal
+			// (maps to 403). No happy-path row was written on this path, so there's no double-write.
+			console.error(`authenticate failed for request '${input.requestId}'`, err)
+			this.ctx.waitUntil(
+				services.db.writeAuthLog({
+					requestId: input.requestId,
+					app: input.app,
+					kind: 'authenticate',
+					principalId: null,
+					decision: 'deny',
+					reason: 'internal_error',
+				}),
+			)
+			return { ok: false, reason: 'unknown_principal' }
 		}
-
-		return outcome.result
 	}
 
 	/**
@@ -114,45 +134,63 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 
 	async issueCapability(input: IssueCapabilityInput): Promise<IssueCapabilityResult> {
 		const services = buildServices(this.env)
+		try {
+			// Resolve the ISSUER from the forwarded credentials exactly like authenticate()
+			// — never a self-asserted principal id (same failure reasons).
+			const outcome = await resolveRequest(services, {
+				app: input.app,
+				token: input.token,
+				cookie: input.cookie,
+				origin: input.origin,
+				requestId: input.requestId,
+			})
+			const issuer = principalFromOutcome(outcome)
+			if (!issuer || !outcome.result.ok) {
+				// Map the auth failure straight through (missing/invalid/unknown/disabled).
+				return outcome.result.ok ? { ok: false, reason: 'unknown_principal' } : { ok: false, reason: outcome.result.reason }
+			}
 
-		// Resolve the ISSUER from the forwarded credentials exactly like authenticate()
-		// — never a self-asserted principal id (same failure reasons).
-		const outcome = await resolveRequest(services, {
-			app: input.app,
-			token: input.token,
-			cookie: input.cookie,
-			origin: input.origin,
-			requestId: input.requestId,
-		})
-		const issuer = principalFromOutcome(outcome)
-		if (!issuer || !outcome.result.ok) {
-			// Map the auth failure straight through (missing/invalid/unknown/disabled).
-			return outcome.result.ok ? { ok: false, reason: 'unknown_principal' } : { ok: false, reason: outcome.result.reason }
-		}
+			const { result, auditLabel } = await issueCapability(services, input, issuer)
 
-		const { result, auditLabel } = await issueCapability(services, input, issuer)
+			if (result.ok) {
+				// iam.capability.create audit event — issuer, label, grants; NEVER plaintext.
+				const app = outcome.verifiedApp ?? input.app
+				this.ctx.waitUntil(
+					services.db.writeAuditEvent({
+						requestId: input.requestId,
+						principalId: issuer.id,
+						principalLabel: outcome.result.principal.label,
+						app,
+						action: 'iam.capability.create',
+						resourceType: 'capability',
+						resourceId: result.id,
+						metadata: {
+							label: auditLabel ?? null,
+							grants: input.grants.map((g) => ({ action: g.action, resource: g.resource })),
+						},
+					}),
+				)
+			}
 
-		if (result.ok) {
-			// iam.capability.create audit event — issuer, label, grants; NEVER plaintext.
-			const app = outcome.verifiedApp ?? input.app
+			return result
+		} catch (err) {
+			// Same fail-closed posture as authenticate(): never surface a 500. Record a deny
+			// auth_log row for the issuer-resolution path ('internal_error' goes only into the
+			// free-string reason column — the IssueCapabilityResult union has no such variant and
+			// must not gain one) and return unknown_principal (maps to 403).
+			console.error(`issueCapability failed for request '${input.requestId}'`, err)
 			this.ctx.waitUntil(
-				services.db.writeAuditEvent({
+				services.db.writeAuthLog({
 					requestId: input.requestId,
-					principalId: issuer.id,
-					principalLabel: outcome.result.principal.label,
-					app,
-					action: 'iam.capability.create',
-					resourceType: 'capability',
-					resourceId: result.id,
-					metadata: {
-						label: auditLabel ?? null,
-						grants: input.grants.map((g) => ({ action: g.action, resource: g.resource })),
-					},
+					app: input.app,
+					kind: 'authenticate',
+					principalId: null,
+					decision: 'deny',
+					reason: 'internal_error',
 				}),
 			)
+			return { ok: false, reason: 'unknown_principal' }
 		}
-
-		return result
 	}
 
 	/**

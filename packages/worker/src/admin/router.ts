@@ -69,6 +69,46 @@ function parseCookie(header: string | null, name: string): string | null {
 	return null
 }
 
+// State-changing HTTP methods. GET/HEAD are safe (no side effects) and are
+// exempt from the same-origin check below.
+const STATE_CHANGING_METHODS = new Set(['POST', 'PATCH', 'DELETE'])
+
+/**
+ * In-app CSRF defense: reject state-changing `/admin/*` requests that don't
+ * originate from this Worker's own origin. The admin SPA is served same-origin by
+ * this same Worker, so a legitimate browser fetch carries an `Origin` (or at least
+ * `Referer`) matching `url.origin` for free; a cross-site forgery cannot forge
+ * either to a same-origin value. This complements the Access edge + the cookie's
+ * SameSite attribute (which this Worker can't verify and which may be `None` under
+ * some Access configs). Returns `null` when allowed.
+ */
+function rejectCrossOrigin(request: Request, url: URL): Response | null {
+	if (!STATE_CHANGING_METHODS.has(request.method)) {
+		return null
+	}
+	const origin = request.headers.get('Origin')
+	if (origin !== null) {
+		return origin === url.origin ? null : error(403, 'cross-origin request rejected')
+	}
+	// No `Origin` (some same-origin requests omit it) → fall back to `Referer`.
+	const referer = request.headers.get('Referer')
+	if (referer !== null) {
+		const refererOrigin = originOf(referer)
+		return refererOrigin === url.origin ? null : error(403, 'cross-origin request rejected')
+	}
+	// Neither header present on a state-changing request → reject.
+	return error(403, 'cross-origin request rejected')
+}
+
+// Parse the origin from a URL string; null if it isn't a valid absolute URL.
+function originOf(value: string): string | null {
+	try {
+		return new URL(value).origin
+	} catch {
+		return null
+	}
+}
+
 /**
  * Handle any `/admin/*` request. Beyond the Access policy at the edge, every
  * handler re-checks `can('iam.admin')` in-Worker (scope-less → global only), so a
@@ -79,37 +119,51 @@ export async function handleAdmin(request: Request, services: Services, ctx: Exe
 	const url = new URL(request.url)
 	const creds = extractCredentials(request, url)
 
-	const outcome = await resolveRequest(services, {
-		app: 'iam-admin',
-		token: creds.token,
-		cookie: creds.cookie,
-		origin: creds.origin,
-		requestId: creds.requestId,
-	})
-
-	if (!outcome.result.ok) {
-		// missing/invalid token → 401; unknown_principal/disabled → 403.
-		const status = outcome.result.reason === 'missing_token' || outcome.result.reason === 'invalid_token' ? 401 : 403
-		return error(status, outcome.result.reason)
+	// CSRF defense: reject cross-origin state-changing writes before touching the DB.
+	const crossOrigin = rejectCrossOrigin(request, url)
+	if (crossOrigin) {
+		return crossOrigin
 	}
 
-	const resolved = principalFromOutcome(outcome)
-	if (!resolved || !permits(resolved.permissions, ADMIN_ACTION)) {
-		return error(403, 'admin permission required')
-	}
+	// Backstop: resolveRequest and the handlers touch D1, which can throw on a
+	// transient error. Map any unexpected throw to a 500 (never leak internals) so
+	// the admin surface degrades gracefully instead of surfacing a raw rejection.
+	try {
+		const outcome = await resolveRequest(services, {
+			app: 'iam-admin',
+			token: creds.token,
+			cookie: creds.cookie,
+			origin: creds.origin,
+			requestId: creds.requestId,
+		})
 
-	const c: AdminContext = {
-		services,
-		request,
-		url,
-		admin: { id: resolved.id, label: outcome.result.principal.label, permissions: resolved.permissions },
-		app: outcome.verifiedApp ?? 'iam-admin',
-		outcome,
-		authInput: { token: creds.token, cookie: creds.cookie, origin: creds.origin, requestId: creds.requestId },
-		ctx,
-	}
+		if (!outcome.result.ok) {
+			// missing/invalid token → 401; unknown_principal/disabled → 403.
+			const status = outcome.result.reason === 'missing_token' || outcome.result.reason === 'invalid_token' ? 401 : 403
+			return error(status, outcome.result.reason)
+		}
 
-	return dispatch(c)
+		const resolved = principalFromOutcome(outcome)
+		if (!resolved || !permits(resolved.permissions, ADMIN_ACTION)) {
+			return error(403, 'admin permission required')
+		}
+
+		const c: AdminContext = {
+			services,
+			request,
+			url,
+			admin: { id: resolved.id, label: outcome.result.principal.label, permissions: resolved.permissions },
+			app: outcome.verifiedApp ?? 'iam-admin',
+			outcome,
+			authInput: { token: creds.token, cookie: creds.cookie, origin: creds.origin, requestId: creds.requestId },
+			ctx,
+		}
+
+		return await dispatch(c)
+	} catch (err) {
+		console.error('admin request failed', err)
+		return error(500, 'internal error')
+	}
 }
 
 // Path segments after '/admin/'. Returns the matched handler or a 404/405.

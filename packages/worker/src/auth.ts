@@ -6,8 +6,12 @@ import type { Services } from './services'
 /**
  * The shared authentication flow: validate the forwarded Access JWT, resolve the
  * principal, and compute its permissions. Used by `authenticate()` (RPC), the
- * admin gate, and `issueCapability()` (which resolves the *issuer*). Never throws —
- * returns a structured `AuthenticateResult`.
+ * admin gate, and `issueCapability()` (which resolves the *issuer*). Aims to never
+ * throw — returns a structured `AuthenticateResult` for every expected outcome,
+ * including the lazy-create/claim races (recovered in `resolveUserPrincipal`). A
+ * transient D1 error on a read can still propagate; callers (`authenticate()` /
+ * `issueCapability()`) backstop that, failing closed and still writing an auth-log
+ * row, so an unexpected throw never becomes a 500.
  *
  * The result includes the verified app id (aud-derived) and whether group
  * resolution was unavailable, alongside the standard AuthenticateResult — callers
@@ -34,7 +38,20 @@ export async function resolveRequest(services: Services, input: AuthenticateInpu
 	// AND no token was presented, resolve a fixed global-admin identity. Strictly local: a real
 	// token (if one is somehow present) still validates normally below, so stage/prod NEVER reach
 	// this branch. Mirrors opice's "local is open" dev mode.
-	if (services.config.environment === 'local' && input.token === null) {
+	//
+	// Defense in depth: also require that NO real Access is configured (ACCESS_APPS empty). Local
+	// sets ACCESS_APPS='{}' (see oblaka.ts); any real stage/prod deploy has a non-empty audience
+	// map. So even a mis-pinned ENVIRONMENT='local' (e.g. a stale committed wrangler.jsonc deployed
+	// directly) cannot enable unauthenticated global admin — the bypass stays impossible to trigger
+	// wherever Access actually fronts the Worker.
+	if (
+		services.config.environment === 'local'
+		&& input.token === null
+		&& Object.keys(services.config.accessApps).length === 0
+	) {
+		// A visible signal: this should only ever fire in local dev. If it appears in a real
+		// deployment's logs, ENVIRONMENT is mis-set and must be fixed.
+		console.warn('local dev bypass active: resolving fixed global-admin identity (ENVIRONMENT=local, no Access configured)')
 		return {
 			result: {
 				ok: true,
