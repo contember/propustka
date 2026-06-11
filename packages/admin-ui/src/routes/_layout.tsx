@@ -1,4 +1,5 @@
 import { Link, Outlet, useRoute } from '@buzola/router'
+import { RouteError } from '../components/RouteError'
 import { useMe } from '../lib/useMe'
 
 interface NavItem {
@@ -96,7 +97,10 @@ export default function RootLayout() {
 				</div>
 			</aside>
 			<main className="content">
-				<Outlet fallback={<div className="loading">Loading…</div>} />
+				<Outlet
+					fallback={<div className="loading">Loading…</div>}
+					errorFallback={(error) => <RouteError error={error} />}
+				/>
 			</main>
 		</div>
 	)
