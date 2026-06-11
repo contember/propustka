@@ -13,6 +13,7 @@ import {
 	principalStatus,
 	type ProjectRow,
 } from '../db'
+import { normalizeGroupRef } from '../identity'
 import { booleanField, nullableStringField, numberField, parseJson, prop, stringField } from '../json'
 import { computePermissions } from '../resolve'
 import { isKnownRole, ROLES } from '../roles'
@@ -393,6 +394,23 @@ export async function createGroupMapping(c: AdminContext): Promise<Response> {
 	if (!isKnownRole(roleKey)) {
 		return error(400, `unknown role: ${roleKey}`)
 	}
+	// Validate the admin-supplied ref is in `<org>/<team>` shape (exactly one '/',
+	// non-empty org and team after trimming), then store it NORMALIZED — lowercased +
+	// trimmed via the same `normalizeGroupRef` resolution uses, and `provider` lowercased
+	// — so the row matches exactly what `getMappingsForGroups('github', refs)` looks up at
+	// resolution. Storing verbatim would silently confer zero permissions on a
+	// case/whitespace mismatch.
+	const slash = groupRef.indexOf('/')
+	if (slash === -1 || groupRef.indexOf('/', slash + 1) !== -1) {
+		return error(400, 'groupRef must be in <org>/<team> form')
+	}
+	const org = groupRef.slice(0, slash).trim()
+	const team = groupRef.slice(slash + 1).trim()
+	if (org === '' || team === '') {
+		return error(400, 'groupRef must be in <org>/<team> form')
+	}
+	const normalizedGroupRef = normalizeGroupRef(org, team)
+	const normalizedProvider = provider.trim().toLowerCase()
 	const projectId = nullableStringField(body, 'projectId') ?? null
 	if (projectId != null) {
 		const project = await c.services.db.getProjectById(projectId)
@@ -400,12 +418,17 @@ export async function createGroupMapping(c: AdminContext): Promise<Response> {
 			return error(404, 'project not found')
 		}
 	}
-	const mapping = await c.services.db.createGroupMapping({ provider, groupRef, roleKey, projectId })
+	const mapping = await c.services.db.createGroupMapping({
+		provider: normalizedProvider,
+		groupRef: normalizedGroupRef,
+		roleKey,
+		projectId,
+	})
 	await adminAudit(c, {
 		action: 'iam.groupmapping.create',
 		resourceType: 'group_mapping',
 		resourceId: mapping.id,
-		metadata: { provider, groupRef, roleKey, projectId },
+		metadata: { provider: normalizedProvider, groupRef: normalizedGroupRef, roleKey, projectId },
 	})
 	return json(toGroupMappingDto(mapping), { status: 201 })
 }
