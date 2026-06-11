@@ -1,4 +1,4 @@
-import { createRemoteJWKSet, type JWTPayload, jwtVerify } from 'jose'
+import { createRemoteJWKSet, type JWTPayload, jwtVerify, type JWTVerifyGetKey } from 'jose'
 
 /**
  * JWT validation for Cloudflare Access tokens. All of this lives in one Worker so
@@ -51,13 +51,21 @@ export type AccessApps = Record<string, string>
  * it). One instance per Worker isolate; created lazily and reused across requests.
  */
 export class JwtValidator {
-	private readonly jwks: ReturnType<typeof createRemoteJWKSet>
+	private readonly jwks: JWTVerifyGetKey
 
+	/**
+	 * `jwks` is the key-resolver `jwtVerify` consumes; it defaults to a remote JWK
+	 * set fetched from the team's Access certs endpoint (and cached per-isolate by
+	 * jose). Injecting it is purely a seam for tests, which sign with a local key
+	 * pair and pass a `createLocalJWKSet` resolver — production never overrides it,
+	 * so validation semantics are unchanged.
+	 */
 	constructor(
 		private readonly team: string,
 		private readonly accessApps: AccessApps,
+		jwks: JWTVerifyGetKey = createRemoteJWKSet(new URL(`${team}/cdn-cgi/access/certs`)),
 	) {
-		this.jwks = createRemoteJWKSet(new URL(`${team}/cdn-cgi/access/certs`))
+		this.jwks = jwks
 	}
 
 	/**
