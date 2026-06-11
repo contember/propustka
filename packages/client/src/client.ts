@@ -1,7 +1,7 @@
 import type { DomainEvent, IamRpc, ResolvedPrincipal } from '@propustka/core'
-import { matchAction, permits } from '@propustka/core'
+import { permits, scopedProjects } from '@propustka/core'
 import { readCredentials } from './request'
-import type { AuthContext, AuthFailure, Capability, CapabilityFailure, IssueCapabilityRequest, IssuedCapability, IssueFailure } from './types'
+import type { AuthContext, AuthFailure, Capability, CapabilityFailure, IssueCapabilityRequest, IssuedCapability, IssueFailure, PrincipalIdentity } from './types'
 
 // ── AuthContext (real) ─────────────────────────────────────────────────────────
 
@@ -12,45 +12,33 @@ import type { AuthContext, AuthFailure, Capability, CapabilityFailure, IssueCapa
  */
 class RealAuthContext implements AuthContext {
 	readonly ok = true
+	readonly principal: PrincipalIdentity
 
 	constructor(
 		private readonly binding: IamRpc,
 		private readonly appId: string,
-		private readonly principal: ResolvedPrincipal,
-	) {}
+		private readonly resolved: ResolvedPrincipal,
+	) {
+		this.principal = { id: resolved.id, type: resolved.type, label: resolved.label }
+	}
 
 	can(action: string, scope?: { project?: string }): boolean {
 		// `permits` already encodes the scope-less rule: with no project, ONLY global
 		// (projectId === null) entries satisfy.
-		return permits(this.principal.permissions, action, scope?.project)
+		return permits(this.resolved.permissions, action, scope?.project)
 	}
 
 	scopedTo(action: string, _dimension = 'project'): string[] | null {
 		// `dimension` is forward-looking only — v1 has a single scope dimension (project).
-		const ids: string[] = []
-		const seen = new Set<string>()
-		for (const entry of this.principal.permissions) {
-			if (!matchAction(entry.action, action)) {
-				continue
-			}
-			// A matching global entry means unrestricted — short-circuit to null.
-			if (entry.projectId === null) {
-				return null
-			}
-			if (!seen.has(entry.projectId)) {
-				seen.add(entry.projectId)
-				ids.push(entry.projectId)
-			}
-		}
-		return ids
+		return scopedProjects(this.resolved.permissions, action)
 	}
 
 	audit(event: DomainEvent): Promise<void> {
 		return this.binding.audit({
 			app: this.appId,
-			requestId: this.principal.requestId,
-			principalId: this.principal.id,
-			principalLabel: this.principal.label,
+			requestId: this.resolved.requestId,
+			principalId: this.resolved.id,
+			principalLabel: this.resolved.label,
 			action: event.action,
 			resourceType: event.resourceType,
 			resourceId: event.resourceId,

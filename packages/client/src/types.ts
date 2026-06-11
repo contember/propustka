@@ -1,4 +1,19 @@
-import type { DomainEvent, IssueCapabilityGrant } from '@propustka/core'
+import type { DomainEvent, IssueCapabilityGrant, PrincipalType } from '@propustka/core'
+
+/**
+ * The resolved caller's identity — who Access says you are, as the IAM Worker recorded
+ * the principal. Exposed on `AuthContext` so apps can stamp domain rows (created_by,
+ * activity actor, assignee) and render "signed in as …" without a second lookup. It is
+ * NOT a permission surface — authorization is still `can()` / `scopedTo()`.
+ *  - `id`    — the IAM principal id (UUIDv7); stable, safe to store on domain rows.
+ *  - `type`  — 'user' (Access identity login) or 'service' (Access service token).
+ *  - `label` — human-readable: the user's email, or the service token's name.
+ */
+export interface PrincipalIdentity {
+	readonly id: string
+	readonly type: PrincipalType
+	readonly label: string
+}
 
 // ── Result surfaces ──────────────────────────────────────────────────────────
 //
@@ -18,6 +33,11 @@ import type { DomainEvent, IssueCapabilityGrant } from '@propustka/core'
  */
 export interface AuthContext {
 	readonly ok: true
+	/**
+	 * The resolved caller identity (id / type / label). For stamping domain rows and
+	 * display — NOT a permission surface (authorization stays `can` / `scopedTo`).
+	 */
+	readonly principal: PrincipalIdentity
 	/**
 	 * Point check: may this principal do `action` (optionally on `scope.project`)?
 	 * Scope-less → satisfied by GLOBAL permissions only; a project-scoped grant never

@@ -46,3 +46,30 @@ export function permits(entries: PermissionEntry[], action: string, projectScope
 	}
 	return false
 }
+
+/**
+ * The set of project ids `entries` grant `action` on — the resolution behind `scopedTo()`,
+ * shared so the real SDK context and any fake/test context agree exactly:
+ *   - `null`      → unrestricted: a matching GLOBAL entry (projectId === null) exists, so the
+ *                   principal holds the action everywhere (e.g. an admin / app-wide grant);
+ *   - non-empty   → exactly the project ids of the matching project-scoped entries;
+ *   - `[]`        → no matching entry: no project access at all.
+ * A matching global entry short-circuits to `null` (it dominates any scoped entries).
+ */
+export function scopedProjects(entries: PermissionEntry[], action: string): string[] | null {
+	const ids: string[] = []
+	const seen = new Set<string>()
+	for (const entry of entries) {
+		if (!matchAction(entry.action, action)) {
+			continue
+		}
+		if (entry.projectId === null) {
+			return null
+		}
+		if (!seen.has(entry.projectId)) {
+			seen.add(entry.projectId)
+			ids.push(entry.projectId)
+		}
+	}
+	return ids
+}
