@@ -5,6 +5,8 @@ import type {
 	PermissionEntry,
 	RedeemCapabilityInput,
 	RedeemCapabilityResult,
+	RevokeCapabilityInput,
+	RevokeCapabilityResult,
 } from '@propustka/core'
 import { permits, uuidv7 } from '@propustka/core'
 import type { CapabilityTokenRow } from './db'
@@ -125,6 +127,40 @@ export async function issueCapability(
 	})
 
 	return { result: { ok: true, token, id }, auditLabel: input.label }
+}
+
+// ── Revoke (authorization rule) ───────────────────────────────────────────────
+
+/**
+ * Revoke a capability token by id. Authorization (pure-ish, one DB read for grants):
+ * the original issuer may always revoke; otherwise the caller must be able to (re-)issue
+ * the token's grants — i.e. hold every granted action GLOBALLY (an admin / app-wide
+ * operator), checked with the same `findUncoveredGrant` as issue. A project-scoped
+ * operator can therefore revoke only what it issued: the grant's `projectId` is not
+ * stored (it was a delegation-check input at issue time), so scoped re-delegation can't
+ * be re-derived here — we fail closed to issuer-or-global rather than guess. Idempotent.
+ */
+export async function revokeCapability(
+	services: Services,
+	input: RevokeCapabilityInput,
+	revoker: { id: string; permissions: PermissionEntry[] },
+): Promise<RevokeCapabilityResult> {
+	const row = await services.db.getCapabilityTokenById(input.tokenId)
+	if (!row) {
+		return { ok: false, reason: 'not_found' }
+	}
+	if (row.issued_by !== revoker.id) {
+		const grants = await services.db.getCapabilityGrants(input.tokenId)
+		const uncovered = findUncoveredGrant(
+			revoker.permissions,
+			grants.map((g) => ({ action: g.action, resource: g.resource })),
+		)
+		if (uncovered) {
+			return { ok: false, reason: 'not_allowed' }
+		}
+	}
+	const revoked = await services.db.revokeCapabilityToken(input.tokenId)
+	return { ok: true, revoked }
 }
 
 /** A fresh capability token id is a UUIDv7 (exposed for callers that pre-generate). */

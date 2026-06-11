@@ -9,6 +9,8 @@ import type {
 	IssuedCapability,
 	IssueFailure,
 	PrincipalIdentity,
+	RevokedCapability,
+	RevokeFailure,
 } from './types'
 
 /**
@@ -190,6 +192,12 @@ export class FakeIamClient {
 	private readonly personaHeader: string
 	private readonly defaultPersona?: string
 	private readonly resolve?: (req: Request) => FakePersona | null | Promise<FakePersona | null>
+	// In-memory capability registry so issue → redeem → revoke stay consistent in dev/tests
+	// (no IAM Worker locally). Maps the plaintext token to its id, tracks every issued id,
+	// and the subset that has been revoked — so a redeemed-then-revoked token reads 'revoked'.
+	private readonly issuedTokens = new Map<string, string>()
+	private readonly issuedIds = new Set<string>()
+	private readonly revokedIds = new Set<string>()
 
 	constructor(config?: FakeIamConfig) {
 		this.deny = config?.deny ?? []
@@ -223,12 +231,34 @@ export class FakeIamClient {
 		return new FakeAuthContext(this.deny, this.identity)
 	}
 
-	redeemCapability(_req: Request, _token: string): Promise<Capability | CapabilityFailure> {
+	redeemCapability(_req: Request, token: string): Promise<Capability | CapabilityFailure> {
+		// A token issued by THIS fake and since revoked reads 'revoked' (404), like the real
+		// Worker. Tokens we never issued (e.g. a hand-written one) still redeem allow-all — the
+		// fake is a dev/test convenience, not a validator.
+		const id = this.issuedTokens.get(token)
+		if (id && this.revokedIds.has(id)) {
+			return Promise.resolve({ ok: false, reason: 'revoked', status: 404 })
+		}
 		return Promise.resolve(new FakeCapability(this.deny))
 	}
 
 	issueCapability(_req: Request, _input: IssueCapabilityRequest): Promise<IssuedCapability | IssueFailure> {
 		const suffix = crypto.randomUUID()
-		return Promise.resolve({ ok: true, token: `fake-token-${suffix}`, id: `fake-${this.identity.id}-${suffix}` })
+		const token = `fake-token-${suffix}`
+		const id = `fake-${this.identity.id}-${suffix}`
+		this.issuedTokens.set(token, id)
+		this.issuedIds.add(id)
+		return Promise.resolve({ ok: true, token, id })
+	}
+
+	revokeCapability(_req: Request, tokenId: string): Promise<RevokedCapability | RevokeFailure> {
+		if (!this.issuedIds.has(tokenId)) {
+			return Promise.resolve({ ok: false, reason: 'not_found', status: 404 })
+		}
+		if (this.revokedIds.has(tokenId)) {
+			return Promise.resolve({ ok: true, revoked: false })
+		}
+		this.revokedIds.add(tokenId)
+		return Promise.resolve({ ok: true, revoked: true })
 	}
 }

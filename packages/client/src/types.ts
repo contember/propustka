@@ -78,6 +78,13 @@ export interface IssuedCapability {
 	id: string
 }
 
+/** Successful `revokeCapability`. `revoked` is false when the token was already revoked. */
+export interface RevokedCapability {
+	readonly ok: true
+	/** True when this call flipped the token to revoked; false if it was already revoked (idempotent). */
+	revoked: boolean
+}
+
 // ── Failures ─────────────────────────────────────────────────────────────────
 
 /** `authenticate` failure. missing/invalid → 401; unknown_principal/disabled → 403. */
@@ -99,6 +106,13 @@ export interface IssueFailure {
 	readonly ok: false
 	reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed'
 	status: 401 | 403
+}
+
+/** `revokeCapability` failure. missing/invalid → 401; unknown/disabled/not_allowed → 403; not_found → 404. */
+export interface RevokeFailure {
+	readonly ok: false
+	reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'not_found'
+	status: 401 | 403 | 404
 }
 
 // ── Inputs ───────────────────────────────────────────────────────────────────

@@ -16,6 +16,8 @@ export type {
 	IssuedCapability,
 	IssueFailure,
 	PrincipalIdentity,
+	RevokedCapability,
+	RevokeFailure,
 } from './types'
 
 // Re-export from core so apps need only depend on the SDK: DomainEvent (one event shape) and

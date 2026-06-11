@@ -82,6 +82,23 @@ export type IssueCapabilityResult =
 	| { ok: true; token: string; id: string }
 	| { ok: false; reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' }
 
+export interface RevokeCapabilityInput {
+	app: string
+	/** The CALLER's Access JWT — the authorizer is resolved server-side, never self-asserted. */
+	token: string | null
+	/** Caller's CF_Authorization cookie (group-derived permissions count toward the revoke check). */
+	cookie: string | null
+	origin: string | null
+	requestId: string
+	/** The capability token id (the `id` returned by issueCapability), NOT the plaintext token. */
+	tokenId: string
+}
+
+export type RevokeCapabilityResult =
+	/** `revoked` is false when the token was already revoked (idempotent). */
+	| { ok: true; revoked: boolean }
+	| { ok: false; reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'not_found' }
+
 /**
  * The RPC contract. The Worker's `WorkerEntrypoint` `implements IamRpc`; the SDK types its
  * binding as `Service<IamRpc>` (so the SDK never imports the Worker). Methods return plain
@@ -92,4 +109,12 @@ export interface IamRpc {
 	audit(event: AuditInput): Promise<void>
 	redeemCapability(input: RedeemCapabilityInput): Promise<RedeemCapabilityResult>
 	issueCapability(input: IssueCapabilityInput): Promise<IssueCapabilityResult>
+	/**
+	 * Revoke a previously-issued capability token by id. The caller is resolved from the
+	 * forwarded Access credentials and authorized: the original issuer may always revoke;
+	 * otherwise the caller must hold every granted action globally (an admin / app-wide
+	 * operator). Idempotent — revoking an already-revoked token returns `{ ok: true,
+	 * revoked: false }`. An unknown id returns `{ ok: false, reason: 'not_found' }`.
+	 */
+	revokeCapability(input: RevokeCapabilityInput): Promise<RevokeCapabilityResult>
 }

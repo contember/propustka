@@ -7,11 +7,13 @@ import type {
 	IssueCapabilityResult,
 	RedeemCapabilityInput,
 	RedeemCapabilityResult,
+	RevokeCapabilityInput,
+	RevokeCapabilityResult,
 } from '@propustka/core'
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import { handleAdmin } from './admin/router'
 import { principalFromOutcome, resolveRequest } from './auth'
-import { issueCapability, redeemCapability } from './capabilities'
+import { issueCapability, redeemCapability, revokeCapability } from './capabilities'
 import type { Env } from './env'
 import { buildServices } from './services'
 
@@ -179,6 +181,60 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 			// free-string reason column — the IssueCapabilityResult union has no such variant and
 			// must not gain one) and return unknown_principal (maps to 403).
 			console.error(`issueCapability failed for request '${input.requestId}'`, err)
+			this.ctx.waitUntil(
+				services.db.writeAuthLog({
+					requestId: input.requestId,
+					app: input.app,
+					kind: 'authenticate',
+					principalId: null,
+					decision: 'deny',
+					reason: 'internal_error',
+				}),
+			)
+			return { ok: false, reason: 'unknown_principal' }
+		}
+	}
+
+	async revokeCapability(input: RevokeCapabilityInput): Promise<RevokeCapabilityResult> {
+		const services = buildServices(this.env)
+		try {
+			// Resolve + authorize the REVOKER from the forwarded credentials, exactly like
+			// issueCapability resolves the issuer — never a self-asserted principal id.
+			const outcome = await resolveRequest(services, {
+				app: input.app,
+				token: input.token,
+				cookie: input.cookie,
+				origin: input.origin,
+				requestId: input.requestId,
+			})
+			const revoker = principalFromOutcome(outcome)
+			if (!revoker || !outcome.result.ok) {
+				return outcome.result.ok ? { ok: false, reason: 'unknown_principal' } : { ok: false, reason: outcome.result.reason }
+			}
+
+			const result = await revokeCapability(services, input, revoker)
+
+			// Audit only an actual state change (revoked === true); a no-op idempotent
+			// revoke or a denied/not-found attempt writes no domain event.
+			if (result.ok && result.revoked) {
+				const app = outcome.verifiedApp ?? input.app
+				this.ctx.waitUntil(
+					services.db.writeAuditEvent({
+						requestId: input.requestId,
+						principalId: revoker.id,
+						principalLabel: outcome.result.principal.label,
+						app,
+						action: 'iam.capability.revoke',
+						resourceType: 'capability',
+						resourceId: input.tokenId,
+					}),
+				)
+			}
+
+			return result
+		} catch (err) {
+			// Same fail-closed posture as authenticate()/issueCapability(): never surface a 500.
+			console.error(`revokeCapability failed for request '${input.requestId}'`, err)
 			this.ctx.waitUntil(
 				services.db.writeAuthLog({
 					requestId: input.requestId,

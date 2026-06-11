@@ -328,4 +328,73 @@ describe('Propustka RPC entrypoint (TEST-4)', () => {
 		const serializedRow = JSON.stringify(row)
 		expect(serializedRow).not.toContain(result.token)
 	})
+
+	test('revokeCapability: issue → revoke flips the token, audits the revoke, and the token no longer redeems', async () => {
+		const ctx = makeCtx()
+		const worker = new Propustka(ctx, makeEnv(db))
+
+		// Issue under the local-bypass admin so the grant is covered.
+		const issued = await worker.issueCapability({
+			app: 'reports',
+			token: null,
+			cookie: null,
+			origin: null,
+			requestId: 'req-issue',
+			grants: [{ action: 'report.read', resource: 'r-1' }],
+		})
+		if (!issued.ok) {
+			throw new Error('expected issueCapability to succeed')
+		}
+
+		const revoked = await worker.revokeCapability({
+			app: 'reports',
+			token: null,
+			cookie: null,
+			origin: null,
+			requestId: 'req-revoke',
+			tokenId: issued.id,
+		})
+		expect(revoked).toEqual({ ok: true, revoked: true })
+
+		// Redeeming the revoked token now fails with reason 'revoked'.
+		const redeem = await worker.redeemCapability({ app: 'reports', token: issued.token, requestId: 'req-redeem' })
+		expect(redeem.ok).toBe(false)
+		if (redeem.ok) {
+			throw new Error('unreachable')
+		}
+		expect(redeem.reason).toBe('revoked')
+
+		// A second revoke is idempotent.
+		const again = await worker.revokeCapability({
+			app: 'reports',
+			token: null,
+			cookie: null,
+			origin: null,
+			requestId: 'req-revoke-2',
+			tokenId: issued.id,
+		})
+		expect(again).toEqual({ ok: true, revoked: false })
+
+		await settle(ctx)
+
+		// Exactly one iam.capability.revoke audit row (the no-op second revoke writes none).
+		const revokeRows = auditRows(db).filter((r) => r.action === 'iam.capability.revoke')
+		expect(revokeRows).toHaveLength(1)
+		expect(revokeRows[0]?.resource_id).toBe(issued.id)
+		expect(revokeRows[0]?.principal_id).toBe(LOCAL_DEV_ADMIN_ID)
+	})
+
+	test('revokeCapability: unknown id → not_found', async () => {
+		const ctx = makeCtx()
+		const worker = new Propustka(ctx, makeEnv(db))
+		const result = await worker.revokeCapability({
+			app: 'reports',
+			token: null,
+			cookie: null,
+			origin: null,
+			requestId: 'req-revoke-missing',
+			tokenId: 'does-not-exist',
+		})
+		expect(result).toEqual({ ok: false, reason: 'not_found' })
+	})
 })

@@ -10,6 +10,8 @@ import type {
 	IssuedCapability,
 	IssueFailure,
 	PrincipalIdentity,
+	RevokedCapability,
+	RevokeFailure,
 } from './types'
 
 // ── AuthContext (real) ─────────────────────────────────────────────────────────
@@ -165,6 +167,21 @@ export class IamClient {
 		}
 		return { ok: false, reason: result.reason, status: issueFailureStatus(result.reason) }
 	}
+
+	/**
+	 * Revoke a capability (share link) by its id. Forwards the CALLER's credentials as the
+	 * authorizer — the IAM Worker resolves the caller server-side and enforces the rule (the
+	 * original issuer, or anyone who could re-issue the grants, may revoke). Idempotent: a
+	 * second revoke returns `{ ok: true, revoked: false }`. An unknown id → 404.
+	 */
+	async revokeCapability(req: Request, tokenId: string): Promise<RevokedCapability | RevokeFailure> {
+		const { token, cookie, origin, requestId } = readCredentials(req)
+		const result = await this.binding.revokeCapability({ app: this.appId, token, cookie, origin, requestId, tokenId })
+		if (result.ok) {
+			return { ok: true, revoked: result.revoked }
+		}
+		return { ok: false, reason: result.reason, status: revokeFailureStatus(result.reason) }
+	}
 }
 
 /** missing/invalid token → 401 (not authenticated); unknown/disabled principal → 403. */
@@ -175,4 +192,11 @@ function authFailureStatus(reason: AuthFailure['reason']): 401 | 403 {
 /** missing/invalid → 401; unknown_principal/disabled/not_allowed → 403. */
 function issueFailureStatus(reason: IssueFailure['reason']): 401 | 403 {
 	return reason === 'missing_token' || reason === 'invalid_token' ? 401 : 403
+}
+
+/** missing/invalid → 401; not_found → 404; unknown_principal/disabled/not_allowed → 403. */
+function revokeFailureStatus(reason: RevokeFailure['reason']): 401 | 403 | 404 {
+	if (reason === 'missing_token' || reason === 'invalid_token') return 401
+	if (reason === 'not_found') return 404
+	return 403
 }

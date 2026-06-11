@@ -176,3 +176,48 @@ describe('FakeIamClient.issueCapability', () => {
 		expect(issued.id.startsWith('fake-')).toBe(true)
 	})
 })
+
+describe('FakeIamClient.revokeCapability', () => {
+	test('issue → revoke → redeem reads revoked (in-memory registry stays consistent)', async () => {
+		const fake = new FakeIamClient()
+		const issued = await fake.issueCapability(makeRequest(), { grants: [] })
+		if (!issued.ok) {
+			throw new Error('unreachable')
+		}
+		// Before revoke, the issued token redeems fine.
+		const before = await fake.redeemCapability(makeRequest(), issued.token)
+		expect(before.ok).toBe(true)
+
+		const revoked = await fake.revokeCapability(makeRequest(), issued.id)
+		expect(revoked).toEqual({ ok: true, revoked: true })
+
+		// After revoke, the SAME token reads 'revoked' (404), like the real Worker.
+		const after = await fake.redeemCapability(makeRequest(), issued.token)
+		expect(after.ok).toBe(false)
+		if (after.ok) {
+			throw new Error('unreachable')
+		}
+		expect(after.reason).toBe('revoked')
+		expect(after.status).toBe(404)
+	})
+
+	test('second revoke is idempotent (revoked:false)', async () => {
+		const fake = new FakeIamClient()
+		const issued = await fake.issueCapability(makeRequest(), { grants: [] })
+		if (!issued.ok) {
+			throw new Error('unreachable')
+		}
+		await fake.revokeCapability(makeRequest(), issued.id)
+		expect(await fake.revokeCapability(makeRequest(), issued.id)).toEqual({ ok: true, revoked: false })
+	})
+
+	test('unknown id → not_found (404)', async () => {
+		const revoked = await new FakeIamClient().revokeCapability(makeRequest(), 'never-issued')
+		expect(revoked.ok).toBe(false)
+		if (revoked.ok) {
+			throw new Error('unreachable')
+		}
+		expect(revoked.reason).toBe('not_found')
+		expect(revoked.status).toBe(404)
+	})
+})

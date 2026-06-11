@@ -276,3 +276,57 @@ describe('IamClient.issueCapability', () => {
 		}
 	})
 })
+
+describe('IamClient.revokeCapability', () => {
+	test('ok → forwards caller credentials + tokenId, returns revoked flag', async () => {
+		const stub = new IamRpcStub({ revoke: { ok: true, revoked: true } })
+		const iam = new IamClient(stub, 'app-x')
+		const result = await iam.revokeCapability(
+			makeRequest({ url: 'https://r.example.com/x', token: 'jwt', cookie: 'ck', ray: 'ray-9' }),
+			'cap-7',
+		)
+		expect(result.ok).toBe(true)
+		if (!result.ok) {
+			throw new Error('unreachable')
+		}
+		expect(result.revoked).toBe(true)
+		expect(stub.revokeInputs[0]).toEqual({
+			app: 'app-x',
+			token: 'jwt',
+			cookie: 'ck',
+			origin: 'https://r.example.com',
+			requestId: 'ray-9',
+			tokenId: 'cap-7',
+		})
+	})
+
+	test('already revoked → ok with revoked:false (idempotent)', async () => {
+		const stub = new IamRpcStub({ revoke: { ok: true, revoked: false } })
+		const result = await new IamClient(stub, 'app-x').revokeCapability(makeRequest(), 'cap-7')
+		expect(result).toEqual({ ok: true, revoked: false })
+	})
+
+	test('failure → status mapping (not_found → 404)', async () => {
+		const cases: {
+			reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'not_found'
+			status: 401 | 403 | 404
+		}[] = [
+			{ reason: 'missing_token', status: 401 },
+			{ reason: 'invalid_token', status: 401 },
+			{ reason: 'unknown_principal', status: 403 },
+			{ reason: 'disabled', status: 403 },
+			{ reason: 'not_allowed', status: 403 },
+			{ reason: 'not_found', status: 404 },
+		]
+		for (const c of cases) {
+			const stub = new IamRpcStub({ revoke: { ok: false, reason: c.reason } })
+			const result = await new IamClient(stub, 'app-x').revokeCapability(makeRequest(), 'cap-7')
+			expect(result.ok).toBe(false)
+			if (result.ok) {
+				throw new Error('unreachable')
+			}
+			expect(result.reason).toBe(c.reason)
+			expect(result.status).toBe(c.status)
+		}
+	})
+})
