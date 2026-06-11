@@ -70,16 +70,17 @@ group→role mapping, the IAM Worker calls the Access get-identity endpoint:
 - Parse GitHub org/team membership from the returned identity data and normalize each to the
   `<org>/<team>` lowercase `group_ref` form used in `group_role_mappings`.
 - **Only for `type='user'` principals.** Skip entirely for service tokens.
-- **Cache per principal** with the same short TTL as the principal cache (tens of seconds).
+- **Cache group membership per principal** with a short TTL (tens of seconds).
   Membership does not change by the second, and get-identity is an extra network call; do not
-  call it on every request uncached.
+  call it on every request uncached. This group-membership cache is the only resolution cache —
+  there is no separate resolved-principal cache; grants are always read from D1.
 - **Group data is login-time, not live.** get-identity returns the identity as Access learned
   it at the user's last IdP authentication / session refresh — GitHub team membership is not
   continuously synced. Removing someone from a GitHub team therefore takes effect only when
   their Access session next refreshes against the IdP (up to the configured session duration),
   not on the next `authenticate()`. For permissions that must be revocable immediately, use
-  explicit grants (revoke is effective within the cache TTL) or revoke the user's Access
-  session in the dashboard.
+  explicit grants (grant/revoke is effective on the next `authenticate()`, since grants are
+  always read from D1) or revoke the user's Access session in the dashboard.
 - If get-identity fails, fall back to explicit grants only (do not hard-fail auth) but record
   that group resolution was unavailable — set a `groupsUnavailable: true` flag on the
   `authenticate()` result and write it to the auth log — so a missing-permission denial isn't
@@ -764,9 +765,10 @@ the RPC section — so this provisioning flow is specifically for `type='service
 
 ## Operational notes
 
-- Per-isolate cache of resolved principals (incl. group membership) with short TTL (tens of
-  seconds) is fine — it matches Access session revocation latency anyway. Cache must be safe to
-  be empty (fail to D1).
+- Per-isolate cache of group membership (from get-identity) with short TTL (tens of seconds)
+  is fine — it matches Access session revocation latency anyway. Cache must be safe to be empty
+  (fail to get-identity). There is no resolved-principal cache: grants are always read from D1
+  at `authenticate()`, so grant/revoke takes effect immediately.
 - Retention differs: prune `auth_log` after a few weeks; keep `audit_events` long.
   A scheduled handler (cron trigger) deletes old `auth_log` rows — the rowid is
   time-correlated, so pruning by `created_at` (or by max rowid snapshot) needs no extra index.
@@ -804,7 +806,7 @@ the RPC section — so this provisioning flow is specifically for `type='service
 11. A user in a GitHub team that has a `group_role_mappings` row receives that role's permissions
     automatically (no explicit grant), resolved via get-identity at `authenticate()`; the
     resulting permission entries carry `source: 'group:<org/team>'`. Removing the **mapping**
-    removes the permission on next `authenticate()` (within cache TTL). Removing the user's
+    removes the permission on the next `authenticate()` (mappings are read from D1). Removing the user's
     **team membership** takes effect once their Access session refreshes against the IdP —
     group data is login-time, not live; immediate revocation requires explicit grants or Access
     session revocation. Group resolution applies to users only, never service principals. A

@@ -51,6 +51,7 @@ drop-in on Bun). Bindings (D1, static assets) are backed by SQLite + files under
 ```bash
 cd packages/admin-ui && bun run build                  # build the admin SPA the worker serves
 cd ../worker && bun run oblaka                          # generate the worker's wrangler.jsonc
+cp .dev.vars.example .dev.vars                          # local secret placeholders (gitignored)
 (cd ../../examples/app && bun run oblaka)               # generate the example app's wrangler.jsonc
 bunx lopata d1 migrations apply propustka               # create the local D1 schema
 bunx lopata d1 execute propustka --file seed.dev.sql    # load sample data (optional, but populates the UI)
@@ -132,11 +133,13 @@ ctx.waitUntil(
 ## Deploy
 
 ```bash
-# secrets (CF_API_TOKEN, CF_ACCOUNT_ID, per-env ACCESS_APPS/TEAM/IAM_BOOTSTRAP_ADMINS)
-# are read from the environment by oblaka.ts on stage/prod.
+# Vars (per-env ACCESS_APPS / TEAM / IAM_BOOTSTRAP_ADMINS) are read from the environment
+# by oblaka.ts on stage/prod. CF_API_TOKEN / CF_ACCOUNT_ID are Worker secrets (oblaka has
+# no secrets field) — provisioned out-of-band with `wrangler secret put`, never as vars.
 cd packages/admin-ui && bun run build
 cd ../worker
 bunx oblaka oblaka.ts --remote --env stage         # then --env prod
+wrangler secret put CF_API_TOKEN                    # and CF_ACCOUNT_ID, per deployed env
 wrangler d1 migrations apply propustka --remote
 ```
 

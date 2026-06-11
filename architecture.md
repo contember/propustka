@@ -141,13 +141,13 @@ packages/worker/
   src/
     index.ts                 # WorkerEntrypoint: RPC methods + fetch + scheduled
     env.ts                   # Env interface — single source of truth for bindings/secrets
-    services.ts              # buildServices(env): wires db, cache, jwt, cf-api (opice pattern)
+    services.ts              # buildServices(env): wires db, jwt, identity, cf-api (opice pattern)
     db.ts                    # D1 data access (principals, grants, audit, capabilities, ...)
     roles.ts                 # ROLES registry + RoleSource impl (code-defined; core spec)
     resolve.ts               # permission resolution: grants ∪ groups ∪ bootstrap, dedupe
     jwt.ts                   # jose JWKS validate; aud → app via ACCESS_APPS
     identity.ts              # get-identity fetch + group→role mapping (users only)
-    cache.ts                 # per-isolate principal cache, short TTL, fail-to-D1
+    cache.ts                 # per-isolate group-membership cache (used by identity.ts), short TTL, fail-open
     capabilities.ts          # redeem (atomic UPDATE…RETURNING) + issue (delegation rule)
     cfaccess.ts              # Cloudflare Access API client (service-token provisioning)
     admin/
@@ -220,7 +220,9 @@ export default define(({ env }) => {
 			}),
 		},
 		vars, // ENVIRONMENT, ACCESS_APPS, TEAM, IAM_BOOTSTRAP_ADMINS, ...
-		// secrets (CF_API_TOKEN, CF_ACCOUNT_ID) injected via vars from process.env on stage/prod
+		// CF_API_TOKEN / CF_ACCOUNT_ID are NOT vars (oblaka has no secrets field): they are
+		// provisioned out-of-band as Worker secrets — `wrangler secret put` on stage/prod,
+		// `.dev.vars` locally — so they never land in the generated wrangler.jsonc.
 	})
 })
 ```
@@ -302,9 +304,11 @@ bunx oblaka oblaka.ts --remote --env stage   # then --env prod
 wrangler d1 migrations apply propustka --remote
 ```
 
-oblaka tracks created-resource ids in a `cf-state` KV namespace (its state store). Secrets
-(`CF_API_TOKEN`, `CF_ACCOUNT_ID`, plus `OPICE_*`-style values for stage/prod) come from CI
-secrets, never committed.
+oblaka tracks created-resource ids in a `cf-state` KV namespace (its state store). `CF_API_TOKEN`
+and `CF_ACCOUNT_ID` are Worker **secrets**, not vars — oblaka can't express secrets, so they are
+never placed in `vars`/`wrangler.jsonc`. Provision them out-of-band: `wrangler secret put
+CF_API_TOKEN` / `wrangler secret put CF_ACCOUNT_ID` on stage/prod, and `packages/worker/.dev.vars`
+(gitignored; copy `.dev.vars.example`) locally. They come from CI secrets, never committed.
 
 ## Testing strategy (brief)
 
