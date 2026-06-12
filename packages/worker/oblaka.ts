@@ -73,6 +73,13 @@ export default define(({ env }) => {
 		main: './src/index.ts',
 		compatibility_flags: ['nodejs_compat_v2'],
 		compatibility_date: '2025-10-01',
+		// Prod binds the admin hostname as a Custom Domain (auto-creates DNS + cert + route);
+		// Cloudflare Access fronts it. Declared HERE as IaC because oblaka regenerates
+		// wrangler.jsonc on every deploy — a domain attached only in the dashboard gets wiped by
+		// the next `wrangler deploy`. App workers still reach the IAM Worker via the service
+		// binding (no Access), so this domain is only for the admin SPA + the HTTP admin API
+		// (reconcile, etc.). Stage/local use *.workers.dev.
+		routes: env === 'prod' ? [{ pattern: 'propustka.contember.com', custom_domain: true }] : [],
 		observability: { enabled: true },
 		// Daily prune of auth_log (retention: weeks); see scheduled() in src/index.ts.
 		triggers: { crons: ['0 3 * * *'] },
