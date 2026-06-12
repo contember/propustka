@@ -6,7 +6,8 @@
 		// Operator-run bun scripts resolve workspace packages by name at runtime; map the
 		// one(s) they import to source so `tsc` resolves them the same way (no built dist).
 		"paths": {
-			"@propustka/core": ["../packages/core/src/index.ts"]
+			"@propustka/core": ["../packages/core/src/index.ts"],
+			"@propustka/client": ["../packages/client/src/index.ts"]
 		}
 	},
 	"include": ["*.ts"]

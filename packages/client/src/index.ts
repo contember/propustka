@@ -7,6 +7,10 @@ export { IamClient } from './client'
 export { FakeIamClient } from './fake'
 export type { FakeIamConfig, FakePersona } from './fake'
 export { applyScope } from './scope'
+// Deploy-time helper: reconcile an app's declared AppSchema into Propustka (HTTP admin call,
+// NOT over the service binding). Import from a deploy/provisioning step, never request handling.
+export { reconcileSchema, ReconcileSchemaError } from './provision'
+export type { ReconcileSchemaOptions } from './provision'
 export type {
 	AuthContext,
 	AuthFailure,
@@ -22,5 +26,6 @@ export type {
 
 // Re-export from core so apps need only depend on the SDK: DomainEvent (one event shape),
 // IamRpc (the binding contract — apps type their `env.IAM` as IamRpc without importing core),
-// and Scope (the `{ type, value }` coordinate apps pass to `can()`).
-export type { DomainEvent, IamRpc, Scope } from '@propustka/core'
+// Scope (the `{ type, value }` coordinate apps pass to `can()`), and the AppSchema vocabulary
+// types apps use to DECLARE their `propustka.schema.ts` for `reconcileSchema()`.
+export type { AppActionDef, AppSchema, AppScopeDef, DomainEvent, IamRpc, RoleDef, Scope } from '@propustka/core'

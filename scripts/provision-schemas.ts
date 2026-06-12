@@ -29,6 +29,7 @@
  * id (an `ACCESS_APPS` value), then run this script.
  */
 
+import { reconcileSchema } from '@propustka/client'
 import type { AppSchema } from '@propustka/core'
 import { exampleAppId, exampleAppSchema } from '../examples/app/propustka.schema'
 
@@ -63,62 +64,8 @@ function optional(name: string): string | undefined {
 
 const DRY_RUN = process.argv.includes('--dry-run')
 
-// ── minimal admin API client ──────────────────────────────────────────────────
-
-/**
- * Pull a human-readable message out of the admin API's `{ error }` body, if present.
- * The admin API's `error()` helper shapes every failure as `{ error: string }`.
- */
-function errorMessage(value: unknown): string | null {
-	if (typeof value !== 'object' || value === null || !('error' in value)) {
-		return null
-	}
-	const message = value.error
-	return typeof message === 'string' ? message : null
-}
-
-class PropustkaError extends Error {
-	constructor(message: string, readonly status: number) {
-		super(message)
-		this.name = 'PropustkaError'
-	}
-}
-
-interface ServiceToken {
-	clientId: string
-	clientSecret: string
-}
-
-class Propustka {
-	private readonly base: string
-
-	constructor(url: string, private readonly serviceToken: ServiceToken | null) {
-		// Trim a trailing slash so `${base}${path}` never doubles up.
-		this.base = url.replace(/\/+$/, '')
-	}
-
-	/** PUT an app's schema; returns the reconciled vocabulary the endpoint echoes back. */
-	async putSchema(app: string, schema: AppSchema): Promise<unknown> {
-		const headers: Record<string, string> = { 'content-type': 'application/json' }
-		// A remote run carries an Access service token; Access validates the pair at the edge
-		// and forwards the JWT the admin gate reads. A local run sends neither (dev bypass).
-		if (this.serviceToken) {
-			headers['CF-Access-Client-Id'] = this.serviceToken.clientId
-			headers['CF-Access-Client-Secret'] = this.serviceToken.clientSecret
-		}
-		const response = await fetch(`${this.base}/admin/apps/${encodeURIComponent(app)}/schema`, {
-			method: 'PUT',
-			headers,
-			body: JSON.stringify(schema),
-		})
-		const payload: unknown = await response.json().catch(() => null)
-		if (!response.ok) {
-			const detail = errorMessage(payload) ?? response.statusText
-			throw new PropustkaError(`PUT /admin/apps/${app}/schema failed (${response.status}): ${detail}`, response.status)
-		}
-		return payload
-	}
-}
+// The actual PUT + both-or-neither token guard + error shaping live in `reconcileSchema`
+// (@propustka/client), so any app's own deploy step reconciles exactly the way this does.
 
 // ── reporting ─────────────────────────────────────────────────────────────────
 
@@ -145,22 +92,14 @@ async function main(): Promise<void> {
 	}
 
 	const url = required('PROPUSTKA_URL')
-	const clientId = optional('PROPUSTKA_ACCESS_CLIENT_ID')
-	const clientSecret = optional('PROPUSTKA_ACCESS_CLIENT_SECRET')
-	// Both-or-neither: a half-set service token would silently 401 at the edge.
-	if ((clientId === undefined) !== (clientSecret === undefined)) {
-		throw new Error('Set BOTH PROPUSTKA_ACCESS_CLIENT_ID and PROPUSTKA_ACCESS_CLIENT_SECRET, or neither (local dev bypass)')
-	}
-	const serviceToken: ServiceToken | null = clientId !== undefined && clientSecret !== undefined
-		? { clientId, clientSecret }
-		: null
-
-	const propustka = new Propustka(url, serviceToken)
-	const authMode = serviceToken ? 'Access service token' : 'no auth (local dev bypass)'
+	const accessClientId = optional('PROPUSTKA_ACCESS_CLIENT_ID')
+	const accessClientSecret = optional('PROPUSTKA_ACCESS_CLIENT_SECRET')
+	const authMode = accessClientId !== undefined ? 'Access service token' : 'no auth (local dev bypass)'
 	console.log(`Reconciling ${DECLARATIONS.length} app schema(s) against ${url} (${authMode})\n`)
 
 	for (const decl of DECLARATIONS) {
-		await propustka.putSchema(decl.app, decl.schema)
+		// reconcileSchema (@propustka/client) does the idempotent PUT + both-or-neither guard.
+		await reconcileSchema({ url, app: decl.app, schema: decl.schema, accessClientId, accessClientSecret })
 		const scopes = decl.schema.scopes.length
 		const actions = decl.schema.actions.length
 		const roles = Object.keys(decl.schema.roles).length
