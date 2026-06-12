@@ -40,3 +40,23 @@ export function nullableStringField(value: unknown, key: string): string | null 
 	}
 	return typeof v === 'string' ? v : undefined
 }
+
+/**
+ * Read a field that must be an array of strings. Returns undefined when the field is
+ * absent or not an array; a non-string element makes the whole field undefined (the
+ * caller then rejects). An empty array is a valid result (length-0 array of strings).
+ */
+export function arrayField(value: unknown, key: string): string[] | undefined {
+	const v = prop(value, key)
+	if (!Array.isArray(v)) {
+		return undefined
+	}
+	const out: string[] = []
+	for (const item of v) {
+		if (typeof item !== 'string') {
+			return undefined
+		}
+		out.push(item)
+	}
+	return out
+}

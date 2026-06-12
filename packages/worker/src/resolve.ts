@@ -1,7 +1,8 @@
-import type { PermissionEntry, PermissionSource, RoleSource } from '@propustka/core'
-import type { Db, GrantRow, GroupMappingRow, PrincipalRow } from './db'
+import type { PermissionEntry, PermissionSource, RoleDef, RoleSource, Scope } from '@propustka/core'
+import type { Db, GrantRow, GroupMappingRow, PrincipalRow, RoleRow } from './db'
 import type { IdentityClient } from './identity'
-import { codeRoleSource } from './roles'
+import { parseJson } from './json'
+import { makeRoleSource } from './roles'
 
 const GITHUB_PROVIDER = 'github'
 
@@ -13,6 +14,8 @@ const GITHUB_PROVIDER = 'github'
  * unit-testable without D1 or get-identity.
  */
 export interface ResolutionInputs {
+	/** The calling app (aud-derived) — passed to `RoleSource.getRole`; null = cross-app. */
+	app: string | null
 	/** Active, non-expired explicit grants for this principal. */
 	grants: GrantRow[]
 	/** Group mappings matched against the user's group refs (empty for services). */
@@ -22,53 +25,85 @@ export interface ResolutionInputs {
 }
 
 /**
- * Union the three permission sources, expanding role keys into permission
- * patterns via the role registry, and dedupe. Wildcards (`*`, `prefix.*`) stay as
- * patterns in the entries — they are NOT pre-expanded; `permits()` in core matches
- * them. A grant whose role key no longer exists resolves to zero permissions
- * (fail-closed).
- *
- * Dedup key is `action|projectId|source` — the same permission from two sources is
- * kept separately so the admin UI can explain *why* a permission is held; `can()`
- * / `scopedTo()` ignore `source` anyway.
+ * Reconstruct the flat scope coordinate from a row's `scope_type`/`scope_value`. Both
+ * are NULL together (= global, `scope: null`) by the migration's both-or-neither
+ * CHECK; a half-set pair can't exist, but we guard on `scope_type` to stay total.
  */
-export function computePermissions(inputs: ResolutionInputs, roles: RoleSource = codeRoleSource): PermissionEntry[] {
+function rowScope(scopeType: string | null, scopeValue: string | null): Scope | null {
+	return scopeType === null || scopeValue === null ? null : { type: scopeType, value: scopeValue }
+}
+
+/**
+ * Parse a grant's inline `permissions` JSON into an array of action patterns. The
+ * migration's `json_valid` CHECK keeps malformed JSON out at write time; a row whose
+ * JSON isn't a string array (shouldn't happen) yields no patterns (fail-closed).
+ */
+function inlinePatterns(json: string): string[] {
+	const parsed = parseJson(json)
+	if (!Array.isArray(parsed)) {
+		return []
+	}
+	return parsed.filter((p): p is string => typeof p === 'string')
+}
+
+/**
+ * Union the permission sources, expanding role keys into permission patterns via the
+ * (app-aware) role source and adding inline grant patterns directly, then dedupe.
+ * Wildcards (`*`, `prefix.*`) stay as patterns in the entries — they are NOT
+ * pre-expanded; `permits()` in core matches them. A grant whose role key no longer
+ * resolves contributes zero permissions (fail-closed).
+ *
+ * Resolution is PURE: `roles` is built up front from the app's loaded DB rows, so no
+ * I/O happens here. Dedup key is `action|scope|source` — the same permission from two
+ * sources is kept separately so the admin UI can explain *why* a permission is held;
+ * `can()` / `scopedTo()` ignore `source` anyway.
+ */
+export function computePermissions(inputs: ResolutionInputs, roles: RoleSource): PermissionEntry[] {
 	const entries: PermissionEntry[] = []
 	const seen = new Set<string>()
 
-	const add = (action: string, projectId: string | null, source: PermissionSource): void => {
-		const key = `${action} ${projectId ?? ''} ${source}`
+	const add = (action: string, scope: Scope | null, source: PermissionSource): void => {
+		const scopeKey = scope === null ? '' : `${scope.type}:${scope.value}`
+		const key = `${action} ${scopeKey} ${source}`
 		if (seen.has(key)) {
 			return
 		}
 		seen.add(key)
-		entries.push({ action, projectId, source })
+		entries.push({ action, scope, source })
 	}
 
-	const expand = (roleKey: string, projectId: string | null, source: PermissionSource): void => {
-		const role = roles.getRole(roleKey)
+	const expandRole = (roleKey: string, scope: Scope | null, source: PermissionSource): void => {
+		const role = roles.getRole(inputs.app, roleKey)
 		if (!role) {
 			// Dangling role key — resolves to zero permissions (fail-closed).
 			return
 		}
 		for (const permission of role.permissions) {
-			add(permission, projectId, source)
+			add(permission, scope, source)
 		}
 	}
 
-	// 1. Explicit grants.
+	// 1. Explicit grants — EITHER a named role OR an inline action-pattern set.
 	for (const grant of inputs.grants) {
-		expand(grant.role_key, grant.project_id, 'grant')
+		const scope = rowScope(grant.scope_type, grant.scope_value)
+		if (grant.role_key !== null) {
+			expandRole(grant.role_key, scope, 'grant')
+		} else if (grant.permissions !== null) {
+			for (const pattern of inlinePatterns(grant.permissions)) {
+				add(pattern, scope, 'grant')
+			}
+		}
 	}
 
-	// 2. Group-derived roles (users only — services pass an empty list).
+	// 2. Group-derived roles (users only — services pass an empty list). Role-only.
 	for (const { mapping, groupRef } of inputs.groupMappings) {
-		expand(mapping.role_key, mapping.project_id, `group:${groupRef}`)
+		expandRole(mapping.role_key, rowScope(mapping.scope_type, mapping.scope_value), `group:${groupRef}`)
 	}
 
-	// 3. Bootstrap admins (users only) — a global `admin` role, source 'bootstrap'.
+	// 3. Bootstrap admins (users only) — the built-in global `admin` role, source
+	// 'bootstrap'. `admin` is a cross-app built-in, so it resolves even at app=null.
 	if (inputs.isBootstrapAdmin) {
-		expand('admin', null, 'bootstrap')
+		expandRole('admin', null, 'bootstrap')
 	}
 
 	return entries
@@ -182,9 +217,36 @@ export interface ResolvedPermissions {
 }
 
 /**
- * Fetch the three sources for a user and compute their permissions. Group
- * resolution uses get-identity; an outage degrades to explicit grants only with
- * `groupsUnavailable: true` (still fail-closed on the *permission* decision).
+ * Load the calling app's DB roles into a `RoleSource` (built-ins layered over them).
+ * `app === null` (cross-app, e.g. the local-dev bypass / a NULL-app token) has no
+ * per-app rows to load — only the built-in `admin` applies. Roles are fetched HERE,
+ * up front, so `computePermissions` stays pure: its parsed permission arrays are
+ * cached in the returned `RoleSource`'s map and never re-read from D1.
+ */
+async function loadRoleSource(db: Db, app: string | null): Promise<RoleSource> {
+	const appRoles: Record<string, RoleDef> = {}
+	if (app !== null) {
+		for (const row of await db.listRoles(app)) {
+			appRoles[row.role_key] = toRoleDef(row)
+		}
+	}
+	return makeRoleSource(appRoles)
+}
+
+/** A `roles` row → core `RoleDef`. `permissions` parses from its JSON-array column. */
+function toRoleDef(row: RoleRow): RoleDef {
+	return {
+		name: row.name,
+		...(row.description !== null ? { description: row.description } : {}),
+		permissions: inlinePatterns(row.permissions),
+	}
+}
+
+/**
+ * Fetch the sources for a user and compute their permissions. Group resolution uses
+ * get-identity; an outage degrades to explicit grants only with `groupsUnavailable:
+ * true` (still fail-closed on the *permission* decision). The calling app's roles are
+ * loaded once and passed to the pure `computePermissions`.
  */
 export async function resolveUserPermissions(args: {
 	db: Db
@@ -209,7 +271,8 @@ export async function resolveUserPermissions(args: {
 
 	const isBootstrapAdmin = principal.email !== null && bootstrapAdmins.has(principal.email)
 
-	const permissions = computePermissions({ grants, groupMappings, isBootstrapAdmin })
+	const roles = await loadRoleSource(db, app)
+	const permissions = computePermissions({ app, grants, groupMappings, isBootstrapAdmin }, roles)
 	return { permissions, groupsUnavailable: groupResult.unavailable }
 }
 
@@ -219,5 +282,6 @@ export async function resolveUserPermissions(args: {
  */
 export async function resolveServicePermissions(db: Db, principal: PrincipalRow, app: string | null): Promise<PermissionEntry[]> {
 	const grants = await db.getActiveGrantsForApp(principal.id, app)
-	return computePermissions({ grants, groupMappings: [], isBootstrapAdmin: false })
+	const roles = await loadRoleSource(db, app)
+	return computePermissions({ app, grants, groupMappings: [], isBootstrapAdmin: false }, roles)
 }

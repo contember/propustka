@@ -1,5 +1,16 @@
 // Tiny formatting helpers shared across pages.
 
+import type { PermissionEntry } from '@propustka/worker/admin'
+
+/** A flat scope coordinate (one dimension + opaque value); null = global. */
+type Scope = NonNullable<PermissionEntry['scope']>
+
+/** Format a scope coordinate for display: `dimension = value`, or "Global" when null. */
+export function fmtScope(scope: Scope | null): string {
+	if (scope === null) return 'Global'
+	return `${scope.type} = ${scope.value}`
+}
+
 /** Format an epoch-millis timestamp as a readable local date-time. */
 export function fmtDate(ms: number | null | undefined): string {
 	if (ms === null || ms === undefined) return '—'

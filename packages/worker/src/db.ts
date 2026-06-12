@@ -12,20 +12,19 @@ export interface PrincipalRow {
 	created_at: number
 }
 
-export interface ProjectRow {
-	id: string
-	slug: string
-	name: string
-	created_at: number
-}
-
 export interface GrantRow {
 	id: string
 	principal_id: string
-	role_key: string
-	project_id: string | null
 	/** App id (ACCESS_APPS value) this grant applies to; NULL = all apps (cross-app). */
 	app: string | null
+	/** Named role/policy key; XOR `permissions`. Exactly one is non-null. */
+	role_key: string | null
+	/** Inline action-pattern set (JSON array); XOR `role_key`. Exactly one is non-null. */
+	permissions: string | null
+	/** Scope dimension; NULL = global (both scope columns rise/fall together). */
+	scope_type: string | null
+	/** Opaque, app-owned scope value; NULL = global. */
+	scope_value: string | null
 	granted_by: string | null
 	expires_at: number | null
 	created_at: number
@@ -36,10 +35,40 @@ export interface GroupMappingRow {
 	provider: string
 	group_ref: string
 	role_key: string
-	project_id: string | null
 	/** App id this mapping applies to; NULL = all apps. */
 	app: string | null
+	/** Scope dimension; NULL = global. */
+	scope_type: string | null
+	/** Opaque, app-owned scope value; NULL = global. */
+	scope_value: string | null
 	created_at: number
+}
+
+/** A role/policy bundle row (the `roles` table). `permissions` is a JSON array string. */
+export interface RoleRow {
+	app: string
+	role_key: string
+	name: string
+	description: string | null
+	/** JSON array of action patterns, e.g. '["project.read","report.*"]'. */
+	permissions: string
+	/** 'app' = reconciled from code, 'custom' = admin-composed. */
+	origin: 'app' | 'custom'
+	created_at: number
+}
+
+/** A scope-dimension row (the `app_scopes` table). */
+export interface AppScopeRow {
+	app: string
+	scope_type: string
+	label: string | null
+}
+
+/** An action-catalog row (the `app_actions` table). */
+export interface AppActionRow {
+	app: string
+	action: string
+	description: string | null
 }
 
 export interface AuditEventRow {
@@ -307,25 +336,35 @@ export class Db {
 		return this.d1.prepare('SELECT * FROM grants WHERE id = ?').bind(id).first<GrantRow>()
 	}
 
+	/**
+	 * Create a grant. EITHER `roleKey` (named role/policy) OR `permissions` (an inline
+	 * action-pattern set, JSON-encoded here) — the caller MUST supply exactly one; the
+	 * DB CHECK rejects both/neither. `scopeType`/`scopeValue` are both-or-neither (both
+	 * null = global). The handler validates which is set; this layer just persists it.
+	 */
 	async createGrant(input: {
 		principalId: string
-		roleKey: string
-		projectId?: string | null
 		app?: string | null
+		roleKey?: string | null
+		permissions?: string[] | null
+		scopeType?: string | null
+		scopeValue?: string | null
 		grantedBy?: string | null
 		expiresAt?: number | null
 	}): Promise<GrantRow> {
 		const id = uuidv7()
 		return firstRow<GrantRow>(
 			this.d1
-				.prepare(`INSERT INTO grants (id, principal_id, role_key, project_id, app, granted_by, expires_at)
-					VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`)
+				.prepare(`INSERT INTO grants (id, principal_id, app, role_key, permissions, scope_type, scope_value, granted_by, expires_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
 				.bind(
 					id,
 					input.principalId,
-					input.roleKey,
-					input.projectId ?? null,
 					input.app ?? null,
+					input.roleKey ?? null,
+					input.permissions == null ? null : JSON.stringify(input.permissions),
+					input.scopeType ?? null,
+					input.scopeValue ?? null,
 					input.grantedBy ?? null,
 					input.expiresAt ?? null,
 				),
@@ -372,15 +411,24 @@ export class Db {
 		provider: string
 		groupRef: string
 		roleKey: string
-		projectId?: string | null
 		app?: string | null
+		scopeType?: string | null
+		scopeValue?: string | null
 	}): Promise<GroupMappingRow> {
 		const id = uuidv7()
 		return firstRow<GroupMappingRow>(
 			this.d1
-				.prepare(`INSERT INTO group_role_mappings (id, provider, group_ref, role_key, project_id, app)
-					VALUES (?, ?, ?, ?, ?, ?) RETURNING *`)
-				.bind(id, input.provider, input.groupRef, input.roleKey, input.projectId ?? null, input.app ?? null),
+				.prepare(`INSERT INTO group_role_mappings (id, provider, group_ref, role_key, app, scope_type, scope_value)
+					VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`)
+				.bind(
+					id,
+					input.provider,
+					input.groupRef,
+					input.roleKey,
+					input.app ?? null,
+					input.scopeType ?? null,
+					input.scopeValue ?? null,
+				),
 		)
 	}
 
@@ -393,31 +441,176 @@ export class Db {
 		return (result.meta.changes ?? 0) > 0
 	}
 
-	// ── Projects ──────────────────────────────────────────────────────────────
+	// ── App-declared vocabulary (roles, scopes, actions) ──────────────────────
 
-	async listProjects(): Promise<ProjectRow[]> {
-		const { results } = await this.d1.prepare('SELECT * FROM projects ORDER BY created_at DESC').all<ProjectRow>()
+	/** Every role row for an app (origin='app' AND origin='custom') — for resolution + listing. */
+	async listRoles(app: string): Promise<RoleRow[]> {
+		const { results } = await this.d1
+			.prepare('SELECT * FROM roles WHERE app = ? ORDER BY role_key')
+			.bind(app)
+			.all<RoleRow>()
 		return results
 	}
 
-	async getProjectById(id: string): Promise<ProjectRow | null> {
-		return this.d1.prepare('SELECT * FROM projects WHERE id = ?').bind(id).first<ProjectRow>()
+	/** Role rows for an app filtered by origin — used to list just the app/custom set. */
+	async listRolesByOrigin(app: string, origin: 'app' | 'custom'): Promise<RoleRow[]> {
+		const { results } = await this.d1
+			.prepare('SELECT * FROM roles WHERE app = ? AND origin = ? ORDER BY role_key')
+			.bind(app, origin)
+			.all<RoleRow>()
+		return results
 	}
 
-	async createProject(input: { slug: string; name: string }): Promise<ProjectRow> {
-		const id = uuidv7()
-		return firstRow<ProjectRow>(
+	async getRole(app: string, roleKey: string): Promise<RoleRow | null> {
+		return this.d1.prepare('SELECT * FROM roles WHERE app = ? AND role_key = ?').bind(app, roleKey).first<RoleRow>()
+	}
+
+	/**
+	 * Upsert a single role. `permissions` is JSON-encoded here. ON CONFLICT keeps the
+	 * row's PK (app, role_key) and overwrites the mutable columns — origin included, so
+	 * a reconcile can (re)assert origin='app' on an existing key. `created_at` is left
+	 * untouched on update.
+	 */
+	async upsertRole(input: {
+		app: string
+		roleKey: string
+		name: string
+		description?: string | null
+		permissions: string[]
+		origin: 'app' | 'custom'
+	}): Promise<RoleRow> {
+		return firstRow<RoleRow>(
 			this.d1
-				.prepare('INSERT INTO projects (id, slug, name) VALUES (?, ?, ?) RETURNING *')
-				.bind(id, input.slug, input.name),
+				.prepare(`INSERT INTO roles (app, role_key, name, description, permissions, origin)
+					VALUES (?, ?, ?, ?, ?, ?)
+					ON CONFLICT (app, role_key) DO UPDATE SET
+						name = excluded.name,
+						description = excluded.description,
+						permissions = excluded.permissions,
+						origin = excluded.origin
+					RETURNING *`)
+				.bind(
+					input.app,
+					input.roleKey,
+					input.name,
+					input.description ?? null,
+					JSON.stringify(input.permissions),
+					input.origin,
+				),
 		)
 	}
 
-	async updateProject(id: string, name: string): Promise<ProjectRow | null> {
+	async deleteRole(app: string, roleKey: string): Promise<boolean> {
+		const result = await this.d1.prepare('DELETE FROM roles WHERE app = ? AND role_key = ?').bind(app, roleKey).run()
+		return (result.meta.changes ?? 0) > 0
+	}
+
+	/** The app's action catalog as plain strings — the validation source for patterns. */
+	async listActionCatalog(app: string): Promise<string[]> {
+		const { results } = await this.d1
+			.prepare('SELECT action FROM app_actions WHERE app = ? ORDER BY action')
+			.bind(app)
+			.all<{ action: string }>()
+		return results.map((r) => r.action)
+	}
+
+	async listAppScopes(app: string): Promise<AppScopeRow[]> {
+		const { results } = await this.d1
+			.prepare('SELECT * FROM app_scopes WHERE app = ? ORDER BY scope_type')
+			.bind(app)
+			.all<AppScopeRow>()
+		return results
+	}
+
+	async listAppActions(app: string): Promise<AppActionRow[]> {
+		const { results } = await this.d1
+			.prepare('SELECT * FROM app_actions WHERE app = ? ORDER BY action')
+			.bind(app)
+			.all<AppActionRow>()
+		return results
+	}
+
+	/**
+	 * Idempotent reconcile of an app's declared vocabulary in one atomic batch: upsert
+	 * the given scopes/actions/roles (roles forced to origin='app'), then delete any
+	 * origin='app' rows NOT in the incoming set. origin='custom' roles are NEVER touched
+	 * (admin-composed policies survive a redeploy). Validation (patterns vs. the new
+	 * action catalog) is the caller's job — this layer just writes the reconciled state.
+	 */
+	async reconcileAppSchema(input: {
+		app: string
+		scopes: { scopeType: string; label?: string | null }[]
+		actions: { action: string; description?: string | null }[]
+		roles: { roleKey: string; name: string; description?: string | null; permissions: string[] }[]
+	}): Promise<void> {
+		const { app } = input
+		const statements: D1PreparedStatement[] = []
+
+		// Upsert scopes, then prune app scopes not in the incoming set.
+		for (const scope of input.scopes) {
+			statements.push(
+				this.d1
+					.prepare(`INSERT INTO app_scopes (app, scope_type, label) VALUES (?, ?, ?)
+						ON CONFLICT (app, scope_type) DO UPDATE SET label = excluded.label`)
+					.bind(app, scope.scopeType, scope.label ?? null),
+			)
+		}
+		statements.push(this.pruneNotIn('app_scopes', 'scope_type', app, input.scopes.map((s) => s.scopeType)))
+
+		// Upsert actions, then prune actions not in the incoming set.
+		for (const action of input.actions) {
+			statements.push(
+				this.d1
+					.prepare(`INSERT INTO app_actions (app, action, description) VALUES (?, ?, ?)
+						ON CONFLICT (app, action) DO UPDATE SET description = excluded.description`)
+					.bind(app, action.action, action.description ?? null),
+			)
+		}
+		statements.push(this.pruneNotIn('app_actions', 'action', app, input.actions.map((a) => a.action)))
+
+		// Upsert roles as origin='app', then prune origin='app' roles not in the set.
+		// origin='custom' rows are excluded from the prune, so they're preserved.
+		for (const role of input.roles) {
+			statements.push(
+				this.d1
+					.prepare(`INSERT INTO roles (app, role_key, name, description, permissions, origin)
+						VALUES (?, ?, ?, ?, ?, 'app')
+						ON CONFLICT (app, role_key) DO UPDATE SET
+							name = excluded.name,
+							description = excluded.description,
+							permissions = excluded.permissions,
+							origin = 'app'`)
+					.bind(app, role.roleKey, role.name, role.description ?? null, JSON.stringify(role.permissions)),
+			)
+		}
+		statements.push(this.pruneAppRolesNotIn(app, input.roles.map((r) => r.roleKey)))
+
+		await this.d1.batch(statements)
+	}
+
+	/**
+	 * Build a DELETE that removes rows for `app` whose `column` is not in `keep`. An
+	 * empty `keep` deletes all the app's rows in that table (a schema with no scopes,
+	 * say, prunes every prior scope). NULL→placeholder handling is unnecessary here:
+	 * every kept value is a concrete string.
+	 */
+	private pruneNotIn(table: 'app_scopes' | 'app_actions', column: string, app: string, keep: string[]): D1PreparedStatement {
+		if (keep.length === 0) {
+			return this.d1.prepare(`DELETE FROM ${table} WHERE app = ?`).bind(app)
+		}
+		const placeholders = keep.map(() => '?').join(', ')
+		return this.d1.prepare(`DELETE FROM ${table} WHERE app = ? AND ${column} NOT IN (${placeholders})`).bind(app, ...keep)
+	}
+
+	/** Like pruneNotIn but ONLY over origin='app' roles — custom policies are never pruned. */
+	private pruneAppRolesNotIn(app: string, keep: string[]): D1PreparedStatement {
+		if (keep.length === 0) {
+			return this.d1.prepare(`DELETE FROM roles WHERE app = ? AND origin = 'app'`).bind(app)
+		}
+		const placeholders = keep.map(() => '?').join(', ')
 		return this.d1
-			.prepare('UPDATE projects SET name = ? WHERE id = ? RETURNING *')
-			.bind(name, id)
-			.first<ProjectRow>()
+			.prepare(`DELETE FROM roles WHERE app = ? AND origin = 'app' AND role_key NOT IN (${placeholders})`)
+			.bind(app, ...keep)
 	}
 
 	// ── Capability tokens ─────────────────────────────────────────────────────

@@ -87,7 +87,7 @@ export async function redeemCapability(services: Services, input: RedeemCapabili
 /**
  * Delegation check (pure): every requested grant's action must be covered by the
  * issuer's permissions, using the same matching as `can()` — scoped to the grant's
- * `projectId` when given (omitted → the issuer must hold the action globally).
+ * `scope` when given (omitted/null → the issuer must hold the action globally).
  * Returns the first uncovered grant, or null if all are covered.
  */
 export function findUncoveredGrant(
@@ -95,8 +95,7 @@ export function findUncoveredGrant(
 	grants: IssueCapabilityGrant[],
 ): IssueCapabilityGrant | null {
 	for (const grant of grants) {
-		const scope = grant.projectId ?? undefined
-		if (!permits(issuerPermissions, grant.action, scope)) {
+		if (!permits(issuerPermissions, grant.action, grant.scope ?? undefined)) {
 			return grant
 		}
 	}
@@ -122,7 +121,7 @@ export async function issueCapability(
 		issuedBy: issuer.id,
 		expiresAt: input.expiresAt ?? null,
 		maxUses: input.maxUses ?? null,
-		// Store only (action, resource) — projectId was for the delegation check only.
+		// Store only (action, resource) — scope was for the delegation check only.
 		grants: input.grants.map((g) => ({ action: g.action, resource: g.resource })),
 	})
 
@@ -135,8 +134,8 @@ export async function issueCapability(
  * Revoke a capability token by id. Authorization (pure-ish, one DB read for grants):
  * the original issuer may always revoke; otherwise the caller must be able to (re-)issue
  * the token's grants — i.e. hold every granted action GLOBALLY (an admin / app-wide
- * operator), checked with the same `findUncoveredGrant` as issue. A project-scoped
- * operator can therefore revoke only what it issued: the grant's `projectId` is not
+ * operator), checked with the same `findUncoveredGrant` as issue. A scope-bound
+ * operator can therefore revoke only what it issued: the grant's `scope` is not
  * stored (it was a delegation-check input at issue time), so scoped re-delegation can't
  * be re-derived here — we fail closed to issuer-or-global rather than guess. Idempotent.
  */

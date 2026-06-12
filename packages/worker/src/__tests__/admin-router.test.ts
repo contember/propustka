@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { handleAdmin } from '../admin/router'
 import type { Services } from '../services'
-import { createHarness, DEFAULT_AUD, type Harness, seedGrant, seedProject, seedUser } from './helpers/harness'
+import { createHarness, DEFAULT_AUD, type Harness, seedGrant, seedRole, seedUser } from './helpers/harness'
 
 // FINDING TEST-2: the admin gate wiring in handleAdmin. Every /admin/* request must
 // pass a scope-less can('iam.admin') check — satisfied ONLY by a GLOBAL `admin`
@@ -72,13 +72,12 @@ describe('handleAdmin — admin gate (scope-less iam.admin)', () => {
 		expect(res.status).toBe(200)
 	})
 
-	test('PROJECT-SCOPED admin grant → 403 (scope-less iam.admin is not satisfied by a scoped entry)', async () => {
-		// The core security property: an `admin` grant pinned to one project must NOT
-		// confer the global admin capability.
+	test('SCOPE-BOUND admin grant → 403 (scope-less iam.admin is not satisfied by a scoped entry)', async () => {
+		// The core security property: an `admin` grant pinned to one scope value must
+		// NOT confer the global admin capability.
 		const h = createHarness()
-		const projectId = seedProject(h.sqlite, 'alpha')
 		const id = seedUser(h.sqlite, { sub: 'sub-scoped', email: 'scoped@example.com' })
-		seedGrant(h.sqlite, id, 'admin', projectId) // scoped
+		seedGrant(h.sqlite, id, 'admin', { type: 'team', value: 'acme' }) // scope-bound
 
 		const token = await h.signToken({ email: 'scoped@example.com', sub: 'sub-scoped' })
 		const res = await run(h, adminRequest('/admin/roles', { token }))
@@ -88,8 +87,9 @@ describe('handleAdmin — admin gate (scope-less iam.admin)', () => {
 
 	test('only a viewer grant → 403', async () => {
 		const h = createHarness()
+		seedRole(h.sqlite, 'iam-admin', 'viewer', ['project.read'])
 		const id = seedUser(h.sqlite, { sub: 'sub-viewer', email: 'viewer@example.com' })
-		seedGrant(h.sqlite, id, 'viewer', null)
+		seedGrant(h.sqlite, id, 'viewer', null, 'iam-admin')
 
 		const token = await h.signToken({ email: 'viewer@example.com', sub: 'sub-viewer' })
 		const res = await run(h, adminRequest('/admin/roles', { token }))
@@ -138,7 +138,7 @@ describe('handleAdmin — same-origin CSRF guard (SEC-2)', () => {
 		const token = await h.signToken({ email: 'admin2@example.com', sub: 'sub-admin2' })
 		const res = await run(
 			h,
-			adminRequest('/admin/projects', { method: 'POST', token, origin: 'https://evil.example.com' }),
+			adminRequest('/admin/grants', { method: 'POST', token, origin: 'https://evil.example.com' }),
 		)
 
 		expect(res.status).toBe(403)
@@ -151,11 +151,12 @@ describe('handleAdmin — same-origin CSRF guard (SEC-2)', () => {
 		// the gate instead (403 'admin permission required'), proving the guard let it
 		// through rather than blocking on origin.
 		const h = createHarness()
+		seedRole(h.sqlite, 'iam-admin', 'viewer', ['project.read'])
 		const id = seedUser(h.sqlite, { sub: 'sub-v2', email: 'v2@example.com' })
-		seedGrant(h.sqlite, id, 'viewer', null)
+		seedGrant(h.sqlite, id, 'viewer', null, 'iam-admin')
 
 		const token = await h.signToken({ email: 'v2@example.com', sub: 'sub-v2' })
-		const res = await run(h, adminRequest('/admin/projects', { method: 'POST', token, origin: ORIGIN }))
+		const res = await run(h, adminRequest('/admin/grants', { method: 'POST', token, origin: ORIGIN }))
 
 		expect(res.status).toBe(403)
 		const body: unknown = await res.json()

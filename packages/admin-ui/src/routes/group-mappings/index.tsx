@@ -1,5 +1,5 @@
 import { createPage } from '@buzola/router'
-import type { AppDto, CreateGroupMappingRequest, GroupMappingDto, ListResponse, ProjectDto, RoleDto } from '@propustka/worker/admin'
+import type { AppDto, CreateGroupMappingRequest, GroupMappingDto, ListResponse } from '@propustka/worker/admin'
 import { useState } from 'react'
 import { AppPicker, type AppValue, resolveApp } from '../../components/AppPicker'
 import { Badge } from '../../components/Badge'
@@ -8,74 +8,60 @@ import { RolePicker } from '../../components/RolePicker'
 import { resolveScope, ScopePicker, type ScopeValue } from '../../components/ScopePicker'
 import { Table } from '../../components/Table'
 import { api, ApiError } from '../../lib/api'
+import { fmtScope } from '../../lib/format'
+import { useAppVocab } from '../../lib/useAppVocab'
 
 export default createPage()
 	.loader(async () => {
-		const [mappings, roles, projects, apps] = await Promise.all([
+		const [mappings, apps] = await Promise.all([
 			api.get<ListResponse<GroupMappingDto>>('/group-mappings'),
-			api.get<ListResponse<RoleDto>>('/roles'),
-			api.get<ListResponse<ProjectDto>>('/projects'),
 			api.get<ListResponse<AppDto>>('/apps'),
 		])
-		return { mappings: mappings.items, roles: roles.items, projects: projects.items, apps: apps.items }
+		return { mappings: mappings.items, apps: apps.items }
 	})
 	.route('/group-mappings')
-	.render(({ data, invalidate }) => {
-		const projectName = (id: string | null): string => {
-			if (id === null) return 'Global'
-			const match = data.projects.find((p) => p.id === id)
-			return match ? `${match.name} (${match.slug})` : id
-		}
+	.render(({ data, invalidate }) => (
+		<>
+			<div className="page-head">
+				<h1>Group mappings</h1>
+				<p className="hint">
+					Map an IdP group to a role. These are applied <strong>at login time, not live</strong>: removing a mapping takes effect on the next{' '}
+					<code>authenticate()</code> within cache TTL, and removing team membership only after the user's Access session refreshes.
+				</p>
+			</div>
 
-		return (
-			<>
-				<div className="page-head">
-					<h1>Group mappings</h1>
-					<p className="hint">
-						Map an IdP group to a role. These are applied <strong>at login time, not live</strong>: removing a mapping takes effect on the next{' '}
-						<code>authenticate()</code> within cache TTL, and removing team membership only after the user's Access session refreshes.
-					</p>
-				</div>
+			<CreateMappingForm apps={data.apps} onDone={invalidate} />
 
-				<CreateMappingForm roles={data.roles} projects={data.projects} apps={data.apps} onDone={invalidate} />
+			<Table
+				colSpan={6}
+				isEmpty={data.mappings.length === 0}
+				empty="No group mappings yet."
+				head={
+					<tr>
+						<th>Provider</th>
+						<th>Group ref</th>
+						<th>Role</th>
+						<th>App</th>
+						<th>Scope</th>
+						<th />
+					</tr>
+				}
+			>
+				{data.mappings.map((mapping) => <MappingRow key={mapping.id} mapping={mapping} onDone={invalidate} />)}
+			</Table>
+		</>
+	))
 
-				<Table
-					colSpan={6}
-					isEmpty={data.mappings.length === 0}
-					empty="No group mappings yet."
-					head={
-						<tr>
-							<th>Provider</th>
-							<th>Group ref</th>
-							<th>Role</th>
-							<th>App</th>
-							<th>Scope</th>
-							<th />
-						</tr>
-					}
-				>
-					{data.mappings.map((mapping) => (
-						<MappingRow
-							key={mapping.id}
-							mapping={mapping}
-							scopeLabel={projectName(mapping.projectId)}
-							onDone={invalidate}
-						/>
-					))}
-				</Table>
-			</>
-		)
-	})
-
-function CreateMappingForm(
-	{ roles, projects, apps, onDone }: { roles: RoleDto[]; projects: ProjectDto[]; apps: AppDto[]; onDone: () => void },
-) {
+function CreateMappingForm({ apps, onDone }: { apps: AppDto[]; onDone: () => void }) {
 	const [groupRef, setGroupRef] = useState('')
 	const [roleKey, setRoleKey] = useState('')
-	const [scope, setScope] = useState<ScopeValue>({ kind: 'unset' })
+	const [scope, setScope] = useState<ScopeValue>({ kind: 'global' })
 	const [appValue, setAppValue] = useState<AppValue>({ kind: 'unset' })
 	const [busy, setBusy] = useState(false)
 	const [error, setError] = useState<string | null>(null)
+
+	const app = appValue.kind === 'unset' ? undefined : appValue.kind === 'all' ? null : appValue.app
+	const vocab = useAppVocab(app)
 
 	async function submit(e: React.FormEvent) {
 		e.preventDefault()
@@ -84,18 +70,18 @@ function CreateMappingForm(
 			setError('Pick a role.')
 			return
 		}
-		let projectId: string | null
+		let appId: string | null
 		try {
-			projectId = resolveScope(scope)
-		} catch {
-			setError('Pick a scope.')
-			return
-		}
-		let app: string | null
-		try {
-			app = resolveApp(appValue)
+			appId = resolveApp(appValue)
 		} catch {
 			setError('Pick an app.')
+			return
+		}
+		let scopeFields: { scopeType: string | null; scopeValue: string | null }
+		try {
+			scopeFields = resolveScope(scope)
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : 'Pick a scope.')
 			return
 		}
 		setBusy(true)
@@ -104,13 +90,13 @@ function CreateMappingForm(
 				provider: 'github',
 				groupRef: groupRef.trim(),
 				roleKey,
-				projectId,
-				app,
+				app: appId,
+				...scopeFields,
 			}
 			await api.post('/group-mappings', body)
 			setGroupRef('')
 			setRoleKey('')
-			setScope({ kind: 'unset' })
+			setScope({ kind: 'global' })
 			setAppValue({ kind: 'unset' })
 			onDone()
 		} catch (cause) {
@@ -141,12 +127,14 @@ function CreateMappingForm(
 					Use the <code>&lt;org&gt;/&lt;team&gt;</code> form, lowercased, so it matches the normalized identity data.
 				</span>
 			</label>
+			<AppPicker apps={apps} value={appValue} onChange={setAppValue} idPrefix="mapping-app" />
+			{vocab.status === 'loading' && <p className="hint">Loading app roles…</p>}
+			{vocab.status === 'error' && <p className="error-text" role="alert">{vocab.message}</p>}
 			<label>
 				Role
-				<RolePicker roles={roles} value={roleKey} onChange={setRoleKey} />
+				<RolePicker roles={vocab.status === 'ok' ? vocab.vocab.roles : []} value={roleKey} onChange={setRoleKey} />
 			</label>
-			<AppPicker apps={apps} value={appValue} onChange={setAppValue} idPrefix="mapping-app" />
-			<ScopePicker projects={projects} value={scope} onChange={setScope} idPrefix="mapping-scope" />
+			<ScopePicker scopes={vocab.status === 'ok' ? vocab.vocab.scopes : []} value={scope} onChange={setScope} idPrefix="mapping-scope" />
 			{error && <p className="error-text" role="alert">{error}</p>}
 			<div className="form-actions">
 				<button type="submit" className="primary" disabled={busy}>{busy ? 'Creating…' : 'Create mapping'}</button>
@@ -155,8 +143,9 @@ function CreateMappingForm(
 	)
 }
 
-function MappingRow({ mapping, scopeLabel, onDone }: { mapping: GroupMappingDto; scopeLabel: string; onDone: () => void }) {
+function MappingRow({ mapping, onDone }: { mapping: GroupMappingDto; onDone: () => void }) {
 	const [confirming, setConfirming] = useState(false)
+	const scopeLabel = fmtScope(mapping.scopeType === null ? null : { type: mapping.scopeType, value: mapping.scopeValue ?? '' })
 
 	async function remove() {
 		await api.del(`/group-mappings/${mapping.id}`)
@@ -171,7 +160,7 @@ function MappingRow({ mapping, scopeLabel, onDone }: { mapping: GroupMappingDto;
 			</td>
 			<td>
 				<code>{mapping.roleKey}</code>
-				{mapping.dangling && <Badge tone="bad" title="This role_key is no longer in the code role registry.">dangling</Badge>}
+				{mapping.dangling && <Badge tone="bad" title="This role_key is no longer a known role for the app.">dangling</Badge>}
 			</td>
 			<td>{mapping.app ? <code>{mapping.app}</code> : <span className="muted">All apps</span>}</td>
 			<td>{scopeLabel}</td>

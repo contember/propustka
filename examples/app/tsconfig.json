@@ -4,5 +4,5 @@
 		"noEmit": true,
 		"types": ["@cloudflare/workers-types", "@types/bun"]
 	},
-	"include": ["src/**/*"]
+	"include": ["src/**/*", "propustka.schema.ts"]
 }

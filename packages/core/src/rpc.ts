@@ -1,4 +1,4 @@
-import type { PermissionEntry, PrincipalType } from './types'
+import type { PermissionEntry, PrincipalType, Scope } from './types'
 
 export interface AuthenticateInput {
 	/** Self-asserted caller app id; superseded by the aud-derived app id on valid tokens. */
@@ -60,7 +60,7 @@ export interface IssueCapabilityGrant {
 	action: string
 	resource: string
 	/** Scope for the delegation check ONLY (not stored). Omitted → issuer must hold the action globally. */
-	projectId?: string | null
+	scope?: Scope | null
 }
 
 export interface IssueCapabilityInput {

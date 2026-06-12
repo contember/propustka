@@ -1,4 +1,4 @@
-import type { DomainEvent, IssueCapabilityGrant, PrincipalType } from '@propustka/core'
+import type { DomainEvent, IssueCapabilityGrant, PrincipalType, Scope } from '@propustka/core'
 
 /**
  * The resolved caller's identity — who Access says you are, as the IAM Worker recorded
@@ -39,20 +39,22 @@ export interface AuthContext {
 	 */
 	readonly principal: PrincipalIdentity
 	/**
-	 * Point check: may this principal do `action` (optionally on `scope.project`)?
-	 * Scope-less → satisfied by GLOBAL permissions only; a project-scoped grant never
-	 * widens into a scope-less allow.
+	 * Point check: may this principal do `action` (optionally within `scope`, an opaque
+	 * `{ type, value }` coordinate)? Scope-less → satisfied by GLOBAL permissions only; a
+	 * scoped grant never widens into a scope-less allow.
 	 */
-	can(action: string, scope?: { project?: string }): boolean
+	can(action: string, scope?: Scope): boolean
 	/**
-	 * Scoping: which project ids may this principal perform `action` on?
+	 * Scoping: which scope values may this principal perform `action` on within `dimension`
+	 * (a scope type, e.g. `'organization'`)? Scopes are flat & independent — a list is always
+	 * relative to one dimension.
 	 *  - `null`      → unrestricted (holds the action globally — e.g. an admin)
-	 *  - `[]`        → no project access at all
-	 *  - non-empty   → exactly those project ids
-	 * Consume via `applyScope` so the empty-`IN ()` trap is handled once. `dimension`
-	 * defaults to `'project'` and is forward-looking only (v1 has a single scope dimension).
+	 *  - `[]`        → no access within this dimension at all
+	 *  - non-empty   → exactly those (opaque, app-owned) scope values
+	 * Consume via `applyScope` so the empty-`IN ()` trap is handled once. `dimension` is
+	 * REQUIRED — multiple scope types may coexist, so the caller must say which one.
 	 */
-	scopedTo(action: string, dimension?: string): string[] | null
+	scopedTo(action: string, dimension: string): string[] | null
 	/** Emit a domain audit event; app/principal/requestId are auto-attached. Fire-and-forget. */
 	audit(event: DomainEvent): Promise<void>
 }

@@ -104,6 +104,9 @@ export const api = {
 	post<T = unknown>(path: string, body?: unknown): Promise<T> {
 		return request<T>('POST', path, body ?? {})
 	},
+	put<T = unknown>(path: string, body?: unknown): Promise<T> {
+		return request<T>('PUT', path, body ?? {})
+	},
 	patch<T = unknown>(path: string, body?: unknown): Promise<T> {
 		return request<T>('PATCH', path, body ?? {})
 	},

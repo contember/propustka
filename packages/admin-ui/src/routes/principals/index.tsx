@@ -1,9 +1,8 @@
 import { createPage, Link, useNavigate } from '@buzola/router'
-import type { CreateGrantRequest, InviteRequest, ListResponse, PrincipalListItem, ProjectDto, RoleDto } from '@propustka/worker/admin'
+import type { AppDto, CreateGrantRequest, InviteRequest, ListResponse, PrincipalListItem } from '@propustka/worker/admin'
 import { useState } from 'react'
 import { StatusBadge } from '../../components/Badge'
-import { RolePicker } from '../../components/RolePicker'
-import { resolveScope, ScopePicker, type ScopeValue } from '../../components/ScopePicker'
+import { GrantComposer, useGrantComposerState } from '../../components/GrantComposer'
 import { Table } from '../../components/Table'
 import { api, ApiError } from '../../lib/api'
 import { fmtDate, parseDateTimeLocal } from '../../lib/format'
@@ -13,15 +12,13 @@ type TypeFilter = '' | PrincipalListItem['type']
 
 export default createPage()
 	.loader(async () => {
-		const [principals, roles, projects] = await Promise.all([
+		const [principals, apps] = await Promise.all([
 			api.get<ListResponse<PrincipalListItem>>('/principals'),
-			api.get<ListResponse<RoleDto>>('/roles'),
-			api.get<ListResponse<ProjectDto>>('/projects'),
+			api.get<ListResponse<AppDto>>('/apps'),
 		])
 		return {
 			principals: principals.items,
-			roles: roles.items,
-			projects: projects.items,
+			apps: apps.items,
 		}
 	})
 	.route('/principals')
@@ -48,7 +45,7 @@ export default createPage()
 					<h1>Principals</h1>
 				</div>
 
-				<InviteForm roles={data.roles} projects={data.projects} onDone={invalidate} />
+				<InviteForm apps={data.apps} onDone={invalidate} />
 
 				<div className="toolbar">
 					<label>
@@ -101,19 +98,12 @@ export default createPage()
 		)
 	})
 
-interface InviteFormProps {
-	roles: RoleDto[]
-	projects: ProjectDto[]
-	onDone: () => void
-}
-
-function InviteForm({ roles, projects, onDone }: InviteFormProps) {
+function InviteForm({ apps, onDone }: { apps: AppDto[]; onDone: () => void }) {
 	const navigate = useNavigate()
 	const [open, setOpen] = useState(false)
 	const [email, setEmail] = useState('')
 	const [withGrant, setWithGrant] = useState(false)
-	const [roleKey, setRoleKey] = useState('')
-	const [scope, setScope] = useState<ScopeValue>({ kind: 'unset' })
+	const composer = useGrantComposerState()
 	const [expiry, setExpiry] = useState('')
 	const [busy, setBusy] = useState(false)
 	const [error, setError] = useState<string | null>(null)
@@ -122,16 +112,12 @@ function InviteForm({ roles, projects, onDone }: InviteFormProps) {
 		e.preventDefault()
 		setError(null)
 
-		let projectId: string | null = null
+		let authorization: ReturnType<typeof composer.build> | null = null
 		if (withGrant) {
-			if (roleKey === '') {
-				setError('Pick a role for the grant, or uncheck "also grant a role".')
-				return
-			}
 			try {
-				projectId = resolveScope(scope)
-			} catch {
-				setError('Pick a scope for the grant.')
+				authorization = composer.build()
+			} catch (cause) {
+				setError(cause instanceof Error ? cause.message : 'Complete the grant, or uncheck "also grant a role".')
 				return
 			}
 		}
@@ -139,11 +125,10 @@ function InviteForm({ roles, projects, onDone }: InviteFormProps) {
 		setBusy(true)
 		try {
 			const invited = await api.post<PrincipalListItem>('/principals', { email } satisfies InviteRequest)
-			if (withGrant) {
+			if (authorization !== null) {
 				const body: CreateGrantRequest = {
 					principalId: invited.id,
-					roleKey,
-					projectId,
+					...authorization,
 					expiresAt: parseDateTimeLocal(expiry),
 				}
 				await api.post('/grants', body)
@@ -151,8 +136,7 @@ function InviteForm({ roles, projects, onDone }: InviteFormProps) {
 			setOpen(false)
 			setEmail('')
 			setWithGrant(false)
-			setRoleKey('')
-			setScope({ kind: 'unset' })
+			composer.reset()
 			setExpiry('')
 			onDone()
 			navigate('principals/detail', { params: { id: invited.id } })
@@ -193,11 +177,7 @@ function InviteForm({ roles, projects, onDone }: InviteFormProps) {
 			</label>
 			{withGrant && (
 				<div className="nested">
-					<label>
-						Role
-						<RolePicker roles={roles} value={roleKey} onChange={setRoleKey} />
-					</label>
-					<ScopePicker projects={projects} value={scope} onChange={setScope} idPrefix="invite-scope" />
+					<GrantComposer apps={apps} state={composer} idPrefix="invite" />
 					<label>
 						Expires (optional)
 						<input type="datetime-local" value={expiry} onChange={(e) => setExpiry(e.target.value)} />

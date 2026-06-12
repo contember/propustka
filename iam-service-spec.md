@@ -10,8 +10,8 @@ via **service bindings** through a thin client SDK.
 Division of responsibility:
 
 - **Cloudflare Access** → authentication (who you are) + coarse gate (can you reach the app at all). Not in scope to build.
-- **IAM Worker** → authorization (RBAC scoped to projects), auth logging, domain-event audit ingest, and issuing a request context. This is what we build.
-- **Apps** → generate domain audit events (only they know what changed); call `authenticate()` and `audit()` and nothing else.
+- **IAM Worker** → authorization (AWS-IAM-style RBAC over generic, app-owned scopes), auth logging, domain-event audit ingest, and issuing a request context. This is what we build.
+- **Apps** → declare their own authz vocabulary (scope dimensions + action catalog + roles) in code and reconcile it in; generate domain audit events (only they know what changed); call `authenticate()` and `audit()` and nothing else.
 
 This is for **internal use** (tens of users, tens of apps). Do **not** over-engineer.
 D1 is the datastore. No Pipelines/Iceberg/Zanzibar/graph models.
@@ -22,6 +22,9 @@ D1 is the datastore. No Pipelines/Iceberg/Zanzibar/graph models.
 2. **Provisioning needs Cloudflare API access:** the admin service-token flow calls the Cloudflare Access API, so the Worker holds a scoped Cloudflare API token (_Access: Service Tokens Edit_, and Access policy edit if we automate policy inclusion) plus account id as secrets (`CF_API_TOKEN`, `CF_ACCOUNT_ID`). These are admin-only; never expose to app callers.
 3. **Caller app identity: verified where a token exists, self-asserted elsewhere.** Service bindings carry no caller metadata; Cloudflare does not provide one. But on any call that forwards a valid Access JWT (`authenticate()`, `issueCapability()`), the token's verified `aud` identifies the Access application, and the IAM Worker derives the app id from the `ACCESS_APPS` map (see JWT section) — that value, not the SDK-passed one, goes into the auth log and the request context. Only where no valid token exists (`audit()`, `redeemCapability()`, failure-path log rows) is the SDK-passed app id used: a trust-the-internal-network value for **audit labeling only** — it is NOT a security boundary. Do not build per-app secret auth; the security perimeter is Access at the edge. Document this split in code comments. **Principal identity is never app-asserted:** wherever the principal matters for a server-side check (authentication, capability issuance), the IAM Worker resolves it from the forwarded Access credentials itself — it never trusts an app-passed principal id for a permission decision.
 4. **`can()` must evaluate locally.** `authenticate()` returns the principal _with_ their resolved permissions in one RPC; `can()` is a pure function over that array. No round-trip per permission check.
+   4a. **Scope is generic, flat, and app-owned.** A grant/mapping is scoped to a `(scope_type, scope_value)` pair (both NULL = global). `scope_value` is an **opaque, app-owned string** (a slug or uuid) — Propustka never FKs, lists, or interprets it. Dimensions are **flat and independent**: there is no hierarchy or containment between them. An app that needs hierarchy resolves it itself and passes the right scope coordinate on the check. Propustka does **not** own a project list (the `projects` table is gone).
+   4b. **App-declared vocabulary, reconciled in.** Each app declares its `AppSchema` — scope dimensions, an action **catalog**, and roles — in its own code, and pushes it via the idempotent `PUT /admin/apps/:app/schema`. Reconcile upserts and prunes `origin='app'` rows and **never** touches `origin='custom'`. The action catalog is the validation source: an action pattern (`*`, exact, or `prefix.*` over a non-empty namespace) is rejected at role/policy/inline-grant creation if it is not allowed by the catalog (`isActionAllowed`).
+   4c. **Additive-allow ONLY.** Permissions are AWS-IAM-style but a strict subset: there is **no explicit Deny, no conditions, no ABAC**. A permission either grants (a matching pattern at a satisfying scope) or is silent. Evaluation is a pure union; nothing ever subtracts.
 5. **Distinguish 401 from 403.** `authenticate()` returns either a valid principal OR a structured failure reason. Missing/invalid token → 401 (not authenticated). A credential that validates but maps to an unknown or disabled principal → 403 (authenticated, not allowed). A valid principal lacking a permission is `can()` → false → app responds 403. Never collapse these into one exception; the SDK failure object carries the suggested HTTP status.
 6. **Audit writes are fire-and-forget.** Use `ctx.waitUntil()`; a failed audit write must never fail or delay the user-facing operation.
 7. **Fail-closed.** If policy evaluation cannot complete, deny.
@@ -87,34 +90,38 @@ group→role mapping, the IAM Worker calls the Access get-identity endpoint:
   silently caused by a transient identity-endpoint error. Still fail-closed on the _permission_
   decision itself.
 
-## Roles: defined in code
+## Roles & policies: app-declared in code, reconciled into D1
 
-Role → permission bundles are **defined in code, not in D1**. We have ~3 stable roles;
-runtime role editing is admin surface we don't need, and code-defined roles are versioned
-and deployed like everything else.
+Role → permission bundles (AWS "managed policies") live **in D1, per app** — the `roles`
+table. Each app declares its canonical roles in its own `AppSchema` (`origin='app'`) and
+reconciles them in; an admin may compose additional `origin='custom'` policies in the UI.
+Roles are no longer a hardcoded code registry — apps disagree on their vocabulary, and a
+runtime per-app picker (with real action choices) is now wanted, so the YAGNI deferral was
+intentionally resolved.
+
+The **one exception** is a single built-in, cross-app role kept in Worker code:
 
 ```ts
-// roles.ts — single source of truth
-export interface RoleDef {
-	name: string
-	description?: string
-	permissions: string[]
-}
-
-export const ROLES: Record<string, RoleDef> = {
+// roles.ts — the only built-in. Everything else is per-app DB rows.
+export const BUILTIN_ROLES: Record<string, RoleDef> = {
 	admin: { name: 'Admin', permissions: ['*'] },
-	editor: { name: 'Editor', permissions: ['project.*', 'report.*'] },
-	viewer: { name: 'Viewer', permissions: ['project.read', 'report.read'] },
 }
 ```
 
-- Implement resolution against a small `RoleSource` interface (`getRole(key)`,
-  `listRoles()`) so a D1-backed source can replace the code registry later without touching
-  permission resolution. This is the only abstraction point — do not build the D1 variant now.
-- `grants.role_key` and `group_role_mappings.role_key` are plain TEXT (no FK — there is no
-  roles table). Validate the key against the registry **at grant/mapping creation time** and
-  reject unknown keys. A grant whose role key no longer exists in code resolves to zero
-  permissions (fail-closed) and should be surfaced in the admin UI as dangling.
+- `admin = ['*']` must resolve for **any** app, including `app=null` (the cross-app /
+  bootstrap path) — so it cannot sit in a per-app DB table. It serves bootstrap admins and
+  cross-app (`app=NULL`) grants. An app cannot shadow it (built-ins win on a key collision).
+- A `roles` row is a JSON array of action patterns plus an `origin` (`'app'` reconciled from
+  code, or `'custom'` admin-composed) — see the data model. Patterns stay as patterns
+  (`*`, `prefix.*`, exact); they are not pre-expanded — `permits()` matches them at check time.
+- Resolution runs against the `RoleSource` interface (`getRole(app, key)`,
+  `listRoles(app)`): the Worker layers the built-ins over the calling app's DB roles, loaded
+  once up front so `computePermissions` stays pure (no I/O during the union).
+- `grants.role_key` / `group_role_mappings.role_key` are plain TEXT (**no FK** — a grant may
+  set `app=NULL` while a `roles` row always has a concrete app, so an FK can't express it).
+  Validate the key **at grant/mapping creation time** against the built-ins OR the app's
+  `roles` rows (`isKnownRole`); reject unknown keys. A grant whose role key no longer resolves
+  confers zero permissions (fail-closed) and is surfaced in the admin UI as dangling.
 
 ## Data model (D1)
 
@@ -143,39 +150,91 @@ CREATE UNIQUE INDEX idx_principals_uq_external ON principals(type, external_id)
 CREATE UNIQUE INDEX idx_principals_uq_email ON principals(email)
   WHERE type = 'user' AND email IS NOT NULL;
 
-CREATE TABLE projects (
-  id         TEXT PRIMARY KEY,                   -- UUIDv7
-  slug       TEXT NOT NULL UNIQUE,
-  name       TEXT NOT NULL,
-  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+-- ── App-declared vocabulary (reconciled from each app's code) ──────────────────
+
+-- The scope DIMENSIONS an app understands. authenticate() doesn't need this (scope
+-- matching is opaque string equality); it exists so the admin UI offers a real dropdown
+-- of scope types per app instead of free text. PK (app, scope_type) — a dimension is
+-- unique within an app; different apps may reuse the same name.
+CREATE TABLE app_scopes (
+  app        TEXT NOT NULL,
+  scope_type TEXT NOT NULL,                       -- 'organization' | 'team' | 'project' | …
+  label      TEXT,                                -- human label for the admin UI
+  PRIMARY KEY (app, scope_type)
 );
+
+-- The ACTION CATALOG per app — every concrete action the app authorizes against. Roles,
+-- custom policies, and inline grants reference these by string (or glob pattern); this is
+-- the source of truth the admin UI lists and that isActionAllowed() validates against.
+CREATE TABLE app_actions (
+  app         TEXT NOT NULL,
+  action      TEXT NOT NULL,                      -- concrete action, e.g. 'project.read'
+  description TEXT,
+  PRIMARY KEY (app, action)
+);
+
+-- Named permission BUNDLES (AWS "managed policies"). Either reconciled from app code
+-- (origin='app') or composed by an admin in the UI (origin='custom'). `permissions` is a
+-- JSON array of action patterns; json_valid keeps malformed JSON out at write time so the
+-- read path JSON-parses without defensive guards. PK (app, role_key).
+CREATE TABLE roles (
+  app         TEXT NOT NULL,
+  role_key    TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  description TEXT,
+  permissions TEXT NOT NULL CHECK (json_valid(permissions)),     -- JSON array of action patterns
+  origin      TEXT NOT NULL CHECK (origin IN ('app', 'custom')),  -- 'app'=reconciled, 'custom'=admin-made
+  created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+  PRIMARY KEY (app, role_key)
+);
+
+-- ── Grants ─────────────────────────────────────────────────────────────────────
 
 CREATE TABLE grants (
-  id           TEXT PRIMARY KEY,                 -- UUIDv7
+  id           TEXT PRIMARY KEY,                  -- UUIDv7
   principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
-  role_key     TEXT NOT NULL,                    -- validated against the code role registry
-  project_id   TEXT REFERENCES projects(id) ON DELETE CASCADE,  -- NULL = global / all projects
+  app          TEXT,                              -- NULL = all apps (cross-app, e.g. super-admin)
+  role_key     TEXT,                              -- named role/policy; XOR permissions
+  permissions  TEXT CHECK (permissions IS NULL OR json_valid(permissions)),  -- inline action set; XOR role_key
+  scope_type   TEXT,                              -- NULL = global (all scopes)
+  scope_value  TEXT,                              -- OPAQUE, app-owned; NULL = global
   granted_by   TEXT REFERENCES principals(id),
-  expires_at   INTEGER,                          -- NULL = permanent
-  created_at   INTEGER NOT NULL DEFAULT (unixepoch())
+  expires_at   INTEGER,                           -- NULL = permanent
+  created_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+  CHECK ((role_key IS NULL) <> (permissions IS NULL)),  -- EXACTLY one of role_key / inline permissions
+  CHECK ((scope_type IS NULL) = (scope_value IS NULL))  -- scope is both-or-neither
 );
 
--- SQLite treats NULLs as distinct in UNIQUE constraints, so a plain
--- UNIQUE(principal_id, role_key, project_id) would allow unlimited duplicate
--- global grants (project_id IS NULL). Two partial unique indexes instead:
-CREATE UNIQUE INDEX idx_grants_uq_scoped ON grants(principal_id, role_key, project_id)
-  WHERE project_id IS NOT NULL;
-CREATE UNIQUE INDEX idx_grants_uq_global ON grants(principal_id, role_key)
-  WHERE project_id IS NULL;
+-- A grant carries EITHER a named role (a reusable bundle, app-declared or admin-composed)
+-- OR an inline JSON action set — exactly one, like an attached managed policy vs. an inline
+-- policy (the XOR CHECK). Scope is the generic (scope_type, scope_value) pair; both NULL =
+-- global. role_key is NOT FK'd to roles(app, role_key): a grant may set app=NULL (cross-app)
+-- while a roles row always has a concrete app, so an FK can't express it — roles are
+-- validated in the Worker against the reconciled set.
+
+-- SQLite treats NULLs as distinct in a UNIQUE index, so partial unique indexes; NULL app is
+-- folded to '*' so two NULL-app globals still collide. KEY DIFFERENCE vs. roles: the indexes
+-- constrain ONLY role-based grants (role_key IS NOT NULL). Inline grants are intentionally
+-- unconstrained — each inline permission set is its own distinct attachment (like two
+-- separate inline policies), so duplicates across (principal, scope, app) are meaningful.
+CREATE UNIQUE INDEX idx_grants_uq_scoped
+  ON grants(principal_id, role_key, scope_type, scope_value, COALESCE(app, '*'))
+  WHERE role_key IS NOT NULL AND scope_value IS NOT NULL;
+CREATE UNIQUE INDEX idx_grants_uq_global
+  ON grants(principal_id, role_key, COALESCE(app, '*'))
+  WHERE role_key IS NOT NULL AND scope_value IS NULL;
 
 CREATE INDEX idx_grants_principal ON grants(principal_id);
 ```
 
-**Projects are admin-managed in v1.** Rows in `projects` are the shared authorization scope
-dimension, created via the admin API when a new project starts (rare, tens total). Apps do
-not create IAM projects; their domain objects reference project ids/slugs. If an app ever
-legitimately needs to create projects in-flow, add a `registerProject` RPC then — it is an
-additive change. Do not pre-build it.
+**Scope values are app-owned; Propustka no longer keeps a list.** A grant's scope is the
+generic `(scope_type, scope_value)` pair — `scope_type` the dimension name an app declared
+(`app_scopes`), `scope_value` an opaque slug/uuid the app owns. Propustka never FKs or
+interprets it; the app keys its own domain rows by these values. There is **no** `projects`
+table (retired) and no `registerProject` RPC — an app that adds a scope dimension declares
+it in its `AppSchema` and reconciles, nothing more. Grants are filtered by the aud-verified
+calling app at resolution time: a grant counts when its `app` equals the calling app OR is
+NULL (cross-app).
 
 ### Group → role mappings (IdP group inheritance)
 
@@ -187,21 +246,26 @@ it is fetched from the Access get-identity endpoint at `authenticate()` time (se
 
 ```sql
 CREATE TABLE group_role_mappings (
-  id         TEXT PRIMARY KEY,                   -- UUIDv7
-  provider   TEXT NOT NULL,                      -- 'github'
-  group_ref  TEXT NOT NULL,                      -- 'my-org/core-devs' (org/team slug, lowercase)
-  role_key   TEXT NOT NULL,                      -- validated against the code role registry
-  project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,  -- NULL = global
-  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  id          TEXT PRIMARY KEY,                  -- UUIDv7
+  provider    TEXT NOT NULL,                     -- 'github'
+  group_ref   TEXT NOT NULL,                     -- 'my-org/core-devs' (org/team slug, lowercase)
+  role_key    TEXT NOT NULL,                     -- validated against the app's reconciled roles
+  app         TEXT,                              -- NULL = all apps
+  scope_type  TEXT,                              -- NULL = global
+  scope_value TEXT,                              -- OPAQUE, app-owned; NULL = global
+  created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+  CHECK ((scope_type IS NULL) = (scope_value IS NULL))  -- scope is both-or-neither
 );
 
--- Same NULL-in-UNIQUE caveat as grants: partial unique indexes.
+-- Mappings are ROLE-ONLY (no inline permissions): a group maps to a named role, never an
+-- ad-hoc action set. Same NULL-in-UNIQUE caveat as grants: partial unique indexes, NULL app
+-- folded to '*'.
 CREATE UNIQUE INDEX idx_group_mappings_uq_scoped
-  ON group_role_mappings(provider, group_ref, role_key, project_id)
-  WHERE project_id IS NOT NULL;
+  ON group_role_mappings(provider, group_ref, role_key, scope_type, scope_value, COALESCE(app, '*'))
+  WHERE scope_value IS NOT NULL;
 CREATE UNIQUE INDEX idx_group_mappings_uq_global
-  ON group_role_mappings(provider, group_ref, role_key)
-  WHERE project_id IS NULL;
+  ON group_role_mappings(provider, group_ref, role_key, COALESCE(app, '*'))
+  WHERE scope_value IS NULL;
 
 CREATE INDEX idx_group_mappings_ref ON group_role_mappings(provider, group_ref);
 ```
@@ -264,7 +328,7 @@ Schema rationale the implementer must preserve:
   the token's label (fallback `capability:<id>`).
 - **`request_id` on both audit tables** gives the auth-outcome ↔ domain-change correlation
   (join on `request_id`). The IAM Worker issues it in the request context.
-- **Different ID strategies are intentional:** UUIDv7 for `audit_events`/`principals`/`projects`
+- **Different ID strategies are intentional:** UUIDv7 for `audit_events`/`principals`/`grants`
   (time-sortable, generated in-Worker), plain `INTEGER PRIMARY KEY` (rowid) for `auth_log`
   (densest table, cheapest insert, never referenced). Note: do **not** use `AUTOINCREMENT` —
   in SQLite it is the _more_ expensive variant and buys nothing here. Use UUIDv7 everywhere we
@@ -282,8 +346,11 @@ Schema rationale the implementer must preserve:
   the IAM Worker stores what it receives verbatim.
 
 Explicitly **out of scope** (do not build, but keep schema additive so these can be added later):
-project hierarchy, resource-level ACLs (grant on a single entity), role inheritance,
-per-`can()` decision logging.
+scope/role **hierarchy & containment** (one scope nesting inside another — that would be ReBAC;
+apps resolve their own hierarchy and pass the right coordinate), role inheritance, explicit
+**Deny** / conditions / ABAC, resource-level ACLs (grant on a single entity), per-`can()`
+decision logging. **In scope now** (and implemented): multi-dimension flat scoping, app-declared
+vocabulary, admin-composed custom policies, and inline ad-hoc grants.
 
 ### Capability tokens (anonymous, scoped, short-lived)
 
@@ -375,7 +442,8 @@ authenticate(input: {
 }): Promise<
   | { ok: true; principal: {
         id: string; type: 'user'|'service'; label: string;
-        permissions: { action: string; projectId: string | null;
+        permissions: { action: string;
+                       scope: { type: string; value: string } | null;   // null = global / all scopes
                        source: 'grant' | 'bootstrap' | `group:${string}` }[];
         requestId: string };
       groupsUnavailable?: true }   // get-identity failed; explicit grants only this request
@@ -405,7 +473,7 @@ issueCapability(input: {
   origin: string | null;
   requestId: string;
   grants: { action: string; resource: string;
-            projectId?: string | null }[];       // projectId = scope for the delegation check ONLY (not stored)
+            scope?: { type: string; value: string } | null }[];  // scope = the delegation-check coordinate ONLY (not stored)
   label?: string; expiresAt?: number; maxUses?: number;
 }): Promise<
   | { ok: true; token: string; id: string }      // plaintext token returned ONCE
@@ -417,11 +485,14 @@ issueCapability(input: {
 - `authenticate()` validates the JWT, resolves the principal by `(type, external_id)`, and
   computes the `permissions` array as the **union of three sources**:
   1. **Explicit grants** — active non-expired rows in `grants` for this principal
-     (`expires_at IS NULL OR expires_at > unixepoch()`), roles expanded into permissions
-     via the code role registry. Source: `'grant'`.
+     (`expires_at IS NULL OR expires_at > unixepoch()`), filtered to the calling app
+     (`grants.app = <app>` OR `grants.app IS NULL`). A role-based grant expands its `role_key`
+     into patterns via the (app-aware) role source; an inline grant adds its `permissions`
+     JSON patterns directly. Each entry carries the grant's `(scope_type, scope_value)` as
+     `scope` (both NULL → `scope: null`). Source: `'grant'`.
   2. **Group-derived roles** (users only) — fetch IdP group membership via get-identity, match
-     each `group_ref` against `group_role_mappings`, expand the matched roles into permissions.
-     Source: `` `group:${group_ref}` ``.
+     each `group_ref` against `group_role_mappings` (also app-filtered), expand the matched
+     roles into permissions. Source: `` `group:${group_ref}` ``.
   3. **Bootstrap admins** (users only) — see Admin surface. Source: `'bootstrap'`.
      Dedupe the union. The `source` field exists for debuggability ("why does this user have this
      permission?" in the admin UI) — `can()`/`scopedTo()` ignore it.
@@ -468,10 +539,10 @@ issueCapability(input: {
 - `issueCapability()` resolves the **issuer** from the forwarded credentials exactly like
   `authenticate()` (same failure reasons), then enforces the **delegation rule**: every
   requested grant's `action` must be covered by the issuer's resolved permissions, using the
-  same wildcard matching as `can()`, scoped to the grant's `projectId` if provided (omitted →
-  the issuer must hold the action globally). Any uncovered action → `not_allowed`, nothing
-  created. `projectId` is used only for this check; the stored capability grant is just
-  `(action, resource)`. On success: generate a 128+ bit random token, store only its SHA-256
+  same wildcard matching as `can()`, scoped to the grant's `scope` (`{ type, value }`) if
+  provided (omitted → the issuer must hold the action globally). Any uncovered action →
+  `not_allowed`, nothing created. `scope` is used only for this check; the stored capability
+  grant is just `(action, resource)`. On success: generate a 128+ bit random token, store only its SHA-256
   hash plus the grant rows with `issued_by` = the resolved principal id, return the plaintext
   **once**, and write an `iam.capability.create` audit event (recording issuer, label,
   grants — never the plaintext). Revocation sets `revoked_at` and writes
@@ -508,8 +579,8 @@ export interface AuthFailure {
 
 export class AuthContext {
 	readonly ok: true
-	can(action: string, scope?: { project?: string }): boolean // local, pure: point check; no scope → global perms only
-	scopedTo(action: string, dimension?: string): string[] | null // local, pure: set of scope ids
+	can(action: string, scope?: { type: string; value: string }): boolean // local, pure: point check; no scope → global perms only
+	scopedTo(action: string, dimension: string): string[] | null // local, pure: set of scope values in ONE dimension (REQUIRED)
 	audit(event: DomainEvent): Promise<void> // attaches app/principal/requestId
 }
 
@@ -524,7 +595,7 @@ export class Capability {
 // SDK utility — resolves the three-state scope into a single value the app controls
 export function applyScope<T>(scope: string[] | null, branches: {
 	all: () => T // scope === null  → unrestricted (admin / global grant)
-	some: (ids: string[]) => T // scope.length > 0 → filter to these ids
+	some: (values: string[]) => T // scope.length > 0 → filter to these (opaque, app-owned) scope values
 	none: () => T // scope === []    → no access; return empty, do NOT query
 }): T
 ```
@@ -539,38 +610,44 @@ export function applyScope<T>(scope: string[] | null, branches: {
   the app supplies only the domain-specific fields. `Capability.audit()` injects
   `capabilityTokenId` and the token label instead, with `principalId = null`.
 - **`can(action)` without a scope matches global permissions only.** A permission entry with
-  `projectId === null` satisfies any check; an entry scoped to a project satisfies
-  `can(action, { project })` for that project (and contributes to `scopedTo()`), but does
-  **not** satisfy a scope-less `can(action)` — "may do X on some project" must never widen
-  into "may do X here". This mirrors the delegation rule in `issueCapability()` (omitted
-  `projectId` → the issuer must hold the action globally). Apps pass `{ project }` whenever
-  the action concerns a project-scoped resource; scope-less `can()` is for genuinely global
+  `scope === null` satisfies any check; an entry scoped to a `{ type, value }` coordinate
+  satisfies `can(action, { type, value })` for that same pair (and contributes to
+  `scopedTo()`), but does **not** satisfy a scope-less `can(action)` — "may do X in some scope"
+  must never widen into "may do X here". This mirrors the delegation rule in `issueCapability()`
+  (omitted `scope` → the issuer must hold the action globally). Apps pass `{ type, value }`
+  whenever the action concerns a scoped resource; scope-less `can()` is for genuinely global
   actions only.
 - **`can()` is enforcement (a point check); `scopedTo()` is scoping (the set).** `can()` answers
-  "may this principal do X on project P?" → 403/allow. `scopedTo()` answers "which projects may
-  this principal do X on?" → used to filter lists/queries. Both are local pure functions over the
-  already-resolved `permissions` array — neither makes a binding call. `scopedTo('project.read')`
-  filters permissions whose `action` matches (wildcards included, `project.*` matches
-  `project.read`) and collects their `projectId`.
+  "may this principal do X in scope S?" → 403/allow. `scopedTo()` answers "which scope values
+  may this principal do X on within dimension D?" → used to filter lists/queries. Both are local
+  pure functions over the already-resolved `permissions` array — neither makes a binding call.
+  `scopedTo('project.read', 'organization')` filters permissions whose `action` matches
+  (wildcards included, `project.*` matches `project.read`) and, among those, collects the
+  `scope.value` of entries in the `'organization'` dimension. Entries in a **different** dimension
+  are ignored — they neither restrict nor widen the requested one.
 - **`scopedTo()` returns `string[] | null` and the `null` is load-bearing.** `null` means
-  _unrestricted_ — the principal holds the permission globally (a grant or group mapping with
-  `projectId === null`, e.g. an admin) and may see **all** projects. An empty array `[]` means
-  _no access to any project_. These are three distinct states; never collapse `null` into `[]` or
-  vice versa: `null` → no filter, `[]` → empty result, non-empty → `WHERE id IN (...)`.
+  _unrestricted_ — the principal holds the action globally (a grant or group mapping with
+  `scope === null`, e.g. an admin) and may see **all** values in the dimension; a matching global
+  entry short-circuits to `null` (it dominates any scoped entries). An empty array `[]` means
+  _no access within this dimension_. These are three distinct states; never collapse `null` into
+  `[]` or vice versa: `null` → no filter, `[]` → empty result, non-empty → `WHERE col IN (...)`.
 - **Use `applyScope()` to consume the result** so the three-state logic (and the empty-`IN ()`
   SQL trap) is handled once in the SDK, not re-implemented per app. The app supplies what `all` /
   `some` / `none` mean for its own query; the SDK guarantees `none` short-circuits without
   emitting `WHERE id IN ()`. Filtering must happen at the data layer (`WHERE id IN (...)`), never
   by loading everything and filtering in memory.
-- **Integration contract: apps must store the IAM project id on their domain rows** (or hold a
-  mapping to it). `scopedTo()` returns IAM project ids — `WHERE id IN (...)` only works if the
-  app's own tables carry that id. This is a per-app adoption requirement; an app whose data
-  can't be keyed by IAM project id cannot use project-scoped grants.
-- **v1 has a single scope dimension: project.** `scopedTo`'s `dimension` parameter defaults to
-  `'project'` and is forward-looking only. Do not build a generic `scope_type`/`scope_id` model
-  now — grants keep `project_id`. Generalizing to multiple scope dimensions is an additive change
-  to make _when a second scope type actually appears_, not before. Building the abstraction over a
-  single case is the anti-pattern to avoid.
+- **Integration contract: apps key their domain rows by their own scope values.** Scope values
+  are **app-owned** — Propustka stores and returns them opaquely, so `scopedTo()` hands back
+  exactly the strings the app put on grants. `WHERE col IN (...)` works because the app's own
+  tables already carry those values (a slug or id the app controls). An app whose data can't be
+  keyed by a scope value in some dimension simply doesn't scope grants in that dimension.
+- **Scope is generic, flat, multi-dimensional — and `dimension` is REQUIRED.** A grant carries a
+  `(scope_type, scope_value)` pair; an app may use several independent dimensions at once
+  (e.g. `organization` and `project`). Because more than one dimension can coexist, `scopedTo`'s
+  `dimension` argument is **mandatory** — the caller must say which one. (The old single-`project`
+  dimension and its YAGNI deferral were intentionally resolved: a second dimension appeared, so
+  the generic flat model is now built.) Dimensions are flat and **independent** — there is no
+  containment; an app needing hierarchy resolves it itself and passes the right coordinate.
 - Ship `FakeIamClient` with identical interface, selected by an env flag for `wrangler dev`:
   fixed identity, `can()` → true, `scopedTo()` → `null`, `redeemCapability()` → a fake
   capability with `can()` → true. Accept an optional `deny: string[]` (action patterns) in its
@@ -587,7 +664,7 @@ App usage target:
 const iam = new IamClient(env.IAM, 'app-projects') // once
 const auth = await iam.authenticate(req)
 if (!auth.ok) return new Response(auth.reason, { status: auth.status }) // 401 or 403
-if (!auth.can('project.settings.update', { project: id })) {
+if (!auth.can('project.settings.update', { type: 'project', value: id })) {
 	return new Response('forbidden', { status: 403 })
 }
 // ... do the work ...
@@ -604,10 +681,10 @@ ctx.waitUntil(
 Listing/filtering by scope:
 
 ```ts
-const scope = auth.scopedTo('project.read')
+const scope = auth.scopedTo('project.read', 'project') // dimension is required
 const projects = applyScope(scope, {
 	all: () => db.listAllProjects(),
-	some: (ids) => db.listProjects({ ids }), // WHERE id IN (...)
+	some: (values) => db.listProjects({ ids: values }), // WHERE scope_value IN (...)
 	none: () => [], // empty result, no query issued
 })
 ```
@@ -617,8 +694,16 @@ Minting a share link in-flow (delegation-checked against the current user):
 ```ts
 const issued = await iam.issueCapability(req, {
 	grants: [
-		{ action: 'report.read', resource: `report:${id}`, projectId },
-		{ action: 'report.feedback.create', resource: `report:${id}`, projectId },
+		{
+			action: 'report.read',
+			resource: `report:${id}`,
+			scope: { type: 'project', value: projectId },
+		},
+		{
+			action: 'report.feedback.create',
+			resource: `report:${id}`,
+			scope: { type: 'project', value: projectId },
+		},
 	],
 	label: `Share: report ${id}`,
 	expiresAt: in30Days,
@@ -656,8 +741,8 @@ return new Response('forbidden', { status: 403 })
 ## Admin surface
 
 A minimal admin API (and optionally a small UI) on the IAM Worker, itself behind Access with
-an admin-only policy, to manage principals, projects, grants, and **group→role mappings**.
-Beyond the Access policy, every `/admin/*` handler **re-checks `can('iam.admin')` in-Worker**
+an admin-only policy, to manage principals, grants, **group→role mappings**, **app schemas**,
+and **custom policies**. Beyond the Access policy, every `/admin/*` handler **re-checks `can('iam.admin')` in-Worker**
 (a pinned sentinel action — only the `admin` role's `*` and bootstrap admins hold it) and
 returns `403` otherwise, so a misconfigured Access policy can't expose admin writes.
 CRUD on `grants` must write a domain audit event (`iam.grant.create` / `iam.grant.revoke`) —
@@ -673,16 +758,38 @@ expressed instead via group→role mappings; invite is for authorizing one named
 time.) `DELETE /admin/principals/{id}` of a still-invited (unclaimed) principal just cancels the
 invite.
 
-Roles are **not** CRUD — they live in code. Expose `GET /admin/roles` read-only from the
-registry so the UI can populate role pickers and flag dangling `role_key`s.
+**App schemas (declare-in-code, reconcile-in).** An app's authz vocabulary is not edited in
+the admin UI — it's declared in the app's code and pushed:
+
+- `PUT /admin/apps/:app/schema` — idempotent reconcile of an `AppSchema` (scope dimensions,
+  action catalog, `origin='app'` roles). Upserts and prunes `origin='app'` rows; **never**
+  touches `origin='custom'`. Each role's patterns are validated against the body's own action
+  catalog (`isActionAllowed`) — an unknown action is a 400. Writes `iam.app.schema.reconcile`.
+  The `:app` segment must be a configured `ACCESS_APPS` value.
+- `GET /admin/apps/:app/schema` — the reconciled vocabulary (scopes, actions, `origin='app'`
+  roles). `GET /admin/apps` lists the configured app ids.
+- `GET /admin/roles?app=<app>` — the grantable role list for an app: the built-in `admin`
+  plus the app's DB roles (`origin='app'` + `'custom'`), so the UI can populate pickers and
+  flag dangling `role_key`s. Built-ins win on a key collision.
+
+**Custom policies (admin-composed bundles).** On top of the app's reconciled roles, an admin
+can compose `origin='custom'` policies (named action-pattern bundles) without touching app code:
+
+- `GET|POST /admin/apps/:app/policies`, `PUT|DELETE /admin/apps/:app/policies/:key`
+  (`iam.policy.create` / `iam.policy.update` / `iam.policy.delete`). Patterns are validated
+  against the app's action catalog; a key may not collide with a built-in; update/delete refuse
+  `origin='app'` rows (reconcile owns those).
+
+**Grants are role-or-inline.** `POST /admin/grants` (and the api-key flow) take EITHER a
+`roleKey` (validated as a known role for the app) OR an inline `permissions` array (each
+pattern validated against the app's catalog) — exactly one. `scopeType`/`scopeValue` are
+both-or-neither; an `app` of null or a configured `ACCESS_APPS` value. Writes
+`iam.grant.create` / `iam.grant.revoke`.
 
 CRUD on `group_role_mappings` works the same way as grants: `POST/DELETE /admin/group-mappings`
-writes `iam.groupmapping.create` / `iam.groupmapping.delete` audit events. This is where "team
-`my-org/core-devs` → editor of project X" is configured as data, not code.
-
-Projects: `POST/PATCH /admin/projects` creates/renames the shared scope rows
-(`iam.project.create` / `iam.project.update` audit events). Admin-managed only in v1 (see
-data model).
+writes `iam.groupmapping.create` / `iam.groupmapping.delete` audit events. A mapping is
+**role-only** (no inline permissions). This is where "team `my-org/core-devs` → editor in
+scope X" is configured as data, not code.
 
 Capability tokens are issued/revoked here too: `POST /admin/capabilities` (body: grants list,
 label, expiry, optional max_uses) calls `issueCapability()` with the **admin's own forwarded
@@ -713,8 +820,11 @@ orchestrates two systems: it mints the credential in Cloudflare Access and recor
 
 - grants in IAM, in one flow.
 
-Endpoint: `POST /admin/api-keys` with body `{ label, type: 'service', projectId?, roleKey, expiresAt? }`.
-(`roleKey` is validated against the code role registry before anything is minted.)
+Endpoint: `POST /admin/api-keys` with body
+`{ label, type: 'service', app?, scopeType?, scopeValue?, roleKey | permissions, expiresAt? }`.
+(The role-or-inline choice is validated against the app's vocabulary — `roleKey` a known role,
+inline `permissions` patterns against the action catalog — before anything is minted;
+`scopeType`/`scopeValue` are both-or-neither.)
 
 Flow (server-side, in the IAM Worker):
 
@@ -729,8 +839,9 @@ Flow (server-side, in the IAM Worker):
 3. **Create the IAM principal**: insert into `principals` with `type='service'`,
    `external_id = client_id` (this is what the service-token JWT carries as `common_name`),
    `label`, fresh UUIDv7 id.
-4. **Create the grant(s)**: insert into `grants` linking the new principal to `roleKey` scoped
-   to `projectId` (or NULL for global), with `expires_at` mirroring the token duration if set.
+4. **Create the grant(s)**: insert into `grants` linking the new principal to the chosen role
+   (or inline permissions) scoped to `(scopeType, scopeValue)` (or NULL/NULL for global) and
+   `app`, with `expires_at` mirroring the token duration if set.
 5. **Write audit events**: `iam.apikey.create` (with token id + label, never the secret) and
    `iam.grant.create`.
 6. **Add the token to the app's Access policy** so it can actually reach the target app:
@@ -792,12 +903,21 @@ the RPC section — so this provisioning flow is specifically for `type='service
    `principal_label`.
 6. Apps run in `wrangler dev` with the fake client, no Access and no IAM Worker required; the
    fake supports a deny-list so 403 paths are testable in dev.
-7. Role→permission definitions live in code behind a `RoleSource` interface; a D1-backed source
-   could replace it without touching resolution. Unknown `role_key`s are rejected at
-   grant-creation time and resolve to zero permissions if they appear anyway.
-8. No per-app secret auth, no project hierarchy, no resource-level ACLs in v1; schema remains
-   additive for them. Duplicate grants/mappings are impossible including the global
-   (`project_id IS NULL`) case.
+7. Role→permission bundles live in D1 per app (the `roles` table, `origin='app'`/`'custom'`)
+   behind the `RoleSource` interface, with a single built-in cross-app `admin = ['*']` in code.
+   Resolution is unchanged by the source. Unknown `role_key`s are rejected at grant/mapping
+   creation time and resolve to zero permissions if they appear anyway.
+8. No per-app secret auth, no scope/role hierarchy or containment, no explicit Deny /
+   conditions / ABAC, no resource-level ACLs; schema remains additive for them. Duplicate
+   ROLE-based grants/mappings are impossible including the global (`scope_value IS NULL`) case;
+   inline grants are intentionally unconstrained (each is its own attachment).
+   8a. Each app declares its `AppSchema` (scope dimensions + action catalog + roles) in code and
+   reconciles it via `PUT /admin/apps/:app/schema`: the reconcile upserts and prunes
+   `origin='app'` rows and never touches `origin='custom'`. Every action pattern (on a role, a
+   custom policy, or an inline grant) is validated against the app's action catalog
+   (`isActionAllowed` — `*`, exact, or `prefix.*` over a non-empty namespace); unknown actions
+   are rejected at write time. A grant carries EITHER a `role_key` OR inline `permissions` —
+   exactly one (DB CHECK). Permissions are additive-allow only.
 9. Admin can provision an API key: it mints an Access service token, creates the IAM principal +
    grants, returns the secret exactly once, and (manually or automatically) the token is added to
    the target app's Service Auth policy. Revocation deletes the Access token and removes IAM
@@ -812,12 +932,15 @@ the RPC section — so this provisioning flow is specifically for `type='service
     session revocation. Group resolution applies to users only, never service principals. A
     get-identity outage degrades to explicit grants with a visible `groupsUnavailable` flag
     (and auth-log note), never a silent denial.
-12. `scopedTo(action)` returns the set of project ids the principal may perform `action` on, or
-    `null` for unrestricted (global) access — three distinct states (`null` / `[]` / non-empty)
-    that `applyScope()` consumes without ever emitting `WHERE id IN ()`. Resolution is local (no
-    binding call) and filtering happens at the data layer. Scope is a single dimension (project)
-    in v1. `can(action)` without a scope is satisfied by global permissions only — a
-    project-scoped grant never satisfies a scope-less check.
+12. `scopedTo(action, dimension)` returns the set of (opaque, app-owned) scope values the
+    principal may perform `action` on within `dimension`, or `null` for unrestricted (global)
+    access — three distinct states (`null` / `[]` / non-empty) that `applyScope()` consumes
+    without ever emitting `WHERE col IN ()`. Resolution is local (no binding call) and filtering
+    happens at the data layer. Scope dimensions are generic, flat, and independent (no
+    containment); `dimension` is REQUIRED, and entries in another dimension are ignored.
+    `can(action)` without a scope is satisfied by global permissions only — a scoped grant never
+    satisfies a scope-less check; `can(action, { type, value })` is satisfied by a global entry
+    OR an entry scoped to that exact pair.
 13. A capability token can carry multiple `(action, resource)` grants (e.g. read a report +
     submit feedback on it); `redeemCapability()` returns the full set with no identity, exposes
     `can(action, resource)` with exact matching (no wildcards), enforces
@@ -827,8 +950,8 @@ the RPC section — so this provisioning flow is specifically for `type='service
     Access on a Bypass path; the token, not the path, carries authorization.
 14. Issuance enforces the delegation rule: the issuer is resolved server-side from forwarded
     Access credentials (never self-asserted), and every delegated action must be covered by the
-    issuer's own permissions (scoped via the optional per-grant `projectId`), else
-    `not_allowed` and nothing is created.
+    issuer's own permissions (scoped via the optional per-grant `scope` `{ type, value }`
+    coordinate), else `not_allowed` and nothing is created.
 15. JWT `aud` is validated against the keys of the configured `ACCESS_APPS` map — tokens
     from every onboarded Access application validate; unknown AUDs are rejected. On a valid
     token, the app identity recorded in `auth_log` and the request context is derived from the

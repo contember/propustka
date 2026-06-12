@@ -1,18 +1,19 @@
 /**
- * Resolve the three-state scope from `scopedTo()` into a single value the app controls.
- * This is the SINGLE place the empty-`IN ()` SQL trap is handled: `none` short-circuits
- * without ever emitting `WHERE id IN ()`.
+ * Resolve the three-state result from `scopedTo(action, dimension)` into a single value the
+ * app controls. This is the SINGLE place the empty-`IN ()` SQL trap is handled: `none`
+ * short-circuits without ever emitting `WHERE col IN ()`.
  *
- *   - `null`      → `all()`         — unrestricted (admin / global grant): no filter
- *   - `[]`        → `none()`        — no access: empty result, DO NOT query
- *   - non-empty   → `some(ids)`     — filter to these ids (`WHERE id IN (...)`)
+ *   - `null`      → `all()`           — unrestricted (admin / global grant): no filter
+ *   - `[]`        → `none()`          — no access: empty result, DO NOT query
+ *   - non-empty   → `some(values)`    — filter to these scope values (`WHERE col IN (...)`)
  *
- * The app supplies what all/some/none mean for its own query; filtering must happen at the
- * data layer, never by loading everything and filtering in memory.
+ * The `values` are the opaque, app-owned scope values for that dimension (the app keys its
+ * rows by them). The app supplies what all/some/none mean for its own query; filtering must
+ * happen at the data layer, never by loading everything and filtering in memory.
  */
 export function applyScope<T>(
 	scope: string[] | null,
-	branches: { all: () => T; some: (ids: string[]) => T; none: () => T },
+	branches: { all: () => T; some: (values: string[]) => T; none: () => T },
 ): T {
 	if (scope === null) {
 		return branches.all()

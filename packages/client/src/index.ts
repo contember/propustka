@@ -20,6 +20,7 @@ export type {
 	RevokeFailure,
 } from './types'
 
-// Re-export from core so apps need only depend on the SDK: DomainEvent (one event shape) and
-// IamRpc (the binding contract — apps type their `env.IAM` as IamRpc without importing core).
-export type { DomainEvent, IamRpc } from '@propustka/core'
+// Re-export from core so apps need only depend on the SDK: DomainEvent (one event shape),
+// IamRpc (the binding contract — apps type their `env.IAM` as IamRpc without importing core),
+// and Scope (the `{ type, value }` coordinate apps pass to `can()`).
+export type { DomainEvent, IamRpc, Scope } from '@propustka/core'

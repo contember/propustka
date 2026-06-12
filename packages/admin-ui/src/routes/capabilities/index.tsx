@@ -1,5 +1,5 @@
 import { createPage } from '@buzola/router'
-import type { CapabilityListItem, IssueCapabilityRequest, IssuedCapabilityResponse, ListResponse, ProjectDto } from '@propustka/worker/admin'
+import type { CapabilityListItem, IssueCapabilityRequest, IssuedCapabilityResponse, ListResponse } from '@propustka/worker/admin'
 import { useState } from 'react'
 import { Badge } from '../../components/Badge'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
@@ -22,11 +22,8 @@ function capStatus(cap: CapabilityListItem): CapStatus {
 
 export default createPage()
 	.loader(async () => {
-		const [capabilities, projects] = await Promise.all([
-			api.get<ListResponse<CapabilityListItem>>('/capabilities'),
-			api.get<ListResponse<ProjectDto>>('/projects'),
-		])
-		return { capabilities: capabilities.items, projects: projects.items }
+		const capabilities = await api.get<ListResponse<CapabilityListItem>>('/capabilities')
+		return { capabilities: capabilities.items }
 	})
 	.route('/capabilities')
 	.render(({ data, invalidate }) => (
@@ -39,7 +36,7 @@ export default createPage()
 				</p>
 			</div>
 
-			<IssueForm projects={data.projects} onDone={invalidate} />
+			<IssueForm onDone={invalidate} />
 
 			<Table
 				colSpan={6}
@@ -109,11 +106,15 @@ function CapabilityRow({ cap, onDone }: { cap: CapabilityListItem; onDone: () =>
 interface GrantRow {
 	action: string
 	resource: string
-	projectId: string
+	/** Optional delegation-check scope dimension; both-or-neither with `scopeValue`. */
+	scopeType: string
+	scopeValue: string
 }
 
-function IssueForm({ projects, onDone }: { projects: ProjectDto[]; onDone: () => void }) {
-	const [rows, setRows] = useState<GrantRow[]>([{ action: '', resource: '', projectId: '' }])
+const EMPTY_ROW: GrantRow = { action: '', resource: '', scopeType: '', scopeValue: '' }
+
+function IssueForm({ onDone }: { onDone: () => void }) {
+	const [rows, setRows] = useState<GrantRow[]>([{ ...EMPTY_ROW }])
 	const [label, setLabel] = useState('')
 	const [expiry, setExpiry] = useState('')
 	const [maxUses, setMaxUses] = useState('')
@@ -125,7 +126,7 @@ function IssueForm({ projects, onDone }: { projects: ProjectDto[]; onDone: () =>
 		setRows((prev) => prev.map((row, i) => (i === index ? { ...row, ...patch } : row)))
 	}
 	function addRow() {
-		setRows((prev) => [...prev, { action: '', resource: '', projectId: '' }])
+		setRows((prev) => [...prev, { ...EMPTY_ROW }])
 	}
 	function removeRow(index: number) {
 		setRows((prev) => (prev.length === 1 ? prev : prev.filter((_, i) => i !== index)))
@@ -136,14 +137,23 @@ function IssueForm({ projects, onDone }: { projects: ProjectDto[]; onDone: () =>
 		setError(null)
 
 		const grants = rows
-			.map((row) => ({ action: row.action.trim(), resource: row.resource.trim(), projectId: row.projectId }))
-			.filter((row) => row.action !== '' || row.resource !== '')
+			.map((row) => ({
+				action: row.action.trim(),
+				resource: row.resource.trim(),
+				scopeType: row.scopeType.trim(),
+				scopeValue: row.scopeValue.trim(),
+			}))
+			.filter((row) => row.action !== '' || row.resource !== '' || row.scopeType !== '' || row.scopeValue !== '')
 		if (grants.length === 0) {
 			setError('Add at least one (action, resource) grant.')
 			return
 		}
 		if (grants.some((g) => g.action === '' || g.resource === '')) {
 			setError('Each grant needs both an action and a resource.')
+			return
+		}
+		if (grants.some((g) => (g.scopeType === '') !== (g.scopeValue === ''))) {
+			setError('A scope needs both a dimension and a value, or leave both empty for global.')
 			return
 		}
 
@@ -159,7 +169,7 @@ function IssueForm({ projects, onDone }: { projects: ProjectDto[]; onDone: () =>
 			grants: grants.map((g) => ({
 				action: g.action,
 				resource: g.resource,
-				projectId: g.projectId === '' ? null : g.projectId,
+				scope: g.scopeType === '' ? null : { type: g.scopeType, value: g.scopeValue },
 			})),
 			...(label.trim() === '' ? {} : { label: label.trim() }),
 			...(expiresAt === null ? {} : { expiresAt }),
@@ -170,7 +180,7 @@ function IssueForm({ projects, onDone }: { projects: ProjectDto[]; onDone: () =>
 		try {
 			const result = await api.post<IssuedCapabilityResponse>('/capabilities', body)
 			setToken(result)
-			setRows([{ action: '', resource: '', projectId: '' }])
+			setRows([{ ...EMPTY_ROW }])
 			setLabel('')
 			setExpiry('')
 			setMaxUses('')
@@ -190,7 +200,8 @@ function IssueForm({ projects, onDone }: { projects: ProjectDto[]; onDone: () =>
 					<div className="grant-rows-head">
 						<span>Action</span>
 						<span>Resource</span>
-						<span>Project (delegation check)</span>
+						<span>Scope dimension (optional)</span>
+						<span>Scope value</span>
 						<span />
 					</div>
 					{rows.map((row, i) => (
@@ -208,14 +219,18 @@ function IssueForm({ projects, onDone }: { projects: ProjectDto[]; onDone: () =>
 								placeholder="report:q3-2025"
 								list="resource-hints"
 							/>
-							<select
-								aria-label="Project"
-								value={row.projectId}
-								onChange={(e) => updateRow(i, { projectId: e.target.value })}
-							>
-								<option value="">Global</option>
-								{projects.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.slug})</option>)}
-							</select>
+							<input
+								aria-label="Scope dimension"
+								value={row.scopeType}
+								onChange={(e) => updateRow(i, { scopeType: e.target.value })}
+								placeholder="tenant"
+							/>
+							<input
+								aria-label="Scope value"
+								value={row.scopeValue}
+								onChange={(e) => updateRow(i, { scopeValue: e.target.value })}
+								placeholder="acme"
+							/>
 							<button type="button" className="small" onClick={() => removeRow(i)} disabled={rows.length === 1}>
 								Remove
 							</button>
@@ -225,7 +240,11 @@ function IssueForm({ projects, onDone }: { projects: ProjectDto[]; onDone: () =>
 						{RESOURCE_HINTS.map((hint) => <option key={hint} value={hint} />)}
 					</datalist>
 					<button type="button" className="small" onClick={addRow}>+ Add grant</button>
-					<p className="hint">Known resource-type prefixes: {RESOURCE_HINTS.map((h) => <code key={h}>{h}</code>)}</p>
+					<p className="hint">
+						Known resource-type prefixes:{' '}
+						{RESOURCE_HINTS.map((h) => <code key={h}>{h}</code>)}. The scope is the delegation-check coordinate only (not stored); leave both fields empty
+						for a global check.
+					</p>
 				</div>
 				<label>
 					Label (optional)

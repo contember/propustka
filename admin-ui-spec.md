@@ -5,9 +5,10 @@ REST API** on the IAM Worker ("Admin surface") but leaves the UI as _optionally 
 UI_. This document specifies that UI at a basic, implementable level.
 
 Scope: a small **SPA built on [buzola](https://github.com/.../buzola)** that drives the
-existing `/admin/*` API — a handful of pages to manage principals, grants, projects,
-group→role mappings, API keys and capabilities, plus an audit log viewer. Keep it boring:
-table-heavy CRUD, no client-side state management beyond buzola loaders.
+existing `/admin/*` API — a handful of pages to manage principals, grants, custom policies,
+group→role mappings, API keys and capabilities, inspect each app's reconciled schema and role
+catalog, plus an audit log viewer. Keep it boring: table-heavy CRUD, no client-side state
+management beyond buzola loaders.
 
 This is an **internal admin tool for tens of users** — do not over-engineer (mirrors the
 core spec's stance).
@@ -69,8 +70,6 @@ src/routes/
   principals/
     index.tsx              # '/principals'            — list users + service principals
     detail.tsx             # '/principals/:id'        — effective perms + grants; grant/revoke; disable
-  projects/
-    index.tsx              # '/projects'              — list, create, rename
   group-mappings/
     index.tsx              # '/group-mappings'        — list, create, delete
   api-keys/
@@ -80,8 +79,16 @@ src/routes/
   audit/
     index.tsx              # '/audit'                 — domain audit_events, filterable
     auth-log.tsx           # '/audit/auth-log'        — auth_log (authenticate/redeem outcomes)
-  roles.tsx                # '/roles'                 — read-only reference of code-defined roles
+  policies/
+    index.tsx              # '/policies?app='         — custom policies (origin=custom) per app: create/edit/delete
+  roles.tsx                # '/roles?app='            — read-only reference of grantable roles (built-in + app + custom)
+  schema/
+    index.tsx              # '/schema?app='           — read-only view of an app's reconciled vocabulary
 ```
+
+Several pages (`policies`, `roles`, `schema`) are **per-app**: they take a `?app=` query param
+(an `ACCESS_APPS` value) and render that app's scopes / actions / roles. The picker for grants,
+mappings and API keys also derives its role / scope / action choices from the chosen app.
 
 `_layout.tsx` renders the persistent nav and an `<Outlet/>`; its loader hits
 `GET /admin/me` to show the current admin's label and gate-fail early with a clear
@@ -97,16 +104,22 @@ needs **read** endpoints; add these GETs (read-only, same admin gate, no audit e
 | `GET /admin/me`                                                                             | current admin principal + resolved permissions (for nav + gate)                                                                                              |
 | `GET /admin/principals?type=&status=&q=`                                                    | list principals (filter by type, status invited/active/disabled, search label/email/external_id)                                                             |
 | `GET /admin/principals/{id}`                                                                | principal (incl. status, email, external_id) + its grants + **effective permissions with `source`** (grant / bootstrap / `group:<org/team>`) + `disabled_at` |
-| `GET /admin/projects`                                                                       | list projects                                                                                                                                                |
+| `GET /admin/apps`                                                                           | configured app ids (the `ACCESS_APPS` values) — the source for every per-app picker                                                                          |
+| `GET /admin/apps/{app}/schema`                                                              | an app's reconciled vocabulary: scope dimensions, action catalog, origin=`app` roles                                                                         |
+| `GET /admin/apps/{app}/policies`                                                            | an app's admin-composed custom policies (origin=`custom` roles)                                                                                              |
 | `GET /admin/group-mappings`                                                                 | list group→role mappings                                                                                                                                     |
-| `GET /admin/roles`                                                                          | code role registry (already specified: `GET /admin/roles`)                                                                                                   |
+| `GET /admin/roles?app=`                                                                     | roles grantable for `app`: built-in (cross-app) + the app's app/custom roles, each with `origin`                                                             |
 | `GET /admin/api-keys`                                                                       | list service principals provisioned as API keys (no secrets)                                                                                                 |
 | `GET /admin/capabilities`                                                                   | list capability tokens (metadata only: label, expiry, used_count, revoked_at — **never** hash/plaintext) + their `(action, resource)` grants                 |
 | `GET /admin/audit?resourceType=&resourceId=&principalId=&action=&requestId=&before=&limit=` | page of `audit_events` (cursor by UUIDv7 / `created_at`)                                                                                                     |
 | `GET /admin/auth-log?principalId=&requestId=&decision=&before=&limit=`                      | page of `auth_log` rows                                                                                                                                      |
 
-Writes are the ones already in the core spec (`POST/DELETE/PATCH` for grants, projects,
-group-mappings, api-keys, capabilities), namespaced under `/admin/`.
+Writes (namespaced under `/admin/`): `POST/DELETE` grants, group-mappings, capabilities;
+`POST/.../rotate/DELETE` api-keys; `PATCH/DELETE` principals; **`PUT /admin/apps/{app}/schema`**
+(reconcile an app's declared vocabulary — normally driven by `scripts/provision-schemas.ts`, not
+the UI); and **`POST/PUT/DELETE /admin/apps/{app}/policies[/{key}]`** (manage custom policies).
+There is no `projects` resource — Propustka no longer owns a project list (scope values are
+app-owned, see the scope picker below).
 
 Pagination: keep it simple — `limit` + a `before` cursor (audit ids are time-sortable
 UUIDv7; auth_log is rowid). No total counts.
@@ -124,57 +137,63 @@ UUIDv7; auth_log is rowid). No total counts.
   an `invited` badge until the user's first `authenticate()` claims them (binds their Access
   `sub`). For team-wide pre-authorization use group→role mappings instead.
 - **Detail (`/principals/:id`):** the core authorization screen.
-  - **Effective permissions** table: `action`, scope (project name or _Global_), and
-    **`source`** (`grant` / `bootstrap` / `group:<org/team>`). This is the "why does this
-    user have this permission?" view the core spec calls out — render `source` verbatim.
-  - **Grants** table (explicit rows only): role, scope, expiry, granted_by, created_at, with
-    a **Revoke** action (`DELETE` grant → `iam.grant.revoke`).
-  - **Add grant** form: role picker (from `GET /roles`), **scope picker** (see three-state
-    note below), optional expiry → `POST` grant (`iam.grant.create`).
+  - **Effective permissions** table: `action`, scope (rendered as `type:value`, or _Global_ for
+    a scope-less entry), and **`source`** (`grant` / `bootstrap` / `group:<org/team>`). This is
+    the "why does this user have this permission?" view the core spec calls out — render
+    `source` verbatim.
+  - **Grants** table (explicit rows only): role **or** inline action set, app (or _All apps_),
+    scope, expiry, granted_by, created_at, with a **Revoke** action (`DELETE` grant →
+    `iam.grant.revoke`). A role grant shows the `role_key`; an inline grant shows its action
+    chips.
+  - **Add grant** form (the shared **grant composer**): pick an **app** (one app, or _All apps_
+    = cross-app, `app = null`); then **EITHER a named role/policy OR an inline action set** —
+    exactly one (the role picker lists the app's built-in/app/custom roles; the action picker
+    multi-selects from the app's action catalog, and is only available for a concrete app);
+    then a **scope** (generic dimension + opaque value, or Global — see the scope-picker note
+    below); optional expiry → `POST` grant (`iam.grant.create`). The role list, scope
+    dimensions and action catalog all derive from the chosen app's reconciled schema.
   - **Disable / enable** principal (soft-disable via `disabled_at`).
-  - **Dangling role flag:** if a grant's `role_key` is no longer in the code registry, show
-    it highlighted as _dangling (resolves to zero permissions)_ — core spec requirement.
+  - **Dangling role flag:** if a grant's `role_key` no longer resolves to a known role (built-in
+    or one of the app's `roles` rows), show it highlighted as _dangling (resolves to zero
+    permissions)_ — core spec requirement.
   - Users are lazily created on first login, or pre-created via **Invite** (above). Grant/revoke
     works the same on an `invited` principal as on an active one — grants pre-created on an
     invite take effect the moment that user first logs in (claim).
 
-### 2. Projects (`/projects`)
+### 2. Group → role mappings (`/group-mappings`)
 
-- List slug, name, created_at. **Create** (`POST` → `iam.project.create`) and **rename**
-  (`PATCH` → `iam.project.update`). Admin-managed only in v1; no delete in v1 (projects are
-  referenced by grants/mappings — out of scope, note it).
-
-### 3. Group → role mappings (`/group-mappings`)
-
-- List provider (github), `group_ref`, role, scope. **Create** form: provider (github, fixed
-  v1), `group_ref` input with inline hint on the **`<org>/<team>` lowercase** normalization
-  (so admin input matches identity data), role picker, scope picker → `POST`
+- List provider (github), `group_ref`, role, app, scope. **Create** form: provider (github,
+  fixed v1), `group_ref` input with inline hint on the **`<org>/<team>` lowercase**
+  normalization (so admin input matches identity data), **app picker** (one app or _All apps_),
+  **role picker** (the app's roles — a mapping is **role-only**, no inline action set), **scope
+  picker** (generic dimension + value, from the app's schema) → `POST`
   (`iam.groupmapping.create`). **Delete** → `iam.groupmapping.delete`.
 - Short copy explaining group perms are **login-time, not live** (removing a mapping takes
   effect next `authenticate()` within cache TTL; removing team membership only on Access
   session refresh) — sets admin expectations, straight from the core spec.
 
-### 4. API keys / service tokens (`/api-keys`)
+### 3. API keys / service tokens (`/api-keys`)
 
-- List provisioned service principals: label, status, role/scope, expiry.
-- **Provision** form: label, role, optional project scope, optional expiry → `POST
-  /admin/api-keys`. On success the response carries `client_id` + **`client_secret` shown
-  exactly once** → render the **once-shown secret modal** (see cross-cutting). Surface the
-  Cloudflare "copy now, not retrievable later" warning. Also surface the v1 caveat from the
-  core spec: whether the token was auto-added to the app's Service Auth policy or that step
-  is manual.
+- List provisioned service principals: label, status, app, role/inline-actions, scope, expiry.
+- **Provision** form: label + the shared **grant composer** (app, role-or-inline, scope —
+  same as Add grant) + optional expiry → `POST /admin/api-keys`. On success the response
+  carries `client_id` + **`client_secret` shown exactly once** → render the **once-shown secret
+  modal** (see cross-cutting). Surface the Cloudflare "copy now, not retrievable later"
+  warning. Also surface the v1 caveat from the core spec: whether the token was auto-added to
+  the app's Service Auth policy or that step is manual.
 - **Rotate** (`POST .../rotate`) → new secret, once-shown modal again.
 - **Revoke** (`DELETE`) → confirmation; explains it deletes the Access token + grants
   immediately.
 - If provisioning half-failed (orphaned Access token / `iam.apikey.orphaned`), show it as a
   reconciliation warning row.
 
-### 5. Capabilities (`/capabilities`)
+### 4. Capabilities (`/capabilities`)
 
 - List tokens: label, grants `(action, resource)`, expiry, used_count, max_uses, status
   (active / expired / revoked). **Never** show hash or plaintext.
-- **Issue** form: repeatable `(action, resource)` rows, optional per-row `projectId` (used
-  only for the delegation check), label, expiry, optional max_uses → `POST
+- **Issue** form: repeatable `(action, resource)` rows, each with an optional per-row
+  **scope** (`type` + `value`, both-or-neither — the generic dimension/value pair, used only
+  for the delegation check, not stored), label, expiry, optional max_uses → `POST
   /admin/capabilities` (calls `issueCapability()` with the **admin's own forwarded
   credentials**; delegation rule applies — admins hold `*` so it passes). Response returns
   the **plaintext token once** → once-shown modal.
@@ -183,7 +202,7 @@ UUIDv7; auth_log is rowid). No total counts.
   app-owned shared namespace (`report:`, `invoice:`…); v1 has no picker, just a hint listing
   known resource-type prefixes.
 
-### 6. Audit log (`/audit` + `/audit/auth-log`)
+### 5. Audit log (`/audit` + `/audit/auth-log`)
 
 - **`/audit` — domain events (`audit_events`):** table of created_at, actor
   (`principal_label`, or _capability_ + `capability_token_id`), `app`, `action`,
@@ -198,11 +217,43 @@ UUIDv7; auth_log is rowid). No total counts.
 - Read-only. Retention is server-side (auth_log pruned after weeks; audit kept long) — the UI
   just reflects what's there.
 
-### 7. Roles (`/roles`)
+### 6. Policies (`/policies?app=`)
 
-- Read-only reference of the **code-defined** roles (`GET /admin/roles`): name, description,
-  permission patterns. Copy: "roles live in code, not editable here." Doubles as the legend
-  for role pickers elsewhere and the place to see what `*`/`project.*` expand to.
+- **Admin-composed custom policies** (origin=`custom` roles) for one app — named, reusable
+  permission sets the admin builds from the app's action catalog, grantable like any role.
+  Requires picking a concrete app (policies are per-app; never cross-app).
+- **List** (`GET /admin/apps/{app}/policies`): key, name, permission chips, created_at.
+- **Create** form: key, name, optional description, and an **action picker** multi-selecting
+  from the app's action catalog (`GET /admin/apps/{app}/schema` → `actions`) → `POST
+  /admin/apps/{app}/policies` (`iam.policy.create`). A key that collides with a built-in role
+  or an existing role is rejected (surface the API error inline).
+- **Edit** (inline) → `PUT .../policies/{key}` (`iam.policy.update`); **Delete** → `DELETE`
+  (`iam.policy.delete`), with a confirm noting that existing grants referencing it become
+  dangling. The endpoints refuse to touch origin=`app` (reconciled) roles — only custom
+  policies are editable here.
+- This is the AWS-IAM "managed policy" surface: the app ships canonical origin=`app` roles via
+  reconcile; admins layer origin=`custom` policies on top here, and reconcile never disturbs them.
+
+### 7. Roles (`/roles?app=`)
+
+- Read-only reference of the **roles grantable for an app** (`GET /admin/roles?app=…`): name,
+  `origin` badge (built-in / app / custom), description, permission patterns. With no app
+  chosen, only the cross-app built-ins (e.g. `admin`) show. Doubles as the legend for the role
+  pickers elsewhere and the place to see what `*` / `prefix.*` expand to. Roles are not edited
+  here — app roles are declared in app code and reconciled; custom policies are managed on the
+  Policies page.
+
+### 8. App schema (`/schema?app=`)
+
+- Read-only view of an app's **reconciled vocabulary** (`GET /admin/apps/{app}/schema`),
+  declared in the app's code and pushed via `PUT /admin/apps/{app}/schema` (normally by
+  `scripts/provision-schemas.ts`) — not editable here. Three tables for the chosen app:
+  - **Scope dimensions** (`app_scopes`): `type` + optional `label` — the dimensions the scope
+    picker offers for this app.
+  - **Action catalog** (`app_actions`): `action` + description — what inline grants and policies
+    validate against.
+  - **App roles** (origin=`app`): key, name, permission patterns — the canonical bundles the
+    app ships (custom policies live on the Policies page).
 
 ## Cross-cutting UI behaviors
 
@@ -213,13 +264,26 @@ UUIDv7; auth_log is rowid). No total counts.
   renders a tokenized share URL must send **`Referrer-Policy: no-referrer`** (core spec) —
   set it on the admin UI responses, or render the token as copyable text only, never as a
   navigable anchor.
-- **Three-state scope picker.** A grant / mapping is either **Global (all projects)** →
-  stored `project_id = NULL`, or **scoped to one project**. The picker has an explicit
-  "Global / all projects" option distinct from "pick a project" — this is the `null` vs.
-  project-id distinction that the core spec treats as load-bearing. Never default silently to
-  global; make the admin choose. (The read-side three-state — `null` / `[]` / non-empty from
-  `scopedTo()` — is an SDK concern, not the admin UI's, but the _grant_ side must not blur
-  global vs. scoped.)
+- **Generic scope picker (two explicit states).** A grant / mapping is either **Global (all
+  scopes)** → stored `scope_type = scope_value = NULL`, or **scoped to one flat dimension** →
+  a `scope_type` (a dimension from the chosen app's `app_scopes`, picked from a dropdown) plus a
+  free-text `scope_value`. **Scope values are opaque, app-owned strings** — Propustka never
+  validates or enumerates them, so the value is a plain text box, not a list (the old
+  Propustka-owned project list is gone). The picker has an explicit "Global / all scopes" option
+  distinct from "Scoped to a dimension" — the `null` vs. `(type, value)` distinction the core
+  spec treats as load-bearing. Never default silently to global; make the admin choose. (The
+  read-side three-state — `null` / `[]` / non-empty from `scopedTo(action, dimension)` — is an
+  SDK concern, not the admin UI's, but the _grant_ side must not blur global vs. scoped.)
+- **App picker (two explicit states).** Mirroring the scope picker, a grant / mapping / API key
+  is either **scoped to one app** or **All apps (cross-app**, `app = null`, e.g. a super-admin).
+  Defaults to unset so the admin chooses deliberately. The chosen app drives the role list,
+  scope dimensions and action catalog (loaded from that app's schema).
+- **Role-vs-inline grant choice.** A grant / API key carries **exactly one** of a named
+  role/policy (`role_key`) or an inline action set (`permissions`). The composer offers a
+  radio between "Named role / policy" (role picker) and "Inline actions" (action picker over the
+  app's catalog); inline is only available for a concrete app (a cross-app inline set has no
+  catalog to validate against). Group mappings are role-only — no inline option. The API rejects
+  an unknown role or an action pattern outside the app's catalog; surface that inline.
 - **Confirm destructive actions** (revoke grant / API key / capability, disable principal)
   with a small confirm dialog naming the target. These are the most audit-sensitive
   operations.
@@ -233,10 +297,15 @@ UUIDv7; auth_log is rowid). No total counts.
 
 ## Out of scope (v1)
 
-- No runtime role editing (roles are code; `/roles` is read-only).
-- No project hierarchy, resource-level ACL editor, or per-`can()` decision log viewer
-  (those features are out of scope in the core spec; nothing to render).
-- No project delete, no bulk operations, no CSV export, no charts/dashboards — plain tables.
+- No editing of an app's reconciled vocabulary (scopes / actions / origin=`app` roles are
+  declared in app code and pushed via `PUT .../schema` by the operator script; `/schema` and
+  `/roles` are read-only). Admins **can** compose origin=`custom` policies on `/policies` — that
+  is the one runtime-editable role surface.
+- No scope-dimension hierarchy/containment (dimensions are flat & independent), no
+  resource-level ACL editor, or per-`can()` decision log viewer (out of scope in the core spec;
+  nothing to render).
+- No project management page — Propustka no longer owns a project list (scope values are
+  app-owned). No bulk operations, no CSV export, no charts/dashboards — plain tables.
 - No theming/branding beyond a clean default. **UI is minimal hand-rolled** (decided): plain
   HTML + a little CSS, boring tables — no component kit / design system in v1.
 - No offline / optimistic UI — every mutation refetches via `invalidate()`.

@@ -1,4 +1,4 @@
-import type { IssueCapabilityGrant, PermissionEntry } from '@propustka/core'
+import type { IssueCapabilityGrant, PermissionEntry, Scope } from '@propustka/core'
 import { describe, expect, test } from 'bun:test'
 import { classifyRedeemFailure, findUncoveredGrant, generateToken, hashToken } from '../capabilities'
 import type { CapabilityTokenRow } from '../db'
@@ -48,13 +48,15 @@ describe('classifyRedeemFailure', () => {
 	})
 })
 
-const entry = (action: string, projectId: string | null): PermissionEntry => ({ action, projectId, source: 'grant' })
+const entry = (action: string, scope: Scope | null): PermissionEntry => ({ action, scope, source: 'grant' })
+
+const TEAM = (value: string): Scope => ({ type: 'team', value })
 
 describe('findUncoveredGrant (delegation rule)', () => {
-	const grant = (action: string, projectId?: string | null): IssueCapabilityGrant => ({
+	const grant = (action: string, scope?: Scope | null): IssueCapabilityGrant => ({
 		action,
 		resource: 'report:1',
-		...(projectId !== undefined ? { projectId } : {}),
+		...(scope !== undefined ? { scope } : {}),
 	})
 
 	test('all grants covered by a global wildcard → null', () => {
@@ -66,22 +68,22 @@ describe('findUncoveredGrant (delegation rule)', () => {
 		expect(findUncoveredGrant([entry('report.read', null)], grants)).toEqual(grant('report.delete'))
 	})
 
-	test('omitted projectId requires a global permission', () => {
-		// Issuer only holds report.read scoped to p1, not globally.
-		expect(findUncoveredGrant([entry('report.read', 'p1')], [grant('report.read')])).toEqual(grant('report.read'))
+	test('omitted scope requires a global permission', () => {
+		// Issuer only holds report.read scoped to team:acme, not globally.
+		expect(findUncoveredGrant([entry('report.read', TEAM('acme'))], [grant('report.read')])).toEqual(grant('report.read'))
 	})
 
-	test('per-grant projectId scopes the delegation check', () => {
-		expect(findUncoveredGrant([entry('report.read', 'p1')], [grant('report.read', 'p1')])).toBeNull()
+	test('per-grant scope scopes the delegation check', () => {
+		expect(findUncoveredGrant([entry('report.read', TEAM('acme'))], [grant('report.read', TEAM('acme'))])).toBeNull()
 	})
 
-	test('project-scoped grant not covered by a different project', () => {
-		expect(findUncoveredGrant([entry('report.read', 'p2')], [grant('report.read', 'p1')]))
-			.toEqual(grant('report.read', 'p1'))
+	test('scoped grant not covered by a different scope value', () => {
+		expect(findUncoveredGrant([entry('report.read', TEAM('globex'))], [grant('report.read', TEAM('acme'))]))
+			.toEqual(grant('report.read', TEAM('acme')))
 	})
 
-	test('a global permission covers a project-scoped grant', () => {
-		expect(findUncoveredGrant([entry('report.*', null)], [grant('report.read', 'p1')])).toBeNull()
+	test('a global permission covers a scoped grant', () => {
+		expect(findUncoveredGrant([entry('report.*', null)], [grant('report.read', TEAM('acme'))])).toBeNull()
 	})
 
 	test('empty grants → null (nothing to cover)', () => {

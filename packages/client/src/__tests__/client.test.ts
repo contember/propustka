@@ -100,20 +100,22 @@ describe('AuthContext.can', () => {
 	}
 
 	test('scope-less check satisfied by a global entry only', async () => {
-		const global = await ctx([{ action: 'project.read', projectId: null, source: 'grant' }])
+		const global = await ctx([{ action: 'project.read', scope: null, source: 'grant' }])
 		expect(global.can('project.read')).toBe(true)
 
-		const scoped = await ctx([{ action: 'project.read', projectId: 'p1', source: 'grant' }])
+		const scoped = await ctx([{ action: 'project.read', scope: { type: 'project', value: 'p1' }, source: 'grant' }])
 		expect(scoped.can('project.read')).toBe(false)
 	})
 
-	test('project scope satisfied by same-project or global entry', async () => {
-		const scoped = await ctx([{ action: 'project.read', projectId: 'p1', source: 'grant' }])
-		expect(scoped.can('project.read', { project: 'p1' })).toBe(true)
-		expect(scoped.can('project.read', { project: 'p2' })).toBe(false)
+	test('scoped check satisfied by same-scope or global entry', async () => {
+		const scoped = await ctx([{ action: 'project.read', scope: { type: 'project', value: 'p1' }, source: 'grant' }])
+		expect(scoped.can('project.read', { type: 'project', value: 'p1' })).toBe(true)
+		expect(scoped.can('project.read', { type: 'project', value: 'p2' })).toBe(false)
+		// A different dimension never satisfies, even with a matching value.
+		expect(scoped.can('project.read', { type: 'organization', value: 'p1' })).toBe(false)
 
-		const global = await ctx([{ action: 'project.*', projectId: null, source: 'grant' }])
-		expect(global.can('project.read', { project: 'p2' })).toBe(true)
+		const global = await ctx([{ action: 'project.*', scope: null, source: 'grant' }])
+		expect(global.can('project.read', { type: 'project', value: 'p2' })).toBe(true)
 	})
 })
 
@@ -126,24 +128,34 @@ describe('AuthContext.scopedTo', () => {
 
 	test('null when ANY matching entry is global (unrestricted)', async () => {
 		const auth = await ctx([
-			{ action: 'project.read', projectId: 'p1', source: 'grant' },
-			{ action: 'project.*', projectId: null, source: 'bootstrap' },
+			{ action: 'project.read', scope: { type: 'project', value: 'p1' }, source: 'grant' },
+			{ action: 'project.*', scope: null, source: 'bootstrap' },
 		])
-		expect(auth.scopedTo('project.read')).toBeNull()
+		expect(auth.scopedTo('project.read', 'project')).toBeNull()
 	})
 
 	test('empty array when the action matches no entry', async () => {
-		const auth = await ctx([{ action: 'report.read', projectId: 'p1', source: 'grant' }])
-		expect(auth.scopedTo('project.read')).toEqual([])
+		const auth = await ctx([{ action: 'report.read', scope: { type: 'project', value: 'p1' }, source: 'grant' }])
+		expect(auth.scopedTo('project.read', 'project')).toEqual([])
 	})
 
-	test('distinct non-null project ids', async () => {
+	test('distinct scope values within the dimension', async () => {
 		const auth = await ctx([
-			{ action: 'project.read', projectId: 'p1', source: 'grant' },
-			{ action: 'project.read', projectId: 'p2', source: 'grant' },
-			{ action: 'project.*', projectId: 'p1', source: 'group:org/team' }, // dup p1 via wildcard
+			{ action: 'project.read', scope: { type: 'project', value: 'p1' }, source: 'grant' },
+			{ action: 'project.read', scope: { type: 'project', value: 'p2' }, source: 'grant' },
+			{ action: 'project.*', scope: { type: 'project', value: 'p1' }, source: 'group:org/team' }, // dup p1 via wildcard
 		])
-		expect(auth.scopedTo('project.read')).toEqual(['p1', 'p2'])
+		expect(auth.scopedTo('project.read', 'project')).toEqual(['p1', 'p2'])
+	})
+
+	test('entries in other dimensions are ignored', async () => {
+		const auth = await ctx([
+			{ action: 'project.read', scope: { type: 'project', value: 'p1' }, source: 'grant' },
+			{ action: 'project.read', scope: { type: 'organization', value: 'acme' }, source: 'grant' },
+		])
+		// Asking for the 'project' dimension never sees the 'organization' grant.
+		expect(auth.scopedTo('project.read', 'project')).toEqual(['p1'])
+		expect(auth.scopedTo('project.read', 'organization')).toEqual(['acme'])
 	})
 })
 
@@ -235,7 +247,12 @@ describe('IamClient.issueCapability', () => {
 		const iam = new IamClient(stub, 'app-x')
 		const result = await iam.issueCapability(
 			makeRequest({ url: 'https://r.example.com/x', token: 'jwt', cookie: 'ck', ray: 'ray-2' }),
-			{ grants: [{ action: 'report.read', resource: 'report:q2', projectId: 'p1' }], label: 'Share', expiresAt: 99, maxUses: 3 },
+			{
+				grants: [{ action: 'report.read', resource: 'report:q2', scope: { type: 'project', value: 'p1' } }],
+				label: 'Share',
+				expiresAt: 99,
+				maxUses: 3,
+			},
 		)
 		const ok = expectIssued(result)
 		expect(ok.token).toBe('plaintext')
@@ -246,7 +263,7 @@ describe('IamClient.issueCapability', () => {
 			cookie: 'ck',
 			origin: 'https://r.example.com',
 			requestId: 'ray-2',
-			grants: [{ action: 'report.read', resource: 'report:q2', projectId: 'p1' }],
+			grants: [{ action: 'report.read', resource: 'report:q2', scope: { type: 'project', value: 'p1' } }],
 			label: 'Share',
 			expiresAt: 99,
 			maxUses: 3,

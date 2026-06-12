@@ -15,6 +15,7 @@
       "name": "@propustka/example-app",
       "dependencies": {
         "@propustka/client": "workspace:*",
+        "@propustka/core": "workspace:*",
       },
       "devDependencies": {
         "@cloudflare/workers-types": "^4.20251001.0",

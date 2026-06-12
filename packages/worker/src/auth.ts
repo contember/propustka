@@ -59,7 +59,7 @@ export async function resolveRequest(services: Services, input: AuthenticateInpu
 					id: LOCAL_DEV_ADMIN_ID,
 					type: 'user',
 					label: 'local-dev-admin',
-					permissions: [{ action: '*', projectId: null, source: 'bootstrap' }],
+					permissions: [{ action: '*', scope: null, source: 'bootstrap' }],
 					requestId: input.requestId,
 				},
 			},

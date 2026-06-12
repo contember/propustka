@@ -5,10 +5,12 @@
 	"scripts": {
 		"dev": "bunx lopata dev --env local --port 18190 --listen 127.0.0.1",
 		"oblaka": "bunx oblaka oblaka.ts",
+		"provision-schema": "bun run ../../scripts/provision-schemas.ts",
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
-		"@propustka/client": "workspace:*"
+		"@propustka/client": "workspace:*",
+		"@propustka/core": "workspace:*"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "^4.20251001.0",

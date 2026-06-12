@@ -17,14 +17,17 @@ export default {
 			return Response.json({ authenticated: false, reason: auth.reason }, { status: auth.status })
 		}
 
+		// Authorization uses the generic scope model — `can(action, { type, value })` and
+		// `scopedTo(action, dimension)`. The actions/dimensions here match what the app
+		// DECLARES in `propustka.schema.ts` (reconciled via scripts/provision-schemas.ts).
 		const body = {
 			authenticated: true,
-			canEditDemoProject: auth.can('project.settings.update', { project: 'demo' }),
-			readableProjects: auth.scopedTo('project.read'),
+			canEditDemoProject: auth.can('example.settings.update', { type: 'project', value: 'demo' }),
+			readableProjects: auth.scopedTo('example.read', 'project'),
 		}
 
 		// Fire-and-forget domain audit — never blocks the response.
-		ctx.waitUntil(auth.audit({ action: 'example.viewed', resourceType: 'example', resourceId: 'demo' }))
+		ctx.waitUntil(auth.audit({ action: 'example.view', resourceType: 'example', resourceId: 'demo' }))
 
 		return Response.json(body)
 	},

@@ -1,10 +1,10 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
 import { createLocalJWKSet, exportJWK, generateKeyPair, type JSONWebKeySet, type JWTPayload, SignJWT } from 'jose'
 import { Db } from '../../db'
-import { allMigrations } from './migrations'
 import { IdentityClient } from '../../identity'
 import { type AccessApps, JwtValidator } from '../../jwt'
 import type { Config, Services } from '../../services'
+import { allMigrations } from './migrations'
 
 /**
  * Shared test harness for the worker's auth/admin flows. Stands up:
@@ -302,25 +302,68 @@ export function seedService(sqlite: Database, options: SeedServiceOptions): stri
 	return id
 }
 
-/** Insert a project; returns its id. */
-export function seedProject(sqlite: Database, slug: string, name?: string): string {
-	const id = nextId('project')
-	sqlite.run('INSERT INTO projects (id, slug, name) VALUES (?, ?, ?)', [id, slug, name ?? slug])
-	return id
+/** A flat scope coordinate for seeding ({ type, value }); null = global. */
+export interface SeedScope {
+	type: string
+	value: string
 }
 
-/** Insert a grant for a principal; returns its id. `projectId` null → global, `app` null → all apps. */
+/**
+ * Insert a ROLE-BASED grant for a principal; returns its id. `scope` null → global,
+ * `app` null → all apps (cross-app). The grant carries a named `roleKey` (the common
+ * case in these tests); use `seedInlineGrant` for an inline action-pattern set.
+ */
 export function seedGrant(
 	sqlite: Database,
 	principalId: string,
 	roleKey: string,
-	projectId: string | null = null,
+	scope: SeedScope | null = null,
 	app: string | null = null,
 ): string {
 	const id = nextId('grant')
 	sqlite.run(
-		'INSERT INTO grants (id, principal_id, role_key, project_id, app) VALUES (?, ?, ?, ?, ?)',
-		[id, principalId, roleKey, projectId, app],
+		'INSERT INTO grants (id, principal_id, role_key, scope_type, scope_value, app) VALUES (?, ?, ?, ?, ?, ?)',
+		[id, principalId, roleKey, scope?.type ?? null, scope?.value ?? null, app],
 	)
 	return id
+}
+
+/** Insert an INLINE grant (an action-pattern set, no role) for a principal; returns its id. */
+export function seedInlineGrant(
+	sqlite: Database,
+	principalId: string,
+	permissions: string[],
+	scope: SeedScope | null = null,
+	app: string | null = null,
+): string {
+	const id = nextId('grant')
+	sqlite.run(
+		'INSERT INTO grants (id, principal_id, permissions, scope_type, scope_value, app) VALUES (?, ?, ?, ?, ?, ?)',
+		[id, principalId, JSON.stringify(permissions), scope?.type ?? null, scope?.value ?? null, app],
+	)
+	return id
+}
+
+/** Insert a role row for an app (origin 'app' by default); returns its (app, role_key). */
+export function seedRole(
+	sqlite: Database,
+	app: string,
+	roleKey: string,
+	permissions: string[],
+	options: { name?: string; description?: string | null; origin?: 'app' | 'custom' } = {},
+): void {
+	sqlite.run(
+		'INSERT INTO roles (app, role_key, name, description, permissions, origin) VALUES (?, ?, ?, ?, ?, ?)',
+		[app, roleKey, options.name ?? roleKey, options.description ?? null, JSON.stringify(permissions), options.origin ?? 'app'],
+	)
+}
+
+/** Insert an action-catalog row for an app. */
+export function seedAppAction(sqlite: Database, app: string, action: string, description: string | null = null): void {
+	sqlite.run('INSERT INTO app_actions (app, action, description) VALUES (?, ?, ?)', [app, action, description])
+}
+
+/** Insert a scope-dimension row for an app. */
+export function seedAppScope(sqlite: Database, app: string, scopeType: string, label: string | null = null): void {
+	sqlite.run('INSERT INTO app_scopes (app, scope_type, label) VALUES (?, ?, ?)', [app, scopeType, label])
 }

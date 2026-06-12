@@ -1,5 +1,5 @@
-import type { DomainEvent, IamRpc, ResolvedPrincipal } from '@propustka/core'
-import { permits, scopedProjects } from '@propustka/core'
+import type { DomainEvent, IamRpc, ResolvedPrincipal, Scope } from '@propustka/core'
+import { permits, scopedValues } from '@propustka/core'
 import { readCredentials } from './request'
 import type {
 	AuthContext,
@@ -33,15 +33,16 @@ class RealAuthContext implements AuthContext {
 		this.principal = { id: resolved.id, type: resolved.type, label: resolved.label }
 	}
 
-	can(action: string, scope?: { project?: string }): boolean {
-		// `permits` already encodes the scope-less rule: with no project, ONLY global
-		// (projectId === null) entries satisfy.
-		return permits(this.resolved.permissions, action, scope?.project)
+	can(action: string, scope?: Scope): boolean {
+		// `permits` already encodes the scope-less rule: with no scope, ONLY global
+		// (scope === null) entries satisfy.
+		return permits(this.resolved.permissions, action, scope)
 	}
 
-	scopedTo(action: string, _dimension = 'project'): string[] | null {
-		// `dimension` is forward-looking only — v1 has a single scope dimension (project).
-		return scopedProjects(this.resolved.permissions, action)
+	scopedTo(action: string, dimension: string): string[] | null {
+		// `dimension` picks the scope type — scopes are flat & independent, so a value
+		// list is always relative to one dimension.
+		return scopedValues(this.resolved.permissions, action, dimension)
 	}
 
 	audit(event: DomainEvent): Promise<void> {

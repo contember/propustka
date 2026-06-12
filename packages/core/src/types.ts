@@ -9,10 +9,20 @@ export type PrincipalType = 'user' | 'service'
  */
 export type PermissionSource = 'grant' | 'bootstrap' | `group:${string}`
 
+/**
+ * A flat, app-owned scope coordinate — one dimension (`type`) and an opaque value.
+ * Dimensions are INDEPENDENT: there is NO hierarchy/containment between them.
+ * `value` is an opaque app-owned string; core never validates it.
+ */
+export interface Scope {
+	type: string
+	value: string
+}
+
 export interface PermissionEntry {
 	action: string
-	/** null = global / all projects */
-	projectId: string | null
+	/** null = global / all scopes */
+	scope: Scope | null
 	source: PermissionSource
 }
 
@@ -37,7 +47,31 @@ export interface RoleDef {
 	permissions: string[]
 }
 
+/** One scope dimension an app exposes (flat, independent). */
+export interface AppScopeDef {
+	type: string
+	label?: string
+}
+
+/** One action in an app's catalog (used for validation + admin UI discovery). */
+export interface AppActionDef {
+	action: string
+	description?: string
+}
+
+/** An app's full authz vocabulary, declared in the app's code, reconciled into Propustka. */
+export interface AppSchema {
+	scopes: AppScopeDef[]
+	actions: AppActionDef[]
+	/** role_key -> def; these are origin='app' roles. */
+	roles: Record<string, RoleDef>
+}
+
+/**
+ * App-aware role lookup. The worker layers a built-in cross-app source (admin) over a
+ * per-app DB source. `app` is the calling app id; null = cross-app/built-in only.
+ */
 export interface RoleSource {
-	getRole(key: string): RoleDef | undefined
-	listRoles(): Record<string, RoleDef>
+	getRole(app: string | null, key: string): RoleDef | undefined
+	listRoles(app: string | null): Record<string, RoleDef>
 }

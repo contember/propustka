@@ -4,7 +4,7 @@ import { applyScope } from '../scope'
 describe('applyScope', () => {
 	const branches = {
 		all: () => 'ALL' as const,
-		some: (ids: string[]) => `SOME:${ids.join(',')}` as const,
+		some: (values: string[]) => `SOME:${values.join(',')}` as const,
 		none: () => 'NONE' as const,
 	}
 
@@ -12,11 +12,11 @@ describe('applyScope', () => {
 		expect(applyScope(null, branches)).toBe('ALL')
 	})
 
-	test('[] → none() (never emits WHERE id IN ())', () => {
+	test('[] → none() (never emits WHERE col IN ())', () => {
 		expect(applyScope([], branches)).toBe('NONE')
 	})
 
-	test('non-empty → some(ids)', () => {
-		expect(applyScope(['p1', 'p2'], branches)).toBe('SOME:p1,p2')
+	test('non-empty → some(values) (opaque, app-owned scope values)', () => {
+		expect(applyScope(['acme', 'globex'], branches)).toBe('SOME:acme,globex')
 	})
 })

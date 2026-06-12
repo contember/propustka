@@ -4,7 +4,8 @@ import { allMigrations } from './helpers/migrations'
 
 // Apply the real migrations to an in-memory SQLite and assert the schema contract
 // the Worker relies on: the table set, the partial unique indexes (the NULL-in-UNIQUE
-// traps), the atomic redeem UPDATE…RETURNING, and the json_valid CHECK on diff.
+// traps), the role/inline XOR + both-or-neither scope CHECKs, the atomic redeem
+// UPDATE…RETURNING, and the json_valid CHECK on diff.
 
 const migration = allMigrations()
 
@@ -15,14 +16,16 @@ function freshDb(): Database {
 	return db
 }
 
-test('creates every table the worker reads/writes', () => {
+test('creates every table the worker reads/writes (and retires projects)', () => {
 	const db = freshDb()
 	const rows = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'").all()
 	const names = rows.map((r) => r.name)
 	for (
 		const t of [
 			'principals',
-			'projects',
+			'app_scopes',
+			'app_actions',
+			'roles',
 			'grants',
 			'group_role_mappings',
 			'audit_events',
@@ -33,37 +36,117 @@ test('creates every table the worker reads/writes', () => {
 	) {
 		expect(names).toContain(t)
 	}
+	// `projects` is gone — scope values are app-owned now, not a Propustka table.
+	expect(names).not.toContain('projects')
 })
 
-test('partial unique index forbids a second GLOBAL grant for the same (principal, role)', () => {
+test('roles.permissions rejects non-JSON via the json_valid CHECK', () => {
 	const db = freshDb()
-	db.run("INSERT INTO principals (id, type, external_id, email, label) VALUES ('p1', 'user', 'sub1', 'a@x.cz', 'a@x.cz')")
-	db.run("INSERT INTO grants (id, principal_id, role_key, project_id) VALUES ('g1', 'p1', 'editor', NULL)")
-	// Second global grant with the same (principal, role) — must be rejected despite NULL project_id.
-	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, project_id) VALUES ('g2', 'p1', 'editor', NULL)")).toThrow()
+	expect(() => db.run("INSERT INTO roles (app, role_key, name, permissions, origin) VALUES ('opice', 'editor', 'Editor', 'not json', 'app')"))
+		.toThrow()
+	expect(() =>
+		db.run("INSERT INTO roles (app, role_key, name, permissions, origin) VALUES ('opice', 'editor', 'Editor', '[\"project.read\"]', 'app')")
+	).not.toThrow()
+	// origin is constrained to the two known values.
+	expect(() => db.run("INSERT INTO roles (app, role_key, name, permissions, origin) VALUES ('opice', 'viewer', 'Viewer', '[]', 'bogus')")).toThrow()
 })
 
-test('two project-scoped grants for the same (principal, role) on DIFFERENT projects are allowed', () => {
+test('a grant must carry EITHER a role_key OR inline permissions — never both, never neither', () => {
 	const db = freshDb()
 	db.run("INSERT INTO principals (id, type, external_id, email, label) VALUES ('p1', 'user', 'sub1', 'a@x.cz', 'a@x.cz')")
-	db.run("INSERT INTO projects (id, slug, name) VALUES ('pr1', 'alpha', 'Alpha'), ('pr2', 'beta', 'Beta')")
-	db.run("INSERT INTO grants (id, principal_id, role_key, project_id) VALUES ('g1', 'p1', 'editor', 'pr1')")
-	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, project_id) VALUES ('g2', 'p1', 'editor', 'pr2')")).not.toThrow()
-	// …but the SAME project twice is rejected.
-	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, project_id) VALUES ('g3', 'p1', 'editor', 'pr1')")).toThrow()
+	// Both set — rejected.
+	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, permissions) VALUES ('gb', 'p1', 'editor', '[\"project.read\"]')")).toThrow()
+	// Neither set — rejected.
+	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, permissions) VALUES ('gn', 'p1', NULL, NULL)")).toThrow()
+	// Role-only — ok.
+	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key) VALUES ('gr', 'p1', 'editor')")).not.toThrow()
+	// Inline-only — ok.
+	expect(() => db.run("INSERT INTO grants (id, principal_id, permissions) VALUES ('gi', 'p1', '[\"report.export\"]')")).not.toThrow()
+})
+
+test('grant scope is both-or-neither (scope_type and scope_value rise/fall together)', () => {
+	const db = freshDb()
+	db.run("INSERT INTO principals (id, type, external_id, email, label) VALUES ('p1', 'user', 'sub1', 'a@x.cz', 'a@x.cz')")
+	// Half-set scopes are rejected.
+	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, scope_type, scope_value) VALUES ('g1', 'p1', 'editor', 'team', NULL)"))
+		.toThrow()
+	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, scope_type, scope_value) VALUES ('g2', 'p1', 'editor', NULL, 'acme')"))
+		.toThrow()
+	// Both set, or both NULL (global) — ok.
+	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, scope_type, scope_value) VALUES ('g3', 'p1', 'editor', 'team', 'acme')")).not
+		.toThrow()
+})
+
+test('partial unique index forbids a second GLOBAL role grant for the same (principal, role)', () => {
+	const db = freshDb()
+	db.run("INSERT INTO principals (id, type, external_id, email, label) VALUES ('p1', 'user', 'sub1', 'a@x.cz', 'a@x.cz')")
+	db.run("INSERT INTO grants (id, principal_id, role_key, scope_type, scope_value) VALUES ('g1', 'p1', 'editor', NULL, NULL)")
+	// Second global role grant with the same (principal, role) — rejected despite NULL scope.
+	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, scope_type, scope_value) VALUES ('g2', 'p1', 'editor', NULL, NULL)")).toThrow()
+})
+
+test('two scoped role grants for the same (principal, role) on DIFFERENT scope values are allowed', () => {
+	const db = freshDb()
+	db.run("INSERT INTO principals (id, type, external_id, email, label) VALUES ('p1', 'user', 'sub1', 'a@x.cz', 'a@x.cz')")
+	db.run("INSERT INTO grants (id, principal_id, role_key, scope_type, scope_value) VALUES ('g1', 'p1', 'editor', 'organization', 'acme')")
+	expect(() =>
+		db.run("INSERT INTO grants (id, principal_id, role_key, scope_type, scope_value) VALUES ('g2', 'p1', 'editor', 'organization', 'globex')")
+	).not.toThrow()
+	// …but the SAME scope value twice is rejected.
+	expect(() =>
+		db.run("INSERT INTO grants (id, principal_id, role_key, scope_type, scope_value) VALUES ('g3', 'p1', 'editor', 'organization', 'acme')")
+	).toThrow()
+})
+
+test('inline grants are NOT constrained by the unique indexes — each is a distinct attachment', () => {
+	const db = freshDb()
+	db.run("INSERT INTO principals (id, type, external_id, email, label) VALUES ('p1', 'user', 'sub1', 'a@x.cz', 'a@x.cz')")
+	// Two identical inline grants (same principal, scope, app, permissions) — both allowed,
+	// because the partial unique indexes only cover role_key IS NOT NULL.
+	db.run(
+		"INSERT INTO grants (id, principal_id, app, permissions, scope_type, scope_value) VALUES ('i1', 'p1', 'opice', '[\"report.export\"]', 'team', 'acme')",
+	)
+	expect(() =>
+		db.run(
+			"INSERT INTO grants (id, principal_id, app, permissions, scope_type, scope_value) VALUES ('i2', 'p1', 'opice', '[\"report.export\"]', 'team', 'acme')",
+		)
+	).not.toThrow()
 })
 
 test('the same GLOBAL role for DIFFERENT apps is allowed; the same app twice is rejected', () => {
 	const db = freshDb()
 	db.run("INSERT INTO principals (id, type, external_id, email, label) VALUES ('p1', 'user', 'sub1', 'a@x.cz', 'a@x.cz')")
-	db.run("INSERT INTO grants (id, principal_id, role_key, project_id, app) VALUES ('g1', 'p1', 'editor', NULL, 'opice')")
+	db.run("INSERT INTO grants (id, principal_id, role_key, app) VALUES ('g1', 'p1', 'editor', 'opice')")
 	// Same (principal, role) for a different app — allowed (the app dimension differentiates).
-	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, project_id, app) VALUES ('g2', 'p1', 'editor', NULL, 'poplach')")).not.toThrow()
+	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, app) VALUES ('g2', 'p1', 'editor', 'poplach')")).not.toThrow()
 	// …but the same app twice is rejected.
-	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, project_id, app) VALUES ('g3', 'p1', 'editor', NULL, 'opice')")).toThrow()
+	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, app) VALUES ('g3', 'p1', 'editor', 'opice')")).toThrow()
 	// A NULL-app (all-apps) grant collides with another NULL-app one (COALESCE folds NULL→'*').
-	db.run("INSERT INTO grants (id, principal_id, role_key, project_id, app) VALUES ('g4', 'p1', 'viewer', NULL, NULL)")
-	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, project_id, app) VALUES ('g5', 'p1', 'viewer', NULL, NULL)")).toThrow()
+	db.run("INSERT INTO grants (id, principal_id, role_key, app) VALUES ('g4', 'p1', 'viewer', NULL)")
+	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, app) VALUES ('g5', 'p1', 'viewer', NULL)")).toThrow()
+})
+
+test('group_role_mappings: same role for DIFFERENT scope values allowed, same scope twice rejected', () => {
+	const db = freshDb()
+	db.run(
+		"INSERT INTO group_role_mappings (id, provider, group_ref, role_key, app, scope_type, scope_value) VALUES ('m1', 'github', 'org/core', 'editor', 'opice', 'organization', 'acme')",
+	)
+	expect(() =>
+		db.run(
+			"INSERT INTO group_role_mappings (id, provider, group_ref, role_key, app, scope_type, scope_value) VALUES ('m2', 'github', 'org/core', 'editor', 'opice', 'organization', 'globex')",
+		)
+	).not.toThrow()
+	expect(() =>
+		db.run(
+			"INSERT INTO group_role_mappings (id, provider, group_ref, role_key, app, scope_type, scope_value) VALUES ('m3', 'github', 'org/core', 'editor', 'opice', 'organization', 'acme')",
+		)
+	).toThrow()
+	// Mapping scope is also both-or-neither.
+	expect(() =>
+		db.run(
+			"INSERT INTO group_role_mappings (id, provider, group_ref, role_key, scope_type, scope_value) VALUES ('m4', 'github', 'org/core', 'editor', 'team', NULL)",
+		)
+	).toThrow()
 })
 
 test('at most one user principal per email (invite target uniqueness)', () => {

@@ -4,7 +4,7 @@
 // typed, no codegen). Reuses @propustka/core types where they fit. Keep these clean
 // and complete — they ARE the admin API contract.
 
-import type { PermissionEntry, PermissionSource, PrincipalType } from '@propustka/core'
+import type { AppActionDef, AppSchema, AppScopeDef, PermissionEntry, PermissionSource, PrincipalType, RoleDef } from '@propustka/core'
 
 // ── Common wrappers ───────────────────────────────────────────────────────────
 
@@ -40,14 +40,20 @@ export interface PrincipalListItem {
 export interface GrantDto {
 	id: string
 	principalId: string
-	roleKey: string
-	projectId: string | null
+	/** Named role/policy key; null for an inline grant (then `permissions` is set). */
+	roleKey: string | null
+	/** Inline action-pattern set; null for a role-based grant (then `roleKey` is set). */
+	permissions: string[] | null
+	/** Scope dimension; null = global (both rise/fall together). */
+	scopeType: string | null
+	/** Opaque, app-owned scope value; null = global. */
+	scopeValue: string | null
 	/** App id this grant applies to; null = all apps (cross-app). */
 	app: string | null
 	grantedBy: string | null
 	expiresAt: number | null
 	createdAt: number
-	/** True when `roleKey` is no longer in the code role registry (resolves to zero perms). */
+	/** True when `roleKey` is set but no longer resolves to a known role (zero perms). */
 	dangling: boolean
 }
 
@@ -69,30 +75,17 @@ export interface UpdatePrincipalRequest {
 
 export interface CreateGrantRequest {
 	principalId: string
-	roleKey: string
-	/** null / omitted = global (all projects). */
-	projectId?: string | null
+	/** A named role/policy key — XOR `permissions` (supply exactly one). */
+	roleKey?: string
+	/** An inline action-pattern set — XOR `roleKey` (supply exactly one). */
+	permissions?: string[]
+	/** Scope dimension; null / omitted = global. Both-or-neither with `scopeValue`. */
+	scopeType?: string | null
+	/** Opaque, app-owned scope value; null / omitted = global. */
+	scopeValue?: string | null
 	/** App id (an ACCESS_APPS value); null / omitted = all apps (cross-app). */
 	app?: string | null
 	expiresAt?: number | null
-}
-
-// ── Projects ──────────────────────────────────────────────────────────────────
-
-export interface ProjectDto {
-	id: string
-	slug: string
-	name: string
-	createdAt: number
-}
-
-export interface CreateProjectRequest {
-	slug: string
-	name: string
-}
-
-export interface UpdateProjectRequest {
-	name: string
 }
 
 // ── Group → role mappings ─────────────────────────────────────────────────────
@@ -102,11 +95,12 @@ export interface GroupMappingDto {
 	provider: string
 	groupRef: string
 	roleKey: string
-	projectId: string | null
+	scopeType: string | null
+	scopeValue: string | null
 	/** App id this mapping applies to; null = all apps. */
 	app: string | null
 	createdAt: number
-	/** True when `roleKey` is no longer in the code role registry. */
+	/** True when `roleKey` no longer resolves to a known role for the app. */
 	dangling: boolean
 }
 
@@ -114,7 +108,8 @@ export interface CreateGroupMappingRequest {
 	provider: string
 	groupRef: string
 	roleKey: string
-	projectId?: string | null
+	scopeType?: string | null
+	scopeValue?: string | null
 	/** App id (an ACCESS_APPS value); null / omitted = all apps. */
 	app?: string | null
 }
@@ -126,10 +121,52 @@ export interface AppDto {
 	id: string
 }
 
-// ── Roles (read-only; live in code) ───────────────────────────────────────────
+// ── Roles & policies (per-app, DB-backed) ─────────────────────────────────────
 
+/** A role available for the calling app — a built-in or a DB row (app/custom). */
 export interface RoleDto {
 	key: string
+	name: string
+	description?: string
+	permissions: string[]
+	/** 'builtin' (cross-app, e.g. admin), 'app' (reconciled), or 'custom' (admin-made). */
+	origin: 'builtin' | 'app' | 'custom'
+}
+
+// ── App schema (reconciled vocabulary) ────────────────────────────────────────
+
+/** Reconcile an app's vocabulary. The request body IS the core `AppSchema`. */
+export type PutAppSchemaRequest = AppSchema
+
+/** GET schema response — the app's scopes, actions, and origin='app' roles. */
+export interface AppSchemaDto {
+	app: string
+	scopes: AppScopeDef[]
+	actions: AppActionDef[]
+	/** role_key -> def, origin='app' only (reconciled from code). */
+	roles: Record<string, RoleDef>
+}
+
+// ── Policies (origin='custom' roles, admin-composed) ──────────────────────────
+
+/** A custom policy (an origin='custom' role row) for an app. */
+export interface PolicyDto {
+	app: string
+	key: string
+	name: string
+	description?: string
+	permissions: string[]
+	createdAt: number
+}
+
+export interface CreatePolicyRequest {
+	key: string
+	name: string
+	description?: string
+	permissions: string[]
+}
+
+export interface UpdatePolicyRequest {
 	name: string
 	description?: string
 	permissions: string[]
@@ -151,10 +188,16 @@ export interface ApiKeyDto {
 export interface ProvisionApiKeyRequest {
 	label: string
 	type: 'service'
-	projectId?: string | null
+	/** A named role/policy key — XOR `permissions` (supply exactly one). */
+	roleKey?: string
+	/** An inline action-pattern set — XOR `roleKey` (supply exactly one). */
+	permissions?: string[]
+	/** Scope dimension; null / omitted = global. Both-or-neither with `scopeValue`. */
+	scopeType?: string | null
+	/** Opaque, app-owned scope value; null / omitted = global. */
+	scopeValue?: string | null
 	/** App id (an ACCESS_APPS value); null / omitted = all apps. */
 	app?: string | null
-	roleKey: string
 	expiresAt?: number | null
 }
 
@@ -195,7 +238,8 @@ export interface CapabilityListItem {
 }
 
 export interface IssueCapabilityRequest {
-	grants: { action: string; resource: string; projectId?: string | null }[]
+	/** `scope` is the delegation-check coordinate only (not stored); omitted → global. */
+	grants: { action: string; resource: string; scope?: { type: string; value: string } | null }[]
 	label?: string
 	expiresAt?: number
 	maxUses?: number
@@ -247,4 +291,4 @@ export interface MeDto {
 	groupsUnavailable: boolean
 }
 
-export type { PermissionEntry, PermissionSource, PrincipalType }
+export type { AppActionDef, AppSchema, AppScopeDef, PermissionEntry, PermissionSource, PrincipalType, RoleDef }

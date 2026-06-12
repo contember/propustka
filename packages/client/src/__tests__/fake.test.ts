@@ -10,7 +10,7 @@ describe('FakeIamClient.authenticate', () => {
 			throw new Error('unreachable')
 		}
 		expect(auth.can('anything.at.all')).toBe(true)
-		expect(auth.can('project.update', { project: 'p1' })).toBe(true)
+		expect(auth.can('project.update', { type: 'project', value: 'p1' })).toBe(true)
 	})
 
 	test('deny-list blocks matching actions (wildcards apply)', async () => {
@@ -19,7 +19,7 @@ describe('FakeIamClient.authenticate', () => {
 			throw new Error('unreachable')
 		}
 		expect(auth.can('project.update')).toBe(false)
-		expect(auth.can('project.read', { project: 'p1' })).toBe(false)
+		expect(auth.can('project.read', { type: 'project', value: 'p1' })).toBe(false)
 		expect(auth.can('report.delete')).toBe(false)
 		expect(auth.can('report.read')).toBe(true)
 	})
@@ -29,7 +29,7 @@ describe('FakeIamClient.authenticate', () => {
 		if (!auth.ok) {
 			throw new Error('unreachable')
 		}
-		expect(auth.scopedTo('project.read')).toBeNull()
+		expect(auth.scopedTo('project.read', 'project')).toBeNull()
 	})
 
 	test('audit is a resolved no-op', async () => {
@@ -61,16 +61,16 @@ describe('FakeIamClient.authenticate', () => {
 
 describe('FakeIamClient persona mode', () => {
 	const personas = {
-		'admin@x.test': { id: 'p-admin', label: 'admin@x.test', permissions: [{ action: '*', projectId: null, source: 'grant' as const }] },
+		'admin@x.test': { id: 'p-admin', label: 'admin@x.test', permissions: [{ action: '*', scope: null, source: 'grant' as const }] },
 		'appwide@x.test': {
 			id: 'p-appwide',
 			label: 'appwide@x.test',
-			permissions: [{ action: 'project.read', projectId: null, source: 'grant' as const }],
+			permissions: [{ action: 'project.read', scope: null, source: 'grant' as const }],
 		},
 		'scoped@x.test': {
 			id: 'p-scoped',
 			label: 'scoped@x.test',
-			permissions: [{ action: 'project.read', projectId: 'proj-web', source: 'grant' as const }],
+			permissions: [{ action: 'project.read', scope: { type: 'project', value: 'proj-web' }, source: 'grant' as const }],
 		},
 	}
 	const client = new FakeIamClient({ personas, defaultPersona: 'appwide@x.test' })
@@ -84,25 +84,25 @@ describe('FakeIamClient persona mode', () => {
 		if (!auth.ok) throw new Error('unreachable')
 		expect(auth.principal.id).toBe('p-admin')
 		expect(auth.can('member.manage')).toBe(true)
-		expect(auth.can('project.read', { project: 'anything' })).toBe(true)
-		expect(auth.scopedTo('project.read')).toBeNull()
+		expect(auth.can('project.read', { type: 'project', value: 'anything' })).toBe(true)
+		expect(auth.scopedTo('project.read', 'project')).toBeNull()
 	})
 
 	test('app-wide persona: global project.read, no admin surface', async () => {
 		const auth = await client.authenticate(reqWithCookie('appwide@x.test'))
 		if (!auth.ok) throw new Error('unreachable')
 		expect(auth.can('member.manage')).toBe(false)
-		expect(auth.can('project.read', { project: 'proj-web' })).toBe(true)
-		expect(auth.scopedTo('project.read')).toBeNull()
+		expect(auth.can('project.read', { type: 'project', value: 'proj-web' })).toBe(true)
+		expect(auth.scopedTo('project.read', 'project')).toBeNull()
 	})
 
 	test('project-scoped persona: only its project', async () => {
 		const auth = await client.authenticate(reqWithCookie('scoped@x.test'))
 		if (!auth.ok) throw new Error('unreachable')
-		expect(auth.can('project.read', { project: 'proj-web' })).toBe(true)
-		expect(auth.can('project.read', { project: 'proj-api' })).toBe(false)
+		expect(auth.can('project.read', { type: 'project', value: 'proj-web' })).toBe(true)
+		expect(auth.can('project.read', { type: 'project', value: 'proj-api' })).toBe(false)
 		expect(auth.can('member.manage')).toBe(false)
-		expect(auth.scopedTo('project.read')).toEqual(['proj-web'])
+		expect(auth.scopedTo('project.read', 'project')).toEqual(['proj-web'])
 	})
 
 	test('header selects the persona too (no cookie)', async () => {
@@ -137,15 +137,19 @@ describe('FakeIamClient persona mode', () => {
 			resolve: (req) => {
 				const id = req.headers.get('X-Who')
 				if (!id) return null
-				return { id, label: `${id}@x.test`, permissions: [{ action: 'project.read', projectId: id, source: 'grant' as const }] }
+				return {
+					id,
+					label: `${id}@x.test`,
+					permissions: [{ action: 'project.read', scope: { type: 'project', value: id }, source: 'grant' as const }],
+				}
 			},
 		})
 		const ok = await dynamic.authenticate(new Request('https://app.example.com/', { headers: { 'X-Who': 'proj-42' } }))
 		if (!ok.ok) throw new Error('unreachable')
 		expect(ok.principal.id).toBe('proj-42')
-		expect(ok.scopedTo('project.read')).toEqual(['proj-42'])
-		expect(ok.can('project.read', { project: 'proj-42' })).toBe(true)
-		expect(ok.can('project.read', { project: 'other' })).toBe(false)
+		expect(ok.scopedTo('project.read', 'project')).toEqual(['proj-42'])
+		expect(ok.can('project.read', { type: 'project', value: 'proj-42' })).toBe(true)
+		expect(ok.can('project.read', { type: 'project', value: 'other' })).toBe(false)
 
 		const denied = await dynamic.authenticate(new Request('https://app.example.com/'))
 		expect(denied.ok).toBe(false)

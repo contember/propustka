@@ -5,12 +5,13 @@ import { useMe } from '../lib/useMe'
 interface NavItem {
 	to:
 		| 'principals'
-		| 'projects'
 		| 'group-mappings'
 		| 'api-keys'
 		| 'capabilities'
 		| 'audit'
+		| 'policies'
 		| 'roles'
+		| 'schema'
 	label: string
 	/** Path prefix used to mark the item active. */
 	match: string
@@ -18,12 +19,13 @@ interface NavItem {
 
 const NAV: NavItem[] = [
 	{ to: 'principals', label: 'Principals', match: '/principals' },
-	{ to: 'projects', label: 'Projects', match: '/projects' },
 	{ to: 'group-mappings', label: 'Group mappings', match: '/group-mappings' },
 	{ to: 'api-keys', label: 'API keys', match: '/api-keys' },
 	{ to: 'capabilities', label: 'Capabilities', match: '/capabilities' },
 	{ to: 'audit', label: 'Audit', match: '/audit' },
+	{ to: 'policies', label: 'Policies', match: '/policies' },
 	{ to: 'roles', label: 'Roles', match: '/roles' },
+	{ to: 'schema', label: 'Schema', match: '/schema' },
 ]
 
 export default function RootLayout() {

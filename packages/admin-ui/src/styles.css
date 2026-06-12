@@ -506,6 +506,90 @@ tr.row-warn td {
 	font-weight: 400;
 }
 
+.scope-fields {
+	display: flex;
+	gap: 0.5rem;
+	flex-wrap: wrap;
+}
+
+.scope-fields select,
+.scope-fields input {
+	flex: 1 1 8rem;
+}
+
+/* ── Grant mode (role vs inline) ──────────────────────────── */
+
+.grant-mode {
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	padding: 0.5rem 0.75rem;
+	display: flex;
+	gap: 1rem;
+	flex-wrap: wrap;
+}
+
+.grant-mode legend {
+	font-weight: 600;
+	font-size: 0.9em;
+	padding: 0 0.25rem;
+}
+
+.grant-mode label.radio,
+.scope-picker label {
+	cursor: pointer;
+}
+
+.grant-mode label.radio {
+	display: inline-flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 0.4rem;
+	font-weight: 400;
+}
+
+/* ── Action picker ────────────────────────────────────────── */
+
+.action-picker {
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	padding: 0.5rem 0.75rem;
+}
+
+.action-picker legend {
+	font-weight: 600;
+	font-size: 0.9em;
+	padding: 0 0.25rem;
+}
+
+.action-list {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+	gap: 0.3rem 0.75rem;
+	max-height: 16rem;
+	overflow-y: auto;
+}
+
+.action-list label.checkbox {
+	display: flex;
+	flex-direction: row;
+	align-items: baseline;
+	gap: 0.4rem;
+	font-weight: 400;
+}
+
+.inline-actions {
+	display: inline-flex;
+	flex-wrap: wrap;
+	gap: 0.25rem;
+}
+
+.inline-edit-form {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	padding: 0.5rem 0;
+}
+
 /* ── Capability grant rows ────────────────────────────────── */
 
 .grant-rows {
@@ -517,7 +601,7 @@ tr.row-warn td {
 .grant-rows-head,
 .grant-row {
 	display: grid;
-	grid-template-columns: 1fr 1fr 1fr auto;
+	grid-template-columns: 1fr 1fr 1fr 1fr auto;
 	gap: 0.5rem;
 	align-items: center;
 }

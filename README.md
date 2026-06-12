@@ -2,17 +2,19 @@
 
 Internal **IAM & audit service** for apps running on Cloudflare Workers. Authentication is
 handled at the edge by **Cloudflare Access**; Propustka owns everything after that —
-authorization (RBAC scoped to projects), auth logging, domain-event audit, capability tokens,
-and a small admin UI. Apps call it through a thin SDK over a **service binding** and just do
+authorization (AWS-IAM-style policies over generic, app-owned scope dimensions), auth logging,
+domain-event audit, capability tokens, and a small admin UI. Each app declares its own authz
+vocabulary (scope dimensions, action catalog, roles) in code and reconciles it in. Apps call
+Propustka through a thin SDK over a **service binding** and just do
 `authenticate()` + `can()` + `audit()`.
 
 Division of responsibility:
 
-| Layer                                  | Owns                                                                        |
-| -------------------------------------- | --------------------------------------------------------------------------- |
-| **Cloudflare Access** (not built here) | authentication (who you are) + coarse edge gate                             |
-| **Propustka Worker**                   | authorization (RBAC), auth log, audit ingest, capabilities, request context |
-| **Apps**                               | emit domain audit events; call `authenticate()` / `can()` / `audit()`       |
+| Layer                                  | Owns                                                                                                  |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| **Cloudflare Access** (not built here) | authentication (who you are) + coarse edge gate                                                       |
+| **Propustka Worker**                   | authorization (policies over app-owned scopes), auth log, audit ingest, capabilities, request context |
+| **Apps**                               | emit domain audit events; call `authenticate()` / `can()` / `audit()`                                 |
 
 Design docs: [`iam-service-spec.md`](./iam-service-spec.md) ·
 [`admin-ui-spec.md`](./admin-ui-spec.md) · [`architecture.md`](./architecture.md).
@@ -22,12 +24,12 @@ Design docs: [`iam-service-spec.md`](./iam-service-spec.md) ·
 Bun monorepo (`packages/*`). Acyclic graph: everything depends on `core`; `client` and
 `admin-ui` never depend on each other.
 
-| Package                   | What it is                                                                                                                                                                                                                                      |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`@propustka/core`**     | Pure shared lib: action matcher (`*` / `prefix.*` / exact), `permits()`, `uuidv7()`, shared types, and the **`IamRpc`** contract the worker implements and the SDK consumes. No I/O, no deps.                                                   |
-| **`@propustka/worker`**   | The IAM Worker. `WorkerEntrypoint` implementing the RPC surface + the `/admin/*` REST API + the admin SPA assets + a cron that prunes the auth log. D1 datastore, `jose` JWT validation, Cloudflare Access provisioning, `oblaka` provisioning. |
-| **`@propustka/client`**   | The app-facing SDK (the only published package): `IamClient`, `AuthContext`, `Capability`, `applyScope`, and `FakeIamClient` for `wrangler dev`. Depends only on `core`.                                                                        |
-| **`@propustka/admin-ui`** | buzola + React admin SPA served by the worker at `/`. Manages principals, grants, projects, group→role mappings, API keys, capabilities; views the audit + auth logs.                                                                           |
+| Package                   | What it is                                                                                                                                                                                                                                                                                            |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`@propustka/core`**     | Pure shared lib: action matcher (`*` / `prefix.*` / exact), `permits()`, `uuidv7()`, shared types, and the **`IamRpc`** contract the worker implements and the SDK consumes. No I/O, no deps.                                                                                                         |
+| **`@propustka/worker`**   | The IAM Worker. `WorkerEntrypoint` implementing the RPC surface + the `/admin/*` REST API + the admin SPA assets + a cron that prunes the auth log. D1 datastore, `jose` JWT validation, Cloudflare Access provisioning, `oblaka` provisioning.                                                       |
+| **`@propustka/client`**   | The app-facing SDK (the only published package): `IamClient`, `AuthContext`, `Capability`, `applyScope`, and `FakeIamClient` for `wrangler dev`. Depends only on `core`.                                                                                                                              |
+| **`@propustka/admin-ui`** | buzola + React admin SPA served by the worker at `/`. Manages principals, grants (named role or inline action set, over generic scope dimensions), custom policies, group→role mappings, API keys, capabilities; inspects each app's reconciled schema and role catalog; views the audit + auth logs. |
 
 ## Quick start
 
@@ -36,7 +38,7 @@ Requires **[Bun](https://bun.sh)** (≥ 1.3).
 ```bash
 bun install
 bun run typecheck     # tsc --noEmit across all packages
-bun test              # 97 tests
+bun test              # 203 tests
 bun run lint          # biome
 bun run format        # dprint
 ```
@@ -74,6 +76,20 @@ curl http://127.0.0.1:18191/demo     # the example authenticates + emits an `exa
 …then open the admin **Audit** page (or `GET /admin/audit?action=example.viewed`) to watch the
 records appear — the app → IAM `audit()` path over the service binding, end to end.
 
+The example app also **owns its authz vocabulary** — scope dimensions, an action catalog, and
+roles — declared in code in [`examples/app/propustka.schema.ts`](./examples/app/propustka.schema.ts)
+as a typed `AppSchema`. Reconcile it into Propustka (Access-as-code, authz edition) via the
+idempotent `PUT /admin/apps/:app/schema` endpoint:
+
+```bash
+cd examples/app
+bun run provision-schema -- --dry-run                          # print the intended reconcile
+PROPUSTKA_URL=http://127.0.0.1:18191 bun run provision-schema  # push it (local dev bypass → no auth)
+```
+
+so the admin UI's role / scope / action pickers offer this app's real vocabulary. See
+[`examples/app/README.md`](./examples/app/README.md) for the full walkthrough.
+
 For the admin UI with hot reload, run the worker as above and in another shell:
 
 ```bash
@@ -108,12 +124,16 @@ const iam = env.DEV
 const auth = await iam.authenticate(req)
 if (!auth.ok) return new Response(auth.reason, { status: auth.status }) // 401 or 403
 
-if (!auth.can('project.settings.update', { project: id })) {
+// can(action, scope?) — scope is a flat { type, value } coordinate the app owns;
+// omit it to require a global permission. `project` here is one declared dimension.
+if (!auth.can('project.settings.update', { type: 'project', value: id })) {
 	return new Response('forbidden', { status: 403 })
 }
 
-// list filtering by scope (three-state: all / some / none)
-const scope = auth.scopedTo('project.read')
+// list filtering by scope (three-state: all / some / none).
+// scopedTo(action, dimension) — the dimension is required; values are this app's
+// opaque scope values for that dimension.
+const scope = auth.scopedTo('project.read', 'project')
 const projects = applyScope(scope, {
 	all: () => db.listAllProjects(),
 	some: (ids) => db.listProjects({ ids }), // WHERE id IN (...)
@@ -148,7 +168,7 @@ those users resolve to global `admin` until removed from the env var.
 
 ## Status
 
-Implemented and verified (typecheck, 97 unit tests, admin-ui build, `oblaka` config gen, a local
+Implemented and verified (typecheck, 203 unit tests, admin-ui build, `oblaka` config gen, a local
 `lopata` HTTP smoke, and the app↔IAM RPC path via [`examples/app`](./examples/app)). Two
 integration points depend on a live Cloudflare/Access environment and are **implemented to spec
 but not yet verified against real infrastructure**:

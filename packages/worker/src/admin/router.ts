@@ -6,10 +6,12 @@ import {
 	createCapability,
 	createGrant,
 	createGroupMapping,
-	createProject,
+	createPolicy,
 	deleteGrant,
 	deleteGroupMapping,
+	deletePolicy,
 	deletePrincipal,
+	getAppSchema,
 	getPrincipal,
 	handleMe,
 	invitePrincipal,
@@ -19,15 +21,16 @@ import {
 	listAuthLog,
 	listCapabilities,
 	listGroupMappings,
+	listPolicies,
 	listPrincipals,
-	listProjects,
 	listRoles,
 	patchPrincipal,
 	provisionApiKey,
+	putAppSchema,
 	revokeApiKey,
 	revokeCapability,
 	rotateApiKey,
-	updateProject,
+	updatePolicy,
 } from './handlers'
 import { error } from './http'
 
@@ -171,7 +174,7 @@ export async function handleAdmin(request: Request, services: Services, ctx: Exe
 async function dispatch(c: AdminContext): Promise<Response> {
 	const method = c.request.method
 	const segments = c.url.pathname.replace(/^\/admin\/?/, '').split('/').filter(Boolean)
-	const [resource, idOrSub, action] = segments
+	const [resource, idOrSub, action, subId] = segments
 
 	switch (resource) {
 		case 'me':
@@ -194,14 +197,6 @@ async function dispatch(c: AdminContext): Promise<Response> {
 			}
 			return method === 'DELETE' ? deleteGrant(c, idOrSub) : methodNotAllowed()
 
-		case 'projects':
-			if (idOrSub === undefined) {
-				if (method === 'GET') return listProjects(c)
-				if (method === 'POST') return createProject(c)
-				return methodNotAllowed()
-			}
-			return method === 'PATCH' ? updateProject(c, idOrSub) : methodNotAllowed()
-
 		case 'group-mappings':
 			if (idOrSub === undefined) {
 				if (method === 'GET') return listGroupMappings(c)
@@ -211,10 +206,32 @@ async function dispatch(c: AdminContext): Promise<Response> {
 			return method === 'DELETE' ? deleteGroupMapping(c, idOrSub) : methodNotAllowed()
 
 		case 'roles':
-			return method === 'GET' ? listRoles() : methodNotAllowed()
+			return method === 'GET' ? listRoles(c) : methodNotAllowed()
 
 		case 'apps':
-			return method === 'GET' ? listApps(c) : methodNotAllowed()
+			// GET /admin/apps                          → list configured app ids
+			// GET|PUT  /admin/apps/:app/schema         → read / reconcile vocabulary
+			// GET|POST /admin/apps/:app/policies       → list / create custom policies
+			// PUT|DELETE /admin/apps/:app/policies/:key → update / delete a custom policy
+			if (idOrSub === undefined) {
+				return method === 'GET' ? listApps(c) : methodNotAllowed()
+			}
+			if (action === 'schema') {
+				if (method === 'GET') return getAppSchema(c, idOrSub)
+				if (method === 'PUT') return putAppSchema(c, idOrSub)
+				return methodNotAllowed()
+			}
+			if (action === 'policies') {
+				if (subId === undefined) {
+					if (method === 'GET') return listPolicies(c, idOrSub)
+					if (method === 'POST') return createPolicy(c, idOrSub)
+					return methodNotAllowed()
+				}
+				if (method === 'PUT') return updatePolicy(c, idOrSub, subId)
+				if (method === 'DELETE') return deletePolicy(c, idOrSub, subId)
+				return methodNotAllowed()
+			}
+			return error(404, 'not found')
 
 		case 'api-keys':
 			if (idOrSub === undefined) {

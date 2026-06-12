@@ -6,39 +6,28 @@ import type {
 	ListResponse,
 	PermissionEntry,
 	PrincipalDetail,
-	ProjectDto,
-	RoleDto,
 	UpdatePrincipalRequest,
 } from '@propustka/worker/admin'
 import { useState } from 'react'
-import { AppPicker, type AppValue, resolveApp } from '../../components/AppPicker'
 import { Badge, StatusBadge } from '../../components/Badge'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
-import { RolePicker } from '../../components/RolePicker'
-import { resolveScope, ScopePicker, type ScopeValue } from '../../components/ScopePicker'
+import { GrantComposer, useGrantComposerState } from '../../components/GrantComposer'
 import { Table } from '../../components/Table'
 import { api, ApiError } from '../../lib/api'
-import { fmtDate, fmtExpiry, parseDateTimeLocal } from '../../lib/format'
+import { fmtDate, fmtExpiry, fmtScope, parseDateTimeLocal } from '../../lib/format'
 
 export default createPage()
 	.params({ id: 'string' })
 	.loader(async ({ params }) => {
-		const [principal, roles, projects, apps] = await Promise.all([
+		const [principal, apps] = await Promise.all([
 			api.get<PrincipalDetail>(`/principals/${params.id}`),
-			api.get<ListResponse<RoleDto>>('/roles'),
-			api.get<ListResponse<ProjectDto>>('/projects'),
 			api.get<ListResponse<AppDto>>('/apps'),
 		])
-		return { principal, roles: roles.items, projects: projects.items, apps: apps.items }
+		return { principal, apps: apps.items }
 	})
 	.route('/principals/:id')
 	.render(({ data, invalidate }) => {
-		const { principal, roles, projects, apps } = data
-		const projectName = (id: string | null): string => {
-			if (id === null) return 'Global'
-			const match = projects.find((p) => p.id === id)
-			return match ? `${match.name} (${match.slug})` : id
-		}
+		const { principal, apps } = data
 
 		return (
 			<>
@@ -72,11 +61,11 @@ export default createPage()
 						}
 					>
 						{principal.permissions.map((perm, i) => (
-							<tr key={`${perm.action}:${perm.projectId ?? 'global'}:${perm.source}:${i}`}>
+							<tr key={`${perm.action}:${fmtScope(perm.scope)}:${perm.source}:${i}`}>
 								<td>
 									<code>{perm.action}</code>
 								</td>
-								<td>{projectName(perm.projectId)}</td>
+								<td>{fmtScope(perm.scope)}</td>
 								<td>
 									<SourceBadge source={perm.source} />
 								</td>
@@ -93,7 +82,7 @@ export default createPage()
 						empty="No explicit grants. Add one below."
 						head={
 							<tr>
-								<th>Role</th>
+								<th>Role / actions</th>
 								<th>App</th>
 								<th>Scope</th>
 								<th>Expires</th>
@@ -103,24 +92,11 @@ export default createPage()
 							</tr>
 						}
 					>
-						{principal.grants.map((grant) => (
-							<GrantRow
-								key={grant.id}
-								grant={grant}
-								scopeLabel={projectName(grant.projectId)}
-								onDone={invalidate}
-							/>
-						))}
+						{principal.grants.map((grant) => <GrantRow key={grant.id} grant={grant} onDone={invalidate} />)}
 					</Table>
 				</section>
 
-				<AddGrantForm
-					principalId={principal.id}
-					roles={roles}
-					projects={projects}
-					apps={apps}
-					onDone={invalidate}
-				/>
+				<AddGrantForm principalId={principal.id} apps={apps} onDone={invalidate} />
 			</>
 		)
 	})
@@ -171,8 +147,30 @@ function DisableToggle({ principal, onDone }: { principal: PrincipalDetail; onDo
 	)
 }
 
-function GrantRow({ grant, scopeLabel, onDone }: { grant: GrantDto; scopeLabel: string; onDone: () => void }) {
+/** Render a grant's authorization: a named role, or its inline action set. */
+function GrantAuthorizationCell({ grant }: { grant: GrantDto }) {
+	if (grant.roleKey !== null) {
+		return (
+			<>
+				<code>{grant.roleKey}</code>
+				{grant.dangling && (
+					<Badge tone="bad" title="This role_key no longer resolves to a known role — it grants zero permissions.">
+						dangling
+					</Badge>
+				)}
+			</>
+		)
+	}
+	return (
+		<span className="inline-actions">
+			{(grant.permissions ?? []).map((p) => <code key={p} className="perm-chip">{p}</code>)}
+		</span>
+	)
+}
+
+function GrantRow({ grant, onDone }: { grant: GrantDto; onDone: () => void }) {
 	const [confirming, setConfirming] = useState(false)
+	const scopeLabel = fmtScope(grant.scopeType === null ? null : { type: grant.scopeType, value: grant.scopeValue ?? '' })
 
 	async function revoke() {
 		await api.del(`/grants/${grant.id}`)
@@ -182,12 +180,7 @@ function GrantRow({ grant, scopeLabel, onDone }: { grant: GrantDto; scopeLabel: 
 	return (
 		<tr>
 			<td>
-				<code>{grant.roleKey}</code>
-				{grant.dangling && (
-					<Badge tone="bad" title="This role_key is no longer in the code role registry — it resolves to zero permissions.">
-						dangling
-					</Badge>
-				)}
+				<GrantAuthorizationCell grant={grant} />
 			</td>
 			<td>{grant.app ? <code>{grant.app}</code> : <span className="muted">All apps</span>}</td>
 			<td>{scopeLabel}</td>
@@ -202,7 +195,7 @@ function GrantRow({ grant, scopeLabel, onDone }: { grant: GrantDto; scopeLabel: 
 						confirmLabel="Revoke"
 						body={
 							<p>
-								Revoke the <code>{grant.roleKey}</code> grant scoped to <strong>{scopeLabel}</strong>? This is immediate and audited.
+								Revoke this grant scoped to <strong>{scopeLabel}</strong>? This is immediate and audited.
 							</p>
 						}
 						onConfirm={revoke}
@@ -214,18 +207,8 @@ function GrantRow({ grant, scopeLabel, onDone }: { grant: GrantDto; scopeLabel: 
 	)
 }
 
-interface AddGrantFormProps {
-	principalId: string
-	roles: RoleDto[]
-	projects: ProjectDto[]
-	apps: AppDto[]
-	onDone: () => void
-}
-
-function AddGrantForm({ principalId, roles, projects, apps, onDone }: AddGrantFormProps) {
-	const [roleKey, setRoleKey] = useState('')
-	const [scope, setScope] = useState<ScopeValue>({ kind: 'unset' })
-	const [appValue, setAppValue] = useState<AppValue>({ kind: 'unset' })
+function AddGrantForm({ principalId, apps, onDone }: { principalId: string; apps: AppDto[]; onDone: () => void }) {
+	const composer = useGrantComposerState()
 	const [expiry, setExpiry] = useState('')
 	const [busy, setBusy] = useState(false)
 	const [error, setError] = useState<string | null>(null)
@@ -233,31 +216,18 @@ function AddGrantForm({ principalId, roles, projects, apps, onDone }: AddGrantFo
 	async function submit(e: React.FormEvent) {
 		e.preventDefault()
 		setError(null)
-		if (roleKey === '') {
-			setError('Pick a role.')
-			return
-		}
-		let projectId: string | null
+		let authorization: ReturnType<typeof composer.build>
 		try {
-			projectId = resolveScope(scope)
-		} catch {
-			setError('Pick a scope.')
-			return
-		}
-		let app: string | null
-		try {
-			app = resolveApp(appValue)
-		} catch {
-			setError('Pick an app.')
+			authorization = composer.build()
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : 'Complete the grant first.')
 			return
 		}
 		setBusy(true)
 		try {
-			const body: CreateGrantRequest = { principalId, roleKey, projectId, app, expiresAt: parseDateTimeLocal(expiry) }
+			const body: CreateGrantRequest = { principalId, ...authorization, expiresAt: parseDateTimeLocal(expiry) }
 			await api.post('/grants', body)
-			setRoleKey('')
-			setScope({ kind: 'unset' })
-			setAppValue({ kind: 'unset' })
+			composer.reset()
 			setExpiry('')
 			onDone()
 		} catch (cause) {
@@ -270,12 +240,7 @@ function AddGrantForm({ principalId, roles, projects, apps, onDone }: AddGrantFo
 	return (
 		<form className="panel form" onSubmit={submit}>
 			<h2>Add grant</h2>
-			<label>
-				Role
-				<RolePicker roles={roles} value={roleKey} onChange={setRoleKey} />
-			</label>
-			<AppPicker apps={apps} value={appValue} onChange={setAppValue} idPrefix="grant-app" />
-			<ScopePicker projects={projects} value={scope} onChange={setScope} idPrefix="grant-scope" />
+			<GrantComposer apps={apps} state={composer} idPrefix="grant" />
 			<label>
 				Expires (optional)
 				<input type="datetime-local" value={expiry} onChange={(e) => setExpiry(e.target.value)} />

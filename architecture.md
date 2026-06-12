@@ -93,16 +93,22 @@ Worker and the SDK:
 
 - **Permission matcher** — wildcard matching (`*`, `prefix.*`) used by both `can()` in the SDK
   _and_ the `issueCapability()` delegation check in the Worker (core spec: "Wildcard matching
-  happens in TypeScript, not SQL"). One implementation, one set of tests.
-- **Shared types** — `DomainEvent`, the `permissions[]` entry shape (`{action, projectId,
-  source}`), failure-reason unions, the `RoleDef`/`RoleSource` interface, and the **`IamRpc`
-  interface** — the four RPC method signatures (`authenticate`/`audit`/`redeemCapability`/
-  `issueCapability`) the Worker `implements` and the SDK consumes. Putting the contract here is
-  what lets the SDK type `env.IAM` as `Service<IamRpc>` **without depending on the Worker**.
+  happens in TypeScript, not SQL"). One implementation, one set of tests. Alongside it,
+  `isActionAllowed(pattern, catalog)` — the action-catalog validator the Worker uses to keep
+  inline-grant and policy patterns inside an app's declared action set.
+- **Shared types** — `DomainEvent`; the `permissions[]` entry shape (`{action, scope, source}`,
+  where `scope` is the generic `{ type, value } | null` coordinate, NOT a project id); the
+  `Scope` type; the `RoleDef`/`RoleSource` interfaces; the **app-vocabulary types**
+  (`AppSchema` = `{ scopes, actions, roles }`, with `AppScopeDef` / `AppActionDef`) an app
+  declares in code and reconciles in; failure-reason unions; and the **`IamRpc` interface** —
+  the four RPC method signatures (`authenticate`/`audit`/`redeemCapability`/`issueCapability`)
+  the Worker `implements` and the SDK consumes. Putting the contract here is what lets the SDK
+  type `env.IAM` as `Service<IamRpc>` **without depending on the Worker**.
 - **`uuidv7()`** — all self-owned ids are UUIDv7 (hard requirement). Implemented **inline, no
   dependency** (`crypto.randomUUID()` is v4; v7 is ~20 lines: ms timestamp + random, time-sortable).
-- **Scope helpers** — the three-state contract behind `scopedTo()` / `applyScope()` lives in
-  the SDK, but the underlying types are here.
+- **Scope helpers** — `scopedValues()` (the resolution behind `scopedTo(action, dimension)`)
+  and the three-state contract behind `applyScope()`; the underlying `Scope` / permission types
+  live here too.
 
 Pure, no Cloudflare deps, no I/O — so it's trivially unit-testable and safe to bundle into
 the published SDK. This is the _only_ abstraction we pre-build; everything else stays concrete.
@@ -143,8 +149,8 @@ packages/worker/
     env.ts                   # Env interface — single source of truth for bindings/secrets
     services.ts              # buildServices(env): wires db, jwt, identity, cf-api (opice pattern)
     db.ts                    # D1 data access (principals, grants, audit, capabilities, ...)
-    roles.ts                 # ROLES registry + RoleSource impl (code-defined; core spec)
-    resolve.ts               # permission resolution: grants ∪ groups ∪ bootstrap, dedupe
+    roles.ts                 # built-in cross-app `admin=['*']` + RoleSource over the app's DB roles
+    resolve.ts               # permission resolution: grants (role or inline) ∪ groups ∪ bootstrap, dedupe
     jwt.ts                   # jose JWKS validate; aud → app via ACCESS_APPS
     identity.ts              # get-identity fetch + group→role mapping (users only)
     cache.ts                 # per-isolate group-membership cache (used by identity.ts), short TTL, fail-open
@@ -152,7 +158,8 @@ packages/worker/
     cfaccess.ts              # Cloudflare Access API client (service-token provisioning)
     admin/
       router.ts              # /admin/* REST; admin gate (can('iam.admin'))
-      handlers.ts            # principals/grants/projects/group-mappings/api-keys/...
+      handlers.ts            # principals/grants/group-mappings/api-keys/capabilities/
+                             #   apps (schema reconcile + custom policies)/audit/auth-log
 ```
 
 The class **`implements IamRpc`** from `@propustka/core`, so the SDK can type the binding as
@@ -261,6 +268,39 @@ bindings: {
 
 Then in app code: `const iam = new IamClient(env.IAM, "app-projects")` (core spec usage). In
 `wrangler dev`, the app selects `FakeIamClient` by env flag and needs no binding at all.
+
+### Access-as-code provisioning (`scripts/`)
+
+Two idempotent operator scripts reconcile state that lives outside the Worker's own deploy.
+Both are run by hand (the operator holds the credentials; nothing is committed), and both
+support `--dry-run`:
+
+- **`scripts/provision-access.ts` — the Cloudflare Access edge.** Reconciles the Access apps +
+  policies for the whole stack (the `propustka` admin app, plus the consuming apps and their
+  bypass paths) and prints a ready-to-paste `PROPUSTKA_ACCESS_APPS` value (the `{ aud → app-id }`
+  map the Worker's `ACCESS_APPS` var consumes). This provisions only the edge authn, not the
+  Worker routes — those are added at/after deploy.
+
+- **`scripts/provision-schemas.ts` — each app's authz vocabulary.** Authz is no longer
+  Propustka-owned: **each app owns its scope dimensions, action catalog, and roles and declares
+  them in its own code** as a typed `AppSchema` (e.g. `examples/app/propustka.schema.ts`,
+  imported from `@propustka/core`). This script `PUT`s each declared schema to the idempotent
+  `PUT /admin/apps/:app/schema` endpoint, so the Worker's DB (`app_scopes`, `app_actions`,
+  origin=`app` `roles`) always mirrors what the app actually checks at runtime via `can()` /
+  `scopedTo()`. Reconcile is idempotent: it upserts the declared rows, deletes app-origin rows
+  the app removed, and **never touches origin=`custom` policies** (admin-composed in the UI).
+  The built-in cross-app `admin=['*']` role stays in Worker code (`roles.ts`), not in any app's
+  schema. This is the Access-as-code pattern extended from the edge to the authz vocabulary; a
+  remote run authenticates with an Access service token (the admin API is behind Access), a
+  local run uses the dev bypass.
+
+The model these reconcile into: a grant is scoped to a generic, flat `(scope_type, scope_value)`
+coordinate — the dimension name plus an **opaque, app-owned value Propustka never interprets**
+(both NULL = global). Dimensions are flat and independent (no hierarchy); the old
+Propustka-owned `projects` table is gone. Permissions are AWS-IAM-style and additive-allow:
+a grant carries **either** a named role/policy (`role_key`) **or** an inline action set
+(`permissions`) — exactly one — and inline/policy patterns are validated against the app's
+action catalog.
 
 ## Local development (lopata)
 

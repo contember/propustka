@@ -1,7 +1,7 @@
 import { type AuthenticateInput, permits } from '@propustka/core'
 import { describe, expect, test } from 'bun:test'
 import { LOCAL_DEV_ADMIN_ID, resolveRequest } from '../auth'
-import { createHarness, DEFAULT_AUD, seedGrant, seedProject, seedUser } from './helpers/harness'
+import { createHarness, DEFAULT_AUD, seedGrant, seedRole, seedUser } from './helpers/harness'
 
 // FINDING TEST-1 (SEC-1): the local dev-bypass guard in resolveRequest. There is no
 // Cloudflare Access in front of `lopata`/`wrangler dev`, so the Worker resolves a
@@ -10,6 +10,15 @@ import { createHarness, DEFAULT_AUD, seedGrant, seedProject, seedUser } from './
 // security boundary: this drives resolveRequest end to end (real JwtValidator, real
 // Db over bun:sqlite) and proves the bypass fires ONLY for that exact combination —
 // and that a real token is never hijacked by it even on local.
+
+// The verified app for the default signed token (DEFAULT_AUD → 'iam-admin').
+const APP = 'iam-admin'
+
+// Seed the standard editor/viewer roles for an app (admin is a built-in, not seeded).
+function seedStdRoles(h: ReturnType<typeof createHarness>, app: string): void {
+	seedRole(h.sqlite, app, 'editor', ['project.*', 'report.*'])
+	seedRole(h.sqlite, app, 'viewer', ['project.read', 'report.read'])
+}
 
 // A bare AuthenticateInput; tests override `token` per case.
 function input(overrides: Partial<AuthenticateInput> = {}): AuthenticateInput {
@@ -33,7 +42,7 @@ describe('resolveRequest — local dev bypass (SEC-1 guard)', () => {
 		expect(outcome.result.ok).toBe(true)
 		if (!outcome.result.ok) throw new Error('expected ok')
 		expect(outcome.result.principal.id).toBe(LOCAL_DEV_ADMIN_ID)
-		expect(outcome.result.principal.permissions).toEqual([{ action: '*', projectId: null, source: 'bootstrap' }])
+		expect(outcome.result.principal.permissions).toEqual([{ action: '*', scope: null, source: 'bootstrap' }])
 		expect(outcome.logReason).toBe('local_bypass')
 	})
 
@@ -63,17 +72,17 @@ describe('resolveRequest — local dev bypass (SEC-1 guard)', () => {
 
 	test('local + a VALID user token → real grants win, bypass never hijacks the token', async () => {
 		// Even on local, a presented token validates normally: the bypass requires
-		// token === null. A user with only a project-scoped `viewer` grant must
-		// resolve to that grant's permissions, NOT the global-admin bootstrap.
+		// token === null. A user with only a scope-bound `viewer` grant must resolve to
+		// that grant's permissions, NOT the global-admin bootstrap.
 		const h = createHarness()
-		const projectId = seedProject(h.sqlite, 'alpha')
+		seedStdRoles(h, APP)
 		const principalId = seedUser(h.sqlite, { sub: 'sub-alice', email: 'alice@example.com' })
-		seedGrant(h.sqlite, principalId, 'viewer', projectId)
+		seedGrant(h.sqlite, principalId, 'viewer', { type: 'team', value: 'acme' }, APP)
 
 		// ACCESS_APPS must be non-empty for jose to accept the token's aud — but that
 		// also means the no-token bypass precondition is off, which is the real shape
 		// of any deploy that actually validates tokens.
-		const services = h.makeServices({ environment: 'local', accessApps: { [DEFAULT_AUD]: 'iam-admin' } })
+		const services = h.makeServices({ environment: 'local', accessApps: { [DEFAULT_AUD]: APP } })
 		const token = await h.signToken({ email: 'alice@example.com', sub: 'sub-alice' })
 
 		const outcome = await resolveRequest(services, input({ token }))
@@ -83,10 +92,10 @@ describe('resolveRequest — local dev bypass (SEC-1 guard)', () => {
 		// The real principal, not the bypass identity.
 		expect(outcome.result.principal.id).toBe(principalId)
 		expect(outcome.result.principal.id).not.toBe(LOCAL_DEV_ADMIN_ID)
-		// viewer → project.read + report.read, scoped to the project, source 'grant'.
+		// viewer → project.read + report.read, scoped to team:acme, source 'grant'.
 		expect(outcome.result.principal.permissions).toEqual([
-			{ action: 'project.read', projectId, source: 'grant' },
-			{ action: 'report.read', projectId, source: 'grant' },
+			{ action: 'project.read', scope: { type: 'team', value: 'acme' }, source: 'grant' },
+			{ action: 'report.read', scope: { type: 'team', value: 'acme' }, source: 'grant' },
 		])
 		// No global-admin `*` leaked in from the bypass.
 		expect(outcome.result.principal.permissions.some((p) => p.action === '*')).toBe(false)
@@ -100,13 +109,17 @@ describe('resolveRequest — local dev bypass (SEC-1 guard)', () => {
 describe('resolveRequest — app-scoped grants (cross-app isolation)', () => {
 	test('grants for OTHER apps do not apply; calling-app + cross-app (NULL) grants do', async () => {
 		const h = createHarness()
+		// Roles are per-app: editor@iam-admin and viewer for the cross-app grant. The
+		// cross-app (NULL-app) grant resolves roles against the calling app's set, so
+		// `viewer` must also exist for iam-admin (the verified calling app).
+		seedStdRoles(h, APP)
+		seedRole(h.sqlite, 'other-app', 'admin-like', ['*']) // unused by the calling app
 		const principalId = seedUser(h.sqlite, { sub: 'sub-bob', email: 'bob@example.com' })
-		// DEFAULT_AUD → 'iam-admin', the verified app for the default signed token.
-		seedGrant(h.sqlite, principalId, 'editor', null, 'iam-admin') // applies (same app)
+		seedGrant(h.sqlite, principalId, 'editor', null, APP) // applies (same app)
 		seedGrant(h.sqlite, principalId, 'admin', null, 'other-app') // must NOT apply (different app)
 		seedGrant(h.sqlite, principalId, 'viewer', null, null) // applies (cross-app)
 
-		const services = h.makeServices({ environment: 'stage', accessApps: { [DEFAULT_AUD]: 'iam-admin' } })
+		const services = h.makeServices({ environment: 'stage', accessApps: { [DEFAULT_AUD]: APP } })
 		const token = await h.signToken({ email: 'bob@example.com', sub: 'sub-bob' })
 		const outcome = await resolveRequest(services, input({ token }))
 
@@ -120,8 +133,11 @@ describe('resolveRequest — app-scoped grants (cross-app isolation)', () => {
 
 	test('authenticating as a DIFFERENT app drops the other-app grant, keeps only cross-app', async () => {
 		const h = createHarness()
+		// admin is a built-in; viewer must exist for the calling app (poplach) so the
+		// cross-app viewer grant resolves there.
+		seedStdRoles(h, 'poplach')
 		const principalId = seedUser(h.sqlite, { sub: 'sub-carol', email: 'carol@example.com' })
-		seedGrant(h.sqlite, principalId, 'admin', null, 'iam-admin') // admin ONLY for iam-admin
+		seedGrant(h.sqlite, principalId, 'admin', null, APP) // admin ONLY for iam-admin
 		seedGrant(h.sqlite, principalId, 'viewer', null, null) // cross-app viewer
 
 		// The token's aud maps to 'poplach', not 'iam-admin'.

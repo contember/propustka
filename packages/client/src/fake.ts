@@ -1,5 +1,5 @@
-import type { DomainEvent, PermissionEntry, PrincipalType } from '@propustka/core'
-import { matchAction, permits, scopedProjects } from '@propustka/core'
+import type { DomainEvent, PermissionEntry, PrincipalType, Scope } from '@propustka/core'
+import { matchAction, permits, scopedValues } from '@propustka/core'
 import type {
 	AuthContext,
 	AuthFailure,
@@ -16,15 +16,15 @@ import type {
 /**
  * A fixed dev persona: an identity plus a real permissions array. When `FakeIamConfig.personas`
  * is set, the fake resolves one of these per request (by a cookie / header key) and backs
- * `can()` / `scopedTo()` with the SAME `permits` / `scopedProjects` core logic the real client
- * uses — so role/scope behaviour (admin vs app-wide vs project-scoped) is exercisable in dev and
+ * `can()` / `scopedTo()` with the SAME `permits` / `scopedValues` core logic the real client
+ * uses — so role/scope behaviour (admin vs app-wide vs scoped) is exercisable in dev and
  * browser tests without Cloudflare Access or a running IAM Worker.
  */
 export interface FakePersona {
 	id: string
 	label: string
 	type?: PrincipalType
-	/** The resolved permission entries — real `permits`/`scopedProjects` semantics (not allow-all). */
+	/** The resolved permission entries — real `permits`/`scopedValues` semantics (not allow-all). */
 	permissions: PermissionEntry[]
 }
 
@@ -125,12 +125,12 @@ class FakeAuthContext implements AuthContext {
 		this.principal = { id: identity.id, type: identity.type, label: identity.label }
 	}
 
-	can(action: string, _scope?: { project?: string }): boolean {
+	can(action: string, _scope?: Scope): boolean {
 		// Allow everything except denied actions — regardless of scope.
 		return !isDenied(this.deny, action)
 	}
 
-	scopedTo(_action: string, _dimension = 'project'): string[] | null {
+	scopedTo(_action: string, _dimension: string): string[] | null {
 		// Unrestricted: the fake identity may see everything.
 		return null
 	}
@@ -140,7 +140,7 @@ class FakeAuthContext implements AuthContext {
 	}
 }
 
-/** Persona-backed context (persona mode) — real `permits` / `scopedProjects` semantics. */
+/** Persona-backed context (persona mode) — real `permits` / `scopedValues` semantics. */
 class PersonaAuthContext implements AuthContext {
 	readonly ok = true
 	readonly principal: PrincipalIdentity
@@ -149,12 +149,12 @@ class PersonaAuthContext implements AuthContext {
 		this.principal = { id: persona.id, type: persona.type ?? 'user', label: persona.label }
 	}
 
-	can(action: string, scope?: { project?: string }): boolean {
-		return permits(this.persona.permissions, action, scope?.project)
+	can(action: string, scope?: Scope): boolean {
+		return permits(this.persona.permissions, action, scope)
 	}
 
-	scopedTo(action: string, _dimension = 'project'): string[] | null {
-		return scopedProjects(this.persona.permissions, action)
+	scopedTo(action: string, dimension: string): string[] | null {
+		return scopedValues(this.persona.permissions, action, dimension)
 	}
 
 	audit(_event: DomainEvent): Promise<void> {
