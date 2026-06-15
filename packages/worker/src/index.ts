@@ -5,10 +5,16 @@ import type {
 	IamRpc,
 	IssueCapabilityInput,
 	IssueCapabilityResult,
+	IssueServiceTokenInput,
+	IssueServiceTokenResult,
 	RedeemCapabilityInput,
 	RedeemCapabilityResult,
 	RevokeCapabilityInput,
 	RevokeCapabilityResult,
+	RevokeServiceTokenInput,
+	RevokeServiceTokenResult,
+	RotateServiceTokenInput,
+	RotateServiceTokenResult,
 } from '@propustka/core'
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import { handleAdmin } from './admin/router'
@@ -16,6 +22,7 @@ import { principalFromOutcome, resolveRequest } from './auth'
 import { issueCapability, redeemCapability, revokeCapability } from './capabilities'
 import type { Env } from './env'
 import { buildServices } from './services'
+import { issueServiceToken, revokeServiceToken, rotateServiceToken } from './servicetokens'
 
 // Retention: prune `auth_log` rows older than this on the daily cron. `audit_events`
 // are kept long; only the dense, high-churn auth log is pruned.
@@ -235,6 +242,176 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 		} catch (err) {
 			// Same fail-closed posture as authenticate()/issueCapability(): never surface a 500.
 			console.error(`revokeCapability failed for request '${input.requestId}'`, err)
+			this.ctx.waitUntil(
+				services.db.writeAuthLog({
+					requestId: input.requestId,
+					app: input.app,
+					kind: 'authenticate',
+					principalId: null,
+					decision: 'deny',
+					reason: 'internal_error',
+				}),
+			)
+			return { ok: false, reason: 'unknown_principal' }
+		}
+	}
+
+	async issueServiceToken(input: IssueServiceTokenInput): Promise<IssueServiceTokenResult> {
+		const services = buildServices(this.env)
+		try {
+			// Resolve the ISSUER from the forwarded credentials exactly like issueCapability().
+			const outcome = await resolveRequest(services, {
+				app: input.app,
+				token: input.token,
+				cookie: input.cookie,
+				origin: input.origin,
+				requestId: input.requestId,
+			})
+			const issuer = principalFromOutcome(outcome)
+			if (!issuer || !outcome.result.ok) {
+				return outcome.result.ok ? { ok: false, reason: 'unknown_principal' } : { ok: false, reason: outcome.result.reason }
+			}
+
+			const app = outcome.verifiedApp ?? input.app
+			const result = await issueServiceToken(
+				services,
+				input,
+				{ id: issuer.id, label: outcome.result.principal.label, permissions: issuer.permissions },
+				app,
+			)
+
+			if (result.ok) {
+				// iam.servicetoken.create audit — issuer, label, granted actions + scope; NEVER the secret.
+				this.ctx.waitUntil(
+					services.db.writeAuditEvent({
+						requestId: input.requestId,
+						principalId: issuer.id,
+						principalLabel: outcome.result.principal.label,
+						app,
+						action: 'iam.servicetoken.create',
+						resourceType: 'principal',
+						resourceId: result.principalId,
+						metadata: {
+							label: input.label,
+							permissions: input.permissions,
+							scope: input.scope ?? null,
+							clientId: result.clientId,
+						},
+					}),
+				)
+			}
+
+			return result
+		} catch (err) {
+			console.error(`issueServiceToken failed for request '${input.requestId}'`, err)
+			this.ctx.waitUntil(
+				services.db.writeAuthLog({
+					requestId: input.requestId,
+					app: input.app,
+					kind: 'authenticate',
+					principalId: null,
+					decision: 'deny',
+					reason: 'internal_error',
+				}),
+			)
+			return { ok: false, reason: 'unknown_principal' }
+		}
+	}
+
+	async revokeServiceToken(input: RevokeServiceTokenInput): Promise<RevokeServiceTokenResult> {
+		const services = buildServices(this.env)
+		try {
+			const outcome = await resolveRequest(services, {
+				app: input.app,
+				token: input.token,
+				cookie: input.cookie,
+				origin: input.origin,
+				requestId: input.requestId,
+			})
+			const revoker = principalFromOutcome(outcome)
+			if (!revoker || !outcome.result.ok) {
+				return outcome.result.ok ? { ok: false, reason: 'unknown_principal' } : { ok: false, reason: outcome.result.reason }
+			}
+
+			const app = outcome.verifiedApp ?? input.app
+			const result = await revokeServiceToken(services, input, {
+				id: revoker.id,
+				label: outcome.result.principal.label,
+				permissions: revoker.permissions,
+			}, app)
+
+			if (result.ok && result.revoked) {
+				this.ctx.waitUntil(
+					services.db.writeAuditEvent({
+						requestId: input.requestId,
+						principalId: revoker.id,
+						principalLabel: outcome.result.principal.label,
+						app,
+						action: 'iam.servicetoken.revoke',
+						resourceType: 'principal',
+						resourceId: input.principalId,
+					}),
+				)
+			}
+
+			return result
+		} catch (err) {
+			console.error(`revokeServiceToken failed for request '${input.requestId}'`, err)
+			this.ctx.waitUntil(
+				services.db.writeAuthLog({
+					requestId: input.requestId,
+					app: input.app,
+					kind: 'authenticate',
+					principalId: null,
+					decision: 'deny',
+					reason: 'internal_error',
+				}),
+			)
+			return { ok: false, reason: 'unknown_principal' }
+		}
+	}
+
+	async rotateServiceToken(input: RotateServiceTokenInput): Promise<RotateServiceTokenResult> {
+		const services = buildServices(this.env)
+		try {
+			const outcome = await resolveRequest(services, {
+				app: input.app,
+				token: input.token,
+				cookie: input.cookie,
+				origin: input.origin,
+				requestId: input.requestId,
+			})
+			const caller = principalFromOutcome(outcome)
+			if (!caller || !outcome.result.ok) {
+				return outcome.result.ok ? { ok: false, reason: 'unknown_principal' } : { ok: false, reason: outcome.result.reason }
+			}
+
+			const app = outcome.verifiedApp ?? input.app
+			const result = await rotateServiceToken(
+				services,
+				input,
+				{ id: caller.id, label: outcome.result.principal.label, permissions: caller.permissions },
+				app,
+			)
+
+			if (result.ok) {
+				this.ctx.waitUntil(
+					services.db.writeAuditEvent({
+						requestId: input.requestId,
+						principalId: caller.id,
+						principalLabel: outcome.result.principal.label,
+						app,
+						action: 'iam.servicetoken.rotate',
+						resourceType: 'principal',
+						resourceId: input.principalId,
+						metadata: { clientId: result.clientId },
+					}),
+				)
+			}
+
+			return result
+		} catch (err) {
+			console.error(`rotateServiceToken failed for request '${input.requestId}'`, err)
 			this.ctx.waitUntil(
 				services.db.writeAuthLog({
 					requestId: input.requestId,

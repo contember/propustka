@@ -5,10 +5,16 @@ import type {
 	IamRpc,
 	IssueCapabilityInput,
 	IssueCapabilityResult,
+	IssueServiceTokenInput,
+	IssueServiceTokenResult,
 	RedeemCapabilityInput,
 	RedeemCapabilityResult,
 	RevokeCapabilityInput,
 	RevokeCapabilityResult,
+	RevokeServiceTokenInput,
+	RevokeServiceTokenResult,
+	RotateServiceTokenInput,
+	RotateServiceTokenResult,
 } from '@propustka/core'
 
 /**
@@ -21,6 +27,9 @@ export class IamRpcStub implements IamRpc {
 	readonly redeemInputs: RedeemCapabilityInput[] = []
 	readonly issueInputs: IssueCapabilityInput[] = []
 	readonly revokeInputs: RevokeCapabilityInput[] = []
+	readonly issueServiceInputs: IssueServiceTokenInput[] = []
+	readonly revokeServiceInputs: RevokeServiceTokenInput[] = []
+	readonly rotateServiceInputs: RotateServiceTokenInput[] = []
 
 	constructor(
 		private readonly canned: {
@@ -28,6 +37,9 @@ export class IamRpcStub implements IamRpc {
 			redeem?: RedeemCapabilityResult
 			issue?: IssueCapabilityResult
 			revoke?: RevokeCapabilityResult
+			issueService?: IssueServiceTokenResult
+			revokeService?: RevokeServiceTokenResult
+			rotateService?: RotateServiceTokenResult
 		} = {},
 	) {}
 
@@ -61,6 +73,27 @@ export class IamRpcStub implements IamRpc {
 		this.revokeInputs.push(input)
 		return Promise.resolve(
 			this.canned.revoke ?? { ok: false, reason: 'not_found' },
+		)
+	}
+
+	issueServiceToken(input: IssueServiceTokenInput): Promise<IssueServiceTokenResult> {
+		this.issueServiceInputs.push(input)
+		return Promise.resolve(
+			this.canned.issueService ?? { ok: false, reason: 'not_allowed' },
+		)
+	}
+
+	revokeServiceToken(input: RevokeServiceTokenInput): Promise<RevokeServiceTokenResult> {
+		this.revokeServiceInputs.push(input)
+		return Promise.resolve(
+			this.canned.revokeService ?? { ok: false, reason: 'not_found' },
+		)
+	}
+
+	rotateServiceToken(input: RotateServiceTokenInput): Promise<RotateServiceTokenResult> {
+		this.rotateServiceInputs.push(input)
+		return Promise.resolve(
+			this.canned.rotateService ?? { ok: false, reason: 'not_found' },
 		)
 	}
 }

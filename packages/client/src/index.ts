@@ -18,10 +18,17 @@ export type {
 	CapabilityFailure,
 	IssueCapabilityRequest,
 	IssuedCapability,
+	IssuedServiceToken,
 	IssueFailure,
+	IssueServiceTokenFailure,
+	IssueServiceTokenRequest,
 	PrincipalIdentity,
 	RevokedCapability,
+	RevokedServiceToken,
 	RevokeFailure,
+	RevokeServiceTokenFailure,
+	RotatedServiceToken,
+	RotateServiceTokenFailure,
 } from './types'
 
 // Re-export from core so apps need only depend on the SDK: DomainEvent (one event shape),

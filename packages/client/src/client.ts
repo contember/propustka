@@ -8,10 +8,17 @@ import type {
 	CapabilityFailure,
 	IssueCapabilityRequest,
 	IssuedCapability,
+	IssuedServiceToken,
 	IssueFailure,
+	IssueServiceTokenFailure,
+	IssueServiceTokenRequest,
 	PrincipalIdentity,
 	RevokedCapability,
+	RevokedServiceToken,
 	RevokeFailure,
+	RevokeServiceTokenFailure,
+	RotatedServiceToken,
+	RotateServiceTokenFailure,
 } from './types'
 
 // ── AuthContext (real) ─────────────────────────────────────────────────────────
@@ -183,6 +190,60 @@ export class IamClient {
 		}
 		return { ok: false, reason: result.reason, status: revokeFailureStatus(result.reason) }
 	}
+
+	/**
+	 * Mint a service token (machine principal) in-flow. Forwards the REQUESTER's credentials as the
+	 * issuer — the IAM Worker resolves the issuer server-side and enforces the delegation rule (you
+	 * can only grant what you can do on `scope`). Returns the `clientSecret` ONCE; persist only the
+	 * `clientId`/`principalId`. The minted token authenticates at the edge only on an Access app
+	 * whose Service Auth policy accepts it; per-resource authorization is the propustka grant.
+	 */
+	async issueServiceToken(req: Request, input: IssueServiceTokenRequest): Promise<IssuedServiceToken | IssueServiceTokenFailure> {
+		const { token, cookie, origin, requestId } = readCredentials(req)
+		const result = await this.binding.issueServiceToken({
+			app: this.appId,
+			token,
+			cookie,
+			origin,
+			requestId,
+			label: input.label,
+			permissions: input.permissions,
+			scope: input.scope,
+			expiresAt: input.expiresAt,
+		})
+		if (result.ok) {
+			return { ok: true, clientId: result.clientId, clientSecret: result.clientSecret, principalId: result.principalId, tokenId: result.tokenId }
+		}
+		return { ok: false, reason: result.reason, status: issueServiceTokenStatus(result.reason) }
+	}
+
+	/**
+	 * Revoke a service token by its principal id. Forwards the CALLER's credentials as the authorizer
+	 * — the IAM Worker resolves the caller server-side and enforces the rule (must be able to re-issue
+	 * the principal's grants). Deletes the Access token, drops grants, disables the principal.
+	 * Idempotent; an unknown principal → 404.
+	 */
+	async revokeServiceToken(req: Request, principalId: string): Promise<RevokedServiceToken | RevokeServiceTokenFailure> {
+		const { token, cookie, origin, requestId } = readCredentials(req)
+		const result = await this.binding.revokeServiceToken({ app: this.appId, token, cookie, origin, requestId, principalId })
+		if (result.ok) {
+			return { ok: true, revoked: result.revoked }
+		}
+		return { ok: false, reason: result.reason, status: revokeServiceTokenStatus(result.reason) }
+	}
+
+	/**
+	 * Rotate a service token's secret (principal id, client_id and grants unchanged). Returns the new
+	 * `clientSecret` ONCE. Same caller authorization as `revokeServiceToken`.
+	 */
+	async rotateServiceToken(req: Request, principalId: string): Promise<RotatedServiceToken | RotateServiceTokenFailure> {
+		const { token, cookie, origin, requestId } = readCredentials(req)
+		const result = await this.binding.rotateServiceToken({ app: this.appId, token, cookie, origin, requestId, principalId })
+		if (result.ok) {
+			return { ok: true, clientId: result.clientId, clientSecret: result.clientSecret, tokenId: result.tokenId }
+		}
+		return { ok: false, reason: result.reason, status: rotateServiceTokenStatus(result.reason) }
+	}
 }
 
 /** missing/invalid token → 401 (not authenticated); unknown/disabled principal → 403. */
@@ -199,5 +260,27 @@ function issueFailureStatus(reason: IssueFailure['reason']): 401 | 403 {
 function revokeFailureStatus(reason: RevokeFailure['reason']): 401 | 403 | 404 {
 	if (reason === 'missing_token' || reason === 'invalid_token') return 401
 	if (reason === 'not_found') return 404
+	return 403
+}
+
+/** missing/invalid → 401; provisioning_failed → 502 (CF API); rest → 403. */
+function issueServiceTokenStatus(reason: IssueServiceTokenFailure['reason']): 401 | 403 | 502 {
+	if (reason === 'missing_token' || reason === 'invalid_token') return 401
+	if (reason === 'provisioning_failed') return 502
+	return 403
+}
+
+/** missing/invalid → 401; not_found → 404; rest → 403. */
+function revokeServiceTokenStatus(reason: RevokeServiceTokenFailure['reason']): 401 | 403 | 404 {
+	if (reason === 'missing_token' || reason === 'invalid_token') return 401
+	if (reason === 'not_found') return 404
+	return 403
+}
+
+/** missing/invalid → 401; not_found → 404; provisioning_failed → 502; rest → 403. */
+function rotateServiceTokenStatus(reason: RotateServiceTokenFailure['reason']): 401 | 403 | 404 | 502 {
+	if (reason === 'missing_token' || reason === 'invalid_token') return 401
+	if (reason === 'not_found') return 404
+	if (reason === 'provisioning_failed') return 502
 	return 403
 }

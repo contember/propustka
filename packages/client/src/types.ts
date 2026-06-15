@@ -130,3 +130,64 @@ export interface IssueCapabilityRequest {
 	expiresAt?: number
 	maxUses?: number
 }
+
+/**
+ * App-supplied portion of `issueServiceToken`. The SDK fills `app` and the issuer's forwarded
+ * credentials from the request — app code can never self-assert the issuer. `permissions` are
+ * inline action patterns granted to the new service principal on `scope` (the delegation check
+ * requires the issuer to itself hold each there).
+ */
+export interface IssueServiceTokenRequest {
+	label: string
+	permissions: string[]
+	scope?: Scope | null
+	expiresAt?: number
+}
+
+/** Successful `issueServiceToken` — the `clientSecret` is returned ONCE. */
+export interface IssuedServiceToken {
+	readonly ok: true
+	/** Access service token client id (stable; carried by the machine as `CF-Access-Client-Id`). */
+	clientId: string
+	/** Plaintext secret — show once, never persist. */
+	clientSecret: string
+	/** The IAM service principal id — the durable handle for revoke/rotate. */
+	principalId: string
+	/** The Access service token id. */
+	tokenId: string
+}
+
+/** `issueServiceToken` failure. missing/invalid → 401; provisioning_failed → 502; rest → 403. */
+export interface IssueServiceTokenFailure {
+	readonly ok: false
+	reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'provisioning_failed'
+	status: 401 | 403 | 502
+}
+
+/** Successful `revokeServiceToken`. `revoked` is false when the principal was already disabled. */
+export interface RevokedServiceToken {
+	readonly ok: true
+	revoked: boolean
+}
+
+/** `revokeServiceToken` failure. missing/invalid → 401; not_found → 404; rest → 403. */
+export interface RevokeServiceTokenFailure {
+	readonly ok: false
+	reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'not_found'
+	status: 401 | 403 | 404
+}
+
+/** Successful `rotateServiceToken` — new `clientSecret` ONCE; the client_id is unchanged. */
+export interface RotatedServiceToken {
+	readonly ok: true
+	clientId: string
+	clientSecret: string
+	tokenId: string
+}
+
+/** `rotateServiceToken` failure. missing/invalid → 401; not_found → 404; provisioning_failed → 502; rest → 403. */
+export interface RotateServiceTokenFailure {
+	readonly ok: false
+	reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'not_found' | 'provisioning_failed'
+	status: 401 | 403 | 404 | 502
+}
