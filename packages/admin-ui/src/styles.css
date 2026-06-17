@@ -293,6 +293,16 @@ section {
 	max-width: none;
 }
 
+/* Wider variant for forms with a multi-column editor (e.g. the capability grant grid),
+   while keeping the single-column fields from stretching to the full width. */
+.form.wide {
+	max-width: 820px;
+}
+
+.form.wide > label {
+	max-width: 460px;
+}
+
 .form label,
 .filters label {
 	display: flex;
@@ -656,6 +666,13 @@ tr.row-warn td {
 	grid-template-columns: 1fr 1fr 1fr 1fr auto;
 	gap: 0.5rem;
 	align-items: center;
+}
+
+/* Without this, grid items default to min-width:auto (their content size), so the
+   inputs refuse to shrink and the whole row overflows the panel. */
+.grant-rows-head > *,
+.grant-row > * {
+	min-width: 0;
 }
 
 .grant-rows-head {

@@ -11,10 +11,14 @@ export function fmtScope(scope: Scope | null): string {
 	return `${scope.type} = ${scope.value}`
 }
 
-/** Format an epoch-millis timestamp as a readable local date-time. */
-export function fmtDate(ms: number | null | undefined): string {
-	if (ms === null || ms === undefined) return '—'
-	return new Date(ms).toLocaleString(undefined, {
+/**
+ * Format an epoch-**seconds** timestamp as a readable local date-time. The backend
+ * stores and returns every timestamp in seconds (SQLite `unixepoch()`), so we scale to
+ * millis for `Date`.
+ */
+export function fmtDate(seconds: number | null | undefined): string {
+	if (seconds === null || seconds === undefined) return '—'
+	return new Date(seconds * 1000).toLocaleString(undefined, {
 		year: 'numeric',
 		month: 'short',
 		day: 'numeric',
@@ -23,10 +27,10 @@ export function fmtDate(ms: number | null | undefined): string {
 	})
 }
 
-/** Format an optional expiry timestamp; `null` means "never". */
-export function fmtExpiry(ms: number | null | undefined): string {
-	if (ms === null || ms === undefined) return 'Never'
-	return fmtDate(ms)
+/** Format an optional epoch-seconds expiry timestamp; `null` means "never". */
+export function fmtExpiry(seconds: number | null | undefined): string {
+	if (seconds === null || seconds === undefined) return 'Never'
+	return fmtDate(seconds)
 }
 
 /** Build a query string from an object, skipping empty / undefined / null values. */
@@ -43,12 +47,12 @@ export function qs(params: Record<string, string | number | null | undefined>): 
 }
 
 /**
- * Parse a `<datetime-local>` input value into epoch millis, or null when empty.
- * Returns `null` for an empty field (= no expiry).
+ * Parse a `<datetime-local>` input value into epoch **seconds** (the unit the backend
+ * stores and compares against `unixepoch()`), or null when empty (= no expiry).
  */
 export function parseDateTimeLocal(value: string): number | null {
 	const trimmed = value.trim()
 	if (trimmed === '') return null
 	const ms = new Date(trimmed).getTime()
-	return Number.isNaN(ms) ? null : ms
+	return Number.isNaN(ms) ? null : Math.floor(ms / 1000)
 }

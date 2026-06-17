@@ -15,7 +15,8 @@ type CapStatus = 'active' | 'expired' | 'revoked' | 'exhausted'
 
 function capStatus(cap: CapabilityListItem): CapStatus {
 	if (cap.revokedAt !== null) return 'revoked'
-	if (cap.expiresAt !== null && cap.expiresAt <= Date.now()) return 'expired'
+	// expiresAt is epoch-seconds (backend `unixepoch()`), so compare in seconds.
+	if (cap.expiresAt !== null && cap.expiresAt <= Date.now() / 1000) return 'expired'
 	if (cap.maxUses !== null && cap.usedCount >= cap.maxUses) return 'exhausted'
 	return 'active'
 }
@@ -194,7 +195,7 @@ function IssueForm({ onDone }: { onDone: () => void }) {
 
 	return (
 		<>
-			<form className="panel form" onSubmit={submit}>
+			<form className="panel form wide" onSubmit={submit}>
 				<h2>Issue capability</h2>
 				<div className="grant-rows">
 					<div className="grant-rows-head">
