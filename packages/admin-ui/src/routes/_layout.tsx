@@ -2,19 +2,30 @@ import { Link, Outlet, useRoute } from '@buzola/router'
 import { RouteError } from '../components/RouteError'
 import { useMe } from '../lib/useMe'
 
-interface NavItem {
-	to:
-		| 'principals'
-		| 'group-mappings'
-		| 'api-keys'
-		| 'capabilities'
-		| 'audit'
-		| 'policies'
-		| 'roles'
-		| 'schema'
+type Page =
+	| 'principals'
+	| 'group-mappings'
+	| 'api-keys'
+	| 'capabilities'
+	| 'audit'
+	| 'audit/auth-log'
+	| 'policies'
+	| 'roles'
+	| 'schema'
+
+interface NavChild {
+	to: Page
 	label: string
-	/** Path prefix used to mark the item active. */
+	/** Exact path that marks this child active. */
+	path: string
+}
+
+interface NavItem {
+	to: Page
+	label: string
+	/** Path prefix used to mark the item (and its section) active. */
 	match: string
+	children?: NavChild[]
 }
 
 const NAV: NavItem[] = [
@@ -22,7 +33,15 @@ const NAV: NavItem[] = [
 	{ to: 'group-mappings', label: 'Group mappings', match: '/group-mappings' },
 	{ to: 'api-keys', label: 'API keys', match: '/api-keys' },
 	{ to: 'capabilities', label: 'Capabilities', match: '/capabilities' },
-	{ to: 'audit', label: 'Audit', match: '/audit' },
+	{
+		to: 'audit',
+		label: 'Audit',
+		match: '/audit',
+		children: [
+			{ to: 'audit', label: 'Domain events', path: '/audit' },
+			{ to: 'audit/auth-log', label: 'Auth log', path: '/audit/auth-log' },
+		],
+	},
 	{ to: 'policies', label: 'Policies', match: '/policies' },
 	{ to: 'roles', label: 'Roles', match: '/roles' },
 	{ to: 'schema', label: 'Schema', match: '/schema' },
@@ -54,34 +73,48 @@ export default function RootLayout() {
 		)
 	}
 
-	const isAuditSection = pathname.startsWith('/audit')
-
 	return (
 		<div className="app-shell">
 			<aside className="sidebar">
-				<div className="brand">propustka</div>
+				<div className="brand">
+					<span className="brand-name">propustka</span>
+					<span className="brand-sub">IAM admin</span>
+				</div>
 				<nav>
 					{NAV.map((item) => {
-						const active = item.match === '/audit'
-							? isAuditSection
-							: pathname === item.match || pathname.startsWith(`${item.match}/`)
+						const sectionActive = pathname === item.match
+							|| pathname.startsWith(`${item.match}/`)
+						const hasChildren = item.children && item.children.length > 0
 						return (
-							<Link key={item.to} to={item.to} className={active ? 'active' : ''}>
-								{item.label}
-							</Link>
+							<div key={item.to} className="nav-group">
+								<Link
+									to={item.to}
+									className={`nav-item${sectionActive ? (hasChildren ? ' section-active' : ' active') : ''}`}
+									aria-current={sectionActive && !hasChildren ? 'page' : undefined}
+								>
+									{item.label}
+								</Link>
+								{hasChildren && sectionActive && (
+									<div className="subnav">
+										{item.children?.map((child) => {
+											const childActive = pathname === child.path
+											return (
+												<Link
+													key={child.path}
+													to={child.to}
+													className={`nav-subitem${childActive ? ' active' : ''}`}
+													aria-current={childActive ? 'page' : undefined}
+												>
+													{child.label}
+												</Link>
+											)
+										})}
+									</div>
+								)}
+							</div>
 						)
 					})}
 				</nav>
-				{isAuditSection && (
-					<nav className="subnav">
-						<Link to="audit" className={pathname === '/audit' ? 'active' : ''}>
-							Domain events
-						</Link>
-						<Link to="audit/auth-log" className={pathname === '/audit/auth-log' ? 'active' : ''}>
-							Auth log
-						</Link>
-					</nav>
-				)}
 				<div className="me">
 					{me.status === 'loading'
 						? <span className="muted">loading…</span>

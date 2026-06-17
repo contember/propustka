@@ -6,6 +6,8 @@
 	--muted: #6b7480;
 	--accent: #2563eb;
 	--accent-text: #ffffff;
+	--accent-soft: #e8eefc;
+	--accent-soft-text: #1d4ed8;
 	--danger: #dc2626;
 	--good: #16a34a;
 	--warn: #b45309;
@@ -89,58 +91,108 @@ a:hover {
 .sidebar {
 	background: var(--panel);
 	border-right: 1px solid var(--border);
-	padding: 1rem 0.75rem;
+	padding: 1.25rem 0.75rem 1rem;
 	display: flex;
 	flex-direction: column;
-	gap: 0.5rem;
+	gap: 1rem;
 	position: sticky;
 	top: 0;
 	height: 100vh;
 }
 
 .sidebar .brand {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	padding: 0 0.5rem 0.75rem;
+	border-bottom: 1px solid var(--border);
+}
+
+.sidebar .brand-name {
 	font-weight: 700;
-	font-size: 1.1rem;
-	padding: 0 0.5rem 0.5rem;
+	font-size: 1.15rem;
+	letter-spacing: -0.01em;
+}
+
+.sidebar .brand-sub {
+	font-size: 0.72rem;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	color: var(--muted);
 }
 
 .sidebar nav {
 	display: flex;
 	flex-direction: column;
-	gap: 2px;
+	gap: 1px;
+	overflow-y: auto;
 }
 
-.sidebar nav a {
+.sidebar .nav-group {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+
+.sidebar .nav-item {
+	display: block;
 	color: var(--text);
-	padding: 0.4rem 0.5rem;
+	font-weight: 500;
+	padding: 0.45rem 0.6rem;
 	border-radius: var(--radius);
+	transition: background 0.12s ease, color 0.12s ease;
 }
 
-.sidebar nav a:hover {
+.sidebar .nav-item:hover {
 	background: var(--bg);
 	text-decoration: none;
 }
 
-.sidebar nav a.active {
+.sidebar .nav-item.active {
 	background: var(--accent);
 	color: var(--accent-text);
 }
 
-.sidebar .subnav {
-	margin-left: 0.75rem;
-	border-left: 2px solid var(--border);
-	padding-left: 0.25rem;
+.sidebar .nav-item.section-active {
+	background: var(--accent-soft);
+	color: var(--accent-soft-text);
 }
 
-.sidebar .subnav a {
+.sidebar .subnav {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	margin: 1px 0 1px 0.85rem;
+	padding-left: 0.6rem;
+	border-left: 2px solid var(--border);
+}
+
+.sidebar .nav-subitem {
+	display: block;
+	color: var(--muted);
 	font-size: 0.9em;
-	padding: 0.3rem 0.5rem;
+	padding: 0.35rem 0.55rem;
+	border-radius: var(--radius);
+	transition: background 0.12s ease, color 0.12s ease;
+}
+
+.sidebar .nav-subitem:hover {
+	background: var(--bg);
+	color: var(--text);
+	text-decoration: none;
+}
+
+.sidebar .nav-subitem.active {
+	background: var(--accent);
+	color: var(--accent-text);
+	font-weight: 500;
 }
 
 .sidebar .me {
 	margin-top: auto;
 	border-top: 1px solid var(--border);
-	padding: 0.5rem;
+	padding: 0.75rem 0.5rem 0;
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
