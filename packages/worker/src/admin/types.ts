@@ -4,7 +4,18 @@
 // typed, no codegen). Reuses @propustka/core types where they fit. Keep these clean
 // and complete — they ARE the admin API contract.
 
-import type { AppActionDef, AppSchema, AppScopeDef, PermissionEntry, PermissionSource, PrincipalType, RoleDef } from '@propustka/core'
+import type {
+	AccessAppDecl,
+	AccessRule,
+	AppAccess,
+	AppActionDef,
+	AppSchema,
+	AppScopeDef,
+	PermissionEntry,
+	PermissionSource,
+	PrincipalType,
+	RoleDef,
+} from '@propustka/core'
 
 // ── Common wrappers ───────────────────────────────────────────────────────────
 
@@ -147,6 +158,31 @@ export interface AppSchemaDto {
 	roles: Record<string, RoleDef>
 }
 
+// ── Access edge rules (reconciled into Cloudflare as reusable policies) ─────────
+
+/** Reconcile an app's Access edge rules. The request body IS the core `AppAccess`. */
+export type PutAppAccessRequest = AppAccess
+
+/** One managed reusable policy in the live readback (parsed from its `px:<app>:<key>:<kind>` name). */
+export interface AccessPolicyDto {
+	/** The CF-app key this policy belongs to. */
+	key: string
+	/** The rule kind — 'service-auth' | 'human' | 'public'. */
+	kind: string
+	/** The managed policy name. */
+	name: string
+	/** The Cloudflare decision — 'allow' | 'bypass' | 'non_identity'. */
+	decision: string
+	/** How many CF apps reference it (1 in steady state; 0 = orphan). */
+	appCount: number
+}
+
+/** GET/PUT access response — the reusable policies propustka manages for this app (live CF state). */
+export interface AppAccessDto {
+	app: string
+	policies: AccessPolicyDto[]
+}
+
 // ── Policies (origin='custom' roles, admin-composed) ──────────────────────────
 
 /** A custom policy (an origin='custom' role row) for an app. */
@@ -203,15 +239,17 @@ export interface ProvisionApiKeyRequest {
 
 /**
  * Provisioning result. `clientSecret` is shown by Cloudflare exactly ONCE — copy it
- * now, it is not retrievable later. `policyInclusion: 'manual'` flags that the token
- * still needs adding to the app's Service Auth policy in the dashboard (v1).
+ * now, it is not retrievable later. `policyInclusion` is `'automatic'` when the target app already
+ * carries a reconciled `service-auth` policy ("any valid service token"), so the token works with
+ * no dashboard step; `'manual'` when the app's Access rules haven't been reconciled and the
+ * operator must add the token to its Service Auth policy by hand.
  */
 export interface ProvisionApiKeyResponse {
 	principalId: string
 	clientId: string
 	clientSecret: string
 	tokenId: string
-	policyInclusion: 'manual'
+	policyInclusion: 'automatic' | 'manual'
 }
 
 /** Rotation result — new secret shown once; token id + principal unchanged. */
@@ -291,4 +329,4 @@ export interface MeDto {
 	groupsUnavailable: boolean
 }
 
-export type { AppActionDef, AppSchema, AppScopeDef, PermissionEntry, PermissionSource, PrincipalType, RoleDef }
+export type { AccessAppDecl, AccessRule, AppAccess, AppActionDef, AppSchema, AppScopeDef, PermissionEntry, PermissionSource, PrincipalType, RoleDef }

@@ -1,9 +1,11 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
 import { createLocalJWKSet, exportJWK, generateKeyPair, type JSONWebKeySet, type JWTPayload, SignJWT } from 'jose'
+import type { CfAccess } from '../../cfaccess'
 import { Db } from '../../db'
 import { IdentityClient } from '../../identity'
 import { type AccessApps, JwtValidator } from '../../jwt'
 import type { Config, Services } from '../../services'
+import { FakeCfAccess } from './fake-cfaccess'
 import { allMigrations } from './migrations'
 
 /**
@@ -221,6 +223,8 @@ export interface MakeServicesOptions {
 	accessApps?: AccessApps
 	/** IAM_BOOTSTRAP_ADMINS emails. Defaults to empty. */
 	bootstrapAdmins?: ReadonlySet<string>
+	/** Cloudflare Access surface. Defaults to a fresh in-memory `FakeCfAccess`. */
+	cfAccess?: CfAccess
 }
 
 /** Stand up a fresh in-memory DB + helpers. Call once per test for isolation. */
@@ -245,6 +249,7 @@ export function createHarness(): Harness {
 			db,
 			jwt: new JwtValidator(TEAM, accessApps, localJwks),
 			identity,
+			cfAccess: options.cfAccess ?? new FakeCfAccess(),
 			config,
 		}
 	}

@@ -11,6 +11,7 @@ import {
 	deleteGroupMapping,
 	deletePolicy,
 	deletePrincipal,
+	getAppAccess,
 	getAppSchema,
 	getPrincipal,
 	handleMe,
@@ -26,6 +27,7 @@ import {
 	listRoles,
 	patchPrincipal,
 	provisionApiKey,
+	putAppAccess,
 	putAppSchema,
 	revokeApiKey,
 	revokeCapability,
@@ -211,6 +213,7 @@ async function dispatch(c: AdminContext): Promise<Response> {
 		case 'apps':
 			// GET /admin/apps                          → list configured app ids
 			// GET|PUT  /admin/apps/:app/schema         → read / reconcile vocabulary
+			// GET|PUT  /admin/apps/:app/access         → read / reconcile CF Access edge rules
 			// GET|POST /admin/apps/:app/policies       → list / create custom policies
 			// PUT|DELETE /admin/apps/:app/policies/:key → update / delete a custom policy
 			if (idOrSub === undefined) {
@@ -219,6 +222,11 @@ async function dispatch(c: AdminContext): Promise<Response> {
 			if (action === 'schema') {
 				if (method === 'GET') return getAppSchema(c, idOrSub)
 				if (method === 'PUT') return putAppSchema(c, idOrSub)
+				return methodNotAllowed()
+			}
+			if (action === 'access') {
+				if (method === 'GET') return getAppAccess(c, idOrSub)
+				if (method === 'PUT') return putAppAccess(c, idOrSub)
 				return methodNotAllowed()
 			}
 			if (action === 'policies') {

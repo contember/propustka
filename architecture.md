@@ -271,15 +271,30 @@ Then in app code: `const iam = new IamClient(env.IAM, "app-projects")` (core spe
 
 ### Access-as-code provisioning (`scripts/`)
 
-Two idempotent operator scripts reconcile state that lives outside the Worker's own deploy.
-Both are run by hand (the operator holds the credentials; nothing is committed), and both
-support `--dry-run`:
+Idempotent operator scripts reconcile state that lives outside the Worker's own deploy. They are
+run by hand (the operator holds the credentials; nothing is committed), and all support
+`--dry-run`:
 
-- **`scripts/provision-access.ts` — the Cloudflare Access edge.** Reconciles the Access apps +
-  policies for the whole stack (the `propustka` admin app, plus the consuming apps and their
-  bypass paths) and prints a ready-to-paste `PROPUSTKA_ACCESS_APPS` value (the `{ aud → app-id }`
-  map the Worker's `ACCESS_APPS` var consumes). This provisions only the edge authn, not the
-  Worker routes — those are added at/after deploy.
+- **`scripts/provision-access.ts` — the Cloudflare Access edge (bootstrap + migration).**
+  Reconciles the whole stack's Access **edge rules** — three kinds, **service-auth** (machines:
+  `non_identity` / any valid service token), **human** (`allow` by email domain), **public**
+  (`bypass` for carve-out paths) — into Cloudflare as account-level **REUSABLE policies** (the new
+  CF model), attached to each app's Access application(s). It reuses the Worker's own
+  `reconcileAccess` + `CfAccessClient` (no duplicated logic), just driven with the operator token,
+  and prints a ready-to-paste `PROPUSTKA_ACCESS_APPS` value (the `{ aud → app-id }` map the
+  Worker's `ACCESS_APPS` var consumes). It is the BOOTSTRAP for `propustka-admin`'s own front door
+  (which gates the admin endpoint below) and never re-routes existing apps (it changes only their
+  `policies` array). Reconcile owns only the policies it manages (the `px:<app>:` name prefix) and
+  **never touches admin-composed ones** — the edge analogue of origin=`app` vs `custom`.
+
+- **`scripts/provision-access-rules.ts` — each app's Access rules, the SDK path.** Just as an app
+  declares its authz vocabulary, **each app declares its Access edge rules in its own code** as a
+  typed `AppAccess` (e.g. `examples/app/propustka.access.ts`). This script `reconcileAccess`-es each
+  declaration to the idempotent `PUT /admin/apps/:app/access` endpoint; the Worker performs the
+  Cloudflare mutations with its own api token (which therefore needs _Access: Apps and Policies —
+  Edit_ in addition to _Service Tokens — Edit_). This is how a consuming app self-reconciles its
+  front door at deploy time once `propustka-admin` is up; `provision-access.ts` is the
+  out-of-band bootstrap that breaks the chicken-and-egg.
 
 - **`scripts/provision-schemas.ts` — each app's authz vocabulary.** Authz is no longer
   Propustka-owned: **each app owns its scope dimensions, action catalog, and roles and declares

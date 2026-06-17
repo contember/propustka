@@ -1,3 +1,4 @@
+import { type CfAccess, CfAccessClient } from './cfaccess'
 import { Db } from './db'
 import type { Env } from './env'
 import { IdentityClient } from './identity'
@@ -17,6 +18,8 @@ export interface Services {
 	readonly db: Db
 	readonly jwt: JwtValidator
 	readonly identity: IdentityClient
+	/** Cloudflare Access surface (service tokens + apps/reusable-policies). Tests inject a fake. */
+	readonly cfAccess: CfAccess
 	readonly config: Config
 }
 
@@ -86,6 +89,7 @@ export function buildServices(env: Env): Services {
 		db: new Db(env.DB),
 		jwt: getJwtValidator(env.TEAM, accessApps),
 		identity: cachedIdentity,
+		cfAccess: new CfAccessClient(env.CF_API_TOKEN, env.CF_ACCOUNT_ID),
 		config: {
 			accessApps,
 			team: env.TEAM,

@@ -20,5 +20,12 @@ The pipeline builds the admin SPA, runs `oblaka --remote` (provisions D1 + write
 applies D1 migrations, `wrangler deploy`, then pushes the runtime Worker secrets. See
 `architecture.md` → Provisioning/Deploy for the full model.
 
+The runtime `CF_API_TOKEN` secret needs **both** Access scopes: _Service Tokens — Edit_ (API-key
+provisioning) **and** _Apps and Policies — Edit_ (the `PUT /admin/apps/:app/access` reusable-policy
+reconcile). Cloudflare Access **edge rules** are Access-as-code now: each app declares its
+service-auth/human/public rules (`propustka.access.ts`) and reconciles them into reusable policies —
+operator bootstrap/migration via `scripts/provision-access.ts`, app self-reconcile via
+`scripts/provision-access-rules.ts`. See `architecture.md` → Access-as-code provisioning.
+
 npm releases (`@propustka/core`, `@propustka/client`) publish on a `v*` tag via `release.yml`
 (OIDC trusted publishing — no npm token).

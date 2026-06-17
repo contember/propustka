@@ -19,8 +19,9 @@ export interface Env {
 	/** JSON array of bootstrap-admin emails (normally empty). Resolution-time only. */
 	IAM_BOOTSTRAP_ADMINS: string
 	/**
-	 * Cloudflare API token with *Access: Service Tokens Edit* — used for API-key
-	 * (service-token) provisioning. Admin-only; never exposed to app callers.
+	 * Cloudflare API token used for Access provisioning (admin-only; never exposed to app callers).
+	 * Needs BOTH *Access: Service Tokens — Edit* (API-key / service-token provisioning) AND
+	 * *Access: Apps and Policies — Edit* (the `PUT /admin/apps/:app/access` reusable-policy reconcile).
 	 */
 	CF_API_TOKEN: string
 	/** Cloudflare account id, for the Access API. */

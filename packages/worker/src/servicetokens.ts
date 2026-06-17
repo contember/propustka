@@ -9,7 +9,7 @@ import type {
 	Scope,
 } from '@propustka/core'
 import { permits } from '@propustka/core'
-import { CfAccessClient, CfAccessError, type MintedServiceToken } from './cfaccess'
+import { CfAccessError, type MintedServiceToken } from './cfaccess'
 import { resolveServicePermissions } from './resolve'
 import type { Services } from './services'
 
@@ -59,7 +59,7 @@ export async function issueServiceToken(
 		return { ok: false, reason: 'not_allowed' }
 	}
 
-	const cf = new CfAccessClient(services.config.cfApiToken, services.config.cfAccountId)
+	const cf = services.cfAccess
 
 	// 1. Mint the Access token. A failure here created nothing — clean.
 	let minted: MintedServiceToken
@@ -156,7 +156,7 @@ export async function revokeServiceToken(
 	}
 
 	if (principal.external_id !== null) {
-		const cf = new CfAccessClient(services.config.cfApiToken, services.config.cfAccountId)
+		const cf = services.cfAccess
 		try {
 			const tokenId = await cf.findTokenIdByClientId(principal.external_id)
 			if (tokenId) {
@@ -194,7 +194,7 @@ export async function rotateServiceToken(
 		return { ok: false, reason: 'not_found' }
 	}
 
-	const cf = new CfAccessClient(services.config.cfApiToken, services.config.cfAccountId)
+	const cf = services.cfAccess
 	try {
 		const tokenId = await cf.findTokenIdByClientId(principal.external_id)
 		if (!tokenId) {

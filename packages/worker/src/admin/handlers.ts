@@ -1,9 +1,9 @@
-import type { AppSchema, IssueCapabilityInput, PermissionEntry, RoleDef } from '@propustka/core'
+import type { AccessAppDecl, AccessRule, AppAccess, AppSchema, IssueCapabilityInput, PermissionEntry, RoleDef } from '@propustka/core'
 import { isActionAllowed } from '@propustka/core'
 import type { ResolveOutcome } from '../auth'
 import { resolveRequest } from '../auth'
 import { issueCapability } from '../capabilities'
-import { CfAccessClient, CfAccessError, type MintedServiceToken } from '../cfaccess'
+import { CfAccessError, type MintedServiceToken, type PolicyInclusion } from '../cfaccess'
 import {
 	type AuditEventRow,
 	type AuthLogRow,
@@ -20,8 +20,10 @@ import { computePermissions } from '../resolve'
 import { BUILTIN_ROLES, isKnownRole, makeRoleSource } from '../roles'
 import type { Services } from '../services'
 import { error, json, readJson } from './http'
+import { type AppAccessReadback, readAppAccess, reconcileAccess, ReconcileAccessError } from './reconcile-access'
 import type {
 	ApiKeyDto,
+	AppAccessDto,
 	AppDto,
 	AppSchemaDto,
 	AuditEventDto,
@@ -762,6 +764,152 @@ export async function getAppSchema(c: AdminContext, app: string): Promise<Respon
 	return json(dto)
 }
 
+// ── Access edge rules (reconciled into Cloudflare as reusable policies) ─────────
+
+/** Read an optional string-array field: `[]` when absent, `{ok:false}` when present-but-malformed. */
+function optionalStringArray(raw: unknown, key: string): { ok: true; value: string[] } | { ok: false } {
+	if (prop(raw, key) === undefined) {
+		return { ok: true, value: [] }
+	}
+	const value = arrayField(raw, key)
+	return value === undefined ? { ok: false } : { ok: true, value }
+}
+
+/** Validate one declared Access rule. */
+function parseAccessRule(raw: unknown): { ok: true; rule: AccessRule } | { ok: false; message: string } {
+	const kind = stringField(raw, 'kind')
+	if (kind === undefined) {
+		return { ok: false, message: 'each rule needs a string `kind`' }
+	}
+	if (kind === 'service-auth') {
+		return { ok: true, rule: { kind: 'service-auth' } }
+	}
+	if (kind === 'public') {
+		return { ok: true, rule: { kind: 'public' } }
+	}
+	if (kind === 'human') {
+		const domains = optionalStringArray(raw, 'emailDomains')
+		const emails = optionalStringArray(raw, 'emails')
+		if (!domains.ok || !emails.ok) {
+			return { ok: false, message: 'human rule emailDomains/emails must be arrays of strings' }
+		}
+		if (domains.value.length === 0 && emails.value.length === 0) {
+			return { ok: false, message: 'human rule needs at least one of emailDomains / emails' }
+		}
+		return {
+			ok: true,
+			rule: {
+				kind: 'human',
+				...(domains.value.length > 0 ? { emailDomains: domains.value } : {}),
+				...(emails.value.length > 0 ? { emails: emails.value } : {}),
+			},
+		}
+	}
+	return { ok: false, message: `unknown rule kind: ${kind}` }
+}
+
+/**
+ * Validate an `AppAccess` body: a non-empty `apps` array, each with a unique `key`, a `name`,
+ * non-empty `destinations`, and a non-empty `rules` list of valid rules. Keys must be unique
+ * because they distinguish the per-CF-app managed policy names.
+ */
+function parseAppAccess(body: unknown): { ok: true; access: AppAccess } | { ok: false; message: string } {
+	const appsRaw = prop(body, 'apps')
+	if (!Array.isArray(appsRaw) || appsRaw.length === 0) {
+		return { ok: false, message: 'apps must be a non-empty array' }
+	}
+	const apps: AccessAppDecl[] = []
+	const seenKeys = new Set<string>()
+	for (const appRaw of appsRaw) {
+		const key = stringField(appRaw, 'key')
+		const name = stringField(appRaw, 'name')
+		if (!key || !name) {
+			return { ok: false, message: 'each app needs a non-empty string `key` and `name`' }
+		}
+		if (seenKeys.has(key)) {
+			return { ok: false, message: `duplicate app key: ${key}` }
+		}
+		seenKeys.add(key)
+		const destinations = arrayField(appRaw, 'destinations')
+		if (destinations === undefined || destinations.length === 0) {
+			return { ok: false, message: `app '${key}' needs a non-empty destinations array` }
+		}
+		const rulesRaw = prop(appRaw, 'rules')
+		if (!Array.isArray(rulesRaw) || rulesRaw.length === 0) {
+			return { ok: false, message: `app '${key}' needs a non-empty rules array` }
+		}
+		const rules: AccessRule[] = []
+		for (const ruleRaw of rulesRaw) {
+			const parsed = parseAccessRule(ruleRaw)
+			if (!parsed.ok) {
+				return { ok: false, message: `app '${key}': ${parsed.message}` }
+			}
+			rules.push(parsed.rule)
+		}
+		const sessionDuration = stringField(appRaw, 'sessionDuration')
+		apps.push({ key, name, destinations, ...(sessionDuration !== undefined ? { sessionDuration } : {}), rules })
+	}
+	return { ok: true, access: { apps } }
+}
+
+/** Map the live readback to the admin DTO. */
+function toAppAccessDto(readback: AppAccessReadback): AppAccessDto {
+	return {
+		app: readback.app,
+		policies: readback.policies.map((p) => ({ key: p.key, kind: p.kind, name: p.name, decision: p.decision, appCount: p.appCount })),
+	}
+}
+
+/**
+ * Reconcile an app's declared Access edge rules into Cloudflare (idempotent). Creates/updates the
+ * managed reusable policies (`px:<app>:…`) and repoints the CF apps' policy arrays; never touches
+ * non-managed policies. Returns the live readback. The `:app` segment must be a configured app id.
+ */
+export async function putAppAccess(c: AdminContext, app: string): Promise<Response> {
+	if (!knownApps(c).includes(app)) {
+		return error(404, 'unknown app')
+	}
+	const body = await readJson(c.request)
+	const parsed = parseAppAccess(body)
+	if (!parsed.ok) {
+		return error(400, parsed.message)
+	}
+	let readback: AppAccessReadback
+	try {
+		readback = await reconcileAccess(c.services.cfAccess, app, parsed.access)
+	} catch (err) {
+		if (err instanceof CfAccessError) {
+			return error(502, err.message)
+		}
+		const message = err instanceof ReconcileAccessError ? err.message : 'access reconcile failed'
+		return error(500, message)
+	}
+	await adminAudit(c, {
+		action: 'iam.app.access.reconcile',
+		resourceType: 'app',
+		resourceId: app,
+		metadata: {
+			cfApps: parsed.access.apps.map((a) => a.name),
+			rules: parsed.access.apps.flatMap((a) => a.rules.map((r) => `${a.key}:${r.kind}`)),
+		},
+	})
+	return json(toAppAccessDto(readback))
+}
+
+/** Read the reusable Access policies propustka manages for an app (live CF state). */
+export async function getAppAccess(c: AdminContext, app: string): Promise<Response> {
+	if (!knownApps(c).includes(app)) {
+		return error(404, 'unknown app')
+	}
+	try {
+		const readback = await readAppAccess(c.services.cfAccess, app)
+		return json(toAppAccessDto(readback))
+	} catch (err) {
+		const message = err instanceof CfAccessError ? err.message : 'failed to read access rules'
+		return error(502, message)
+	}
+}
+
 // ── Policies (origin='custom' roles) ──────────────────────────────────────────
 
 function toPolicyDto(row: RoleRow): PolicyDto {
@@ -970,7 +1118,7 @@ export async function provisionApiKey(c: AdminContext): Promise<Response> {
 	// otherwise we pass the exact remaining seconds so the token tracks the grant.
 	const duration = expiresAt === null ? 'forever' : `${expiresAt - nowSeconds}s`
 
-	const cf = new CfAccessClient(c.services.config.cfApiToken, c.services.config.cfAccountId)
+	const cf = c.services.cfAccess
 
 	// 1. Mint the token in Access. If this fails, nothing was created — clean.
 	let minted: MintedServiceToken
@@ -1014,12 +1162,28 @@ export async function provisionApiKey(c: AdminContext): Promise<Response> {
 			},
 		})
 
+		// Is the token already admitted at the edge? It is when the target app carries a reconciled
+		// `service-auth` policy ("any valid service token") — then no dashboard step is needed. We
+		// can only tell for an app-scoped key (a cross-app key has no single target app). A read
+		// failure must not fail provisioning — fall back to 'manual'.
+		let policyInclusion: PolicyInclusion = 'manual'
+		if (app !== null) {
+			try {
+				const readback = await readAppAccess(cf, app)
+				if (readback.policies.some((p) => p.kind === 'service-auth')) {
+					policyInclusion = 'automatic'
+				}
+			} catch {
+				// leave 'manual'
+			}
+		}
+
 		const response: ProvisionApiKeyResponse = {
 			principalId: principal.id,
 			clientId: minted.clientId,
 			clientSecret: minted.clientSecret,
 			tokenId: minted.id,
-			policyInclusion: 'manual',
+			policyInclusion,
 		}
 		return json(response, { status: 201 })
 	} catch (err) {
@@ -1059,7 +1223,7 @@ export async function revokeApiKey(c: AdminContext, principalId: string): Promis
 	// 1. Delete the Access service token (best-effort).
 	let tokenDeleted = false
 	if (principal.external_id !== null) {
-		const cf = new CfAccessClient(c.services.config.cfApiToken, c.services.config.cfAccountId)
+		const cf = c.services.cfAccess
 		try {
 			const tokenId = await cf.findTokenIdByClientId(principal.external_id)
 			if (tokenId) {
@@ -1093,7 +1257,7 @@ export async function rotateApiKey(c: AdminContext, principalId: string): Promis
 	if (!principal || principal.type !== 'service' || principal.external_id === null) {
 		return error(404, 'service principal not found')
 	}
-	const cf = new CfAccessClient(c.services.config.cfApiToken, c.services.config.cfAccountId)
+	const cf = c.services.cfAccess
 	let rotated: MintedServiceToken
 	try {
 		const tokenId = await cf.findTokenIdByClientId(principal.external_id)
