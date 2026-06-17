@@ -148,6 +148,9 @@ function ProvisionForm({ apps, onDone }: { apps: AppDto[]; onDone: () => void })
 					Expires (optional)
 					<input type="datetime-local" value={expiry} onChange={(e) => setExpiry(e.target.value)} />
 				</label>
+				<p className="hint">
+					The Access service token expires together with this date. Leave empty for a non-expiring token.
+				</p>
 				{error && <p className="error-text" role="alert">{error}</p>}
 				<div className="form-actions">
 					<button type="submit" className="primary" disabled={busy}>{busy ? 'Provisioning…' : 'Provision'}</button>

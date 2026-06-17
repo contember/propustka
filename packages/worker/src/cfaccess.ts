@@ -87,7 +87,9 @@ export class CfAccessClient {
 	}
 
 	/**
-	 * Mint a service token. `duration` (e.g. '8760h') optionally bounds its life.
+	 * Mint a service token. `duration` bounds its life — a Go-style duration (e.g.
+	 * '8760h', '3600s') or the literal 'forever' for a non-expiring token (Access maps
+	 * it to ~100 years). When omitted, Access defaults to 1 year (8760h).
 	 * `client_secret` is returned exactly once — surface it to the caller/UI
 	 * immediately; never persist it.
 	 */

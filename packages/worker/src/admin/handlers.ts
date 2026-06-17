@@ -959,13 +959,23 @@ export async function provisionApiKey(c: AdminContext): Promise<Response> {
 		return error(400, 'scopeType and scopeValue must be both set or both omitted')
 	}
 	const expiresAt = numberField(body, 'expiresAt') ?? null
+	const nowSeconds = Math.floor(Date.now() / 1000)
+	if (expiresAt !== null && expiresAt <= nowSeconds) {
+		return error(400, 'expiresAt must be in the future')
+	}
+	// Couple the Access service-token lifetime to the IAM grant expiry so a key never
+	// silently outlives (or is outlived by) its authorization. Cloudflare *requires* a
+	// duration — left unset it defaults to 1 year, which would expire the token out from
+	// under a "never expires" grant. 'forever' is Access's non-expiring sentinel (≈100y);
+	// otherwise we pass the exact remaining seconds so the token tracks the grant.
+	const duration = expiresAt === null ? 'forever' : `${expiresAt - nowSeconds}s`
 
 	const cf = new CfAccessClient(c.services.config.cfApiToken, c.services.config.cfAccountId)
 
 	// 1. Mint the token in Access. If this fails, nothing was created — clean.
 	let minted: MintedServiceToken
 	try {
-		minted = await cf.createServiceToken(label)
+		minted = await cf.createServiceToken(label, duration)
 	} catch (err) {
 		const message = err instanceof CfAccessError ? err.message : 'failed to mint service token'
 		return error(502, message)
