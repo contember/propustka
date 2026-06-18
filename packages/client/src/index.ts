@@ -23,7 +23,9 @@ export type {
 	IssueFailure,
 	IssueServiceTokenFailure,
 	IssueServiceTokenRequest,
+	ListPrincipalsFailure,
 	PrincipalIdentity,
+	PrincipalList,
 	RevokedCapability,
 	RevokedServiceToken,
 	RevokeFailure,
@@ -37,4 +39,16 @@ export type {
 // Scope (the `{ type, value }` coordinate apps pass to `can()`), the AppSchema vocabulary types
 // apps use to DECLARE their `propustka.schema.ts` for `reconcileSchema()`, and the AppAccess edge
 // types apps DECLARE in their `propustka.access.ts` for `reconcileAccess()`.
-export type { AccessAppDecl, AccessRule, AppAccess, AppActionDef, AppSchema, AppScopeDef, DomainEvent, IamRpc, RoleDef, Scope } from '@propustka/core'
+export type {
+	AccessAppDecl,
+	AccessRule,
+	AppAccess,
+	AppActionDef,
+	AppSchema,
+	AppScopeDef,
+	DomainEvent,
+	IamRpc,
+	PrincipalListItem,
+	RoleDef,
+	Scope,
+} from '@propustka/core'

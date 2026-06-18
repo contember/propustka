@@ -1,4 +1,4 @@
-import type { DomainEvent, PermissionEntry, PrincipalType, Scope } from '@propustka/core'
+import type { DomainEvent, PermissionEntry, PrincipalListItem, PrincipalType, Scope } from '@propustka/core'
 import { matchAction, permits, scopedValues } from '@propustka/core'
 import type {
 	AuthContext,
@@ -11,7 +11,9 @@ import type {
 	IssueFailure,
 	IssueServiceTokenFailure,
 	IssueServiceTokenRequest,
+	ListPrincipalsFailure,
 	PrincipalIdentity,
+	PrincipalList,
 	RevokedCapability,
 	RevokedServiceToken,
 	RevokeFailure,
@@ -267,6 +269,23 @@ export class FakeIamClient {
 			return new PersonaAuthContext(persona)
 		}
 		return new FakeAuthContext(this.deny, this.identity)
+	}
+
+	listPrincipals(_req: Request): Promise<PrincipalList | ListPrincipalsFailure> {
+		// PERSONA mode: the configured personas ARE the dev roster (enumerable). SIMPLE/resolve
+		// mode has no enumerable set, so fall back to the single fixed identity. A user's label
+		// is their email; services carry none.
+		const toItem = (id: string, label: string, type: PrincipalType): PrincipalListItem => ({
+			id,
+			type,
+			label,
+			email: type === 'user' ? label : null,
+			disabled: false,
+		})
+		const principals: PrincipalListItem[] = this.personas
+			? Object.values(this.personas).map((p) => toItem(p.id, p.label, p.type ?? 'user'))
+			: [toItem(this.identity.id, this.identity.label, this.identity.type)]
+		return Promise.resolve({ ok: true, principals })
 	}
 
 	redeemCapability(_req: Request, token: string): Promise<Capability | CapabilityFailure> {

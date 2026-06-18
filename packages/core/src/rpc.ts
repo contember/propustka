@@ -169,6 +169,45 @@ export type RotateServiceTokenResult =
 	| { ok: true; clientId: string; clientSecret: string; tokenId: string }
 	| { ok: false; reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'not_found' | 'provisioning_failed' }
 
+// ── List principals (the app's people directory) ───────────────────────────────
+//
+// A read-only enumeration of the USER principals who can access an app — its people
+// directory. Apps consume it for things propustka isn't the authority on but needs the
+// roster for: an assignee picker, an actor/owner label list. The caller is resolved from
+// the forwarded Access credentials and the listed app is the aud-VERIFIED app — an operator
+// can only enumerate the roster of an app it itself authenticates to (never a self-asserted
+// app), so there is no cross-app leak. Services are excluded (machines aren't assignable
+// people); each item carries `disabled` so the consumer can grey-out/hide deactivated users.
+
+export interface ListPrincipalsInput {
+	/** Self-asserted caller app id; superseded by the aud-derived app id on the valid token. */
+	app: string
+	/** Cf-Access-Jwt-Assertion header value. */
+	token: string | null
+	/** CF_Authorization cookie value, for get-identity. */
+	cookie: string | null
+	/** The app's own origin (for get-identity). */
+	origin: string | null
+	requestId: string
+}
+
+export interface PrincipalListItem {
+	/** IAM principal id (UUIDv7) — stable, safe to store on domain rows (assignee/actor). */
+	id: string
+	type: PrincipalType
+	/** Human-readable: the user's email. */
+	label: string
+	/** The user's email (users always have one; null only defensively). */
+	email: string | null
+	/** True when the principal is soft-disabled (kept listable so labels still resolve). */
+	disabled: boolean
+}
+
+export type ListPrincipalsResult =
+	| { ok: true; principals: PrincipalListItem[] }
+	/** `not_allowed` when the caller has no verified app / no permission on it (a zero-grant user). */
+	| { ok: false; reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' }
+
 /**
  * The RPC contract. The Worker's `WorkerEntrypoint` `implements IamRpc`; the SDK types its
  * binding as `Service<IamRpc>` (so the SDK never imports the Worker). Methods return plain
@@ -177,6 +216,13 @@ export type RotateServiceTokenResult =
 export interface IamRpc {
 	authenticate(input: AuthenticateInput): Promise<AuthenticateResult>
 	audit(event: AuditInput): Promise<void>
+	/**
+	 * List the USER principals who can access the caller's app (its people directory). The caller
+	 * is resolved from the forwarded Access credentials and the app is the aud-VERIFIED app — so an
+	 * operator only ever sees its own app's roster. Authorized for any member that holds at least
+	 * one permission on the app; a zero-grant authenticated user gets `not_allowed`. Read-only.
+	 */
+	listPrincipals(input: ListPrincipalsInput): Promise<ListPrincipalsResult>
 	redeemCapability(input: RedeemCapabilityInput): Promise<RedeemCapabilityResult>
 	issueCapability(input: IssueCapabilityInput): Promise<IssueCapabilityResult>
 	/**

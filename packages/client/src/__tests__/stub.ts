@@ -7,6 +7,8 @@ import type {
 	IssueCapabilityResult,
 	IssueServiceTokenInput,
 	IssueServiceTokenResult,
+	ListPrincipalsInput,
+	ListPrincipalsResult,
 	RedeemCapabilityInput,
 	RedeemCapabilityResult,
 	RevokeCapabilityInput,
@@ -30,6 +32,7 @@ export class IamRpcStub implements IamRpc {
 	readonly issueServiceInputs: IssueServiceTokenInput[] = []
 	readonly revokeServiceInputs: RevokeServiceTokenInput[] = []
 	readonly rotateServiceInputs: RotateServiceTokenInput[] = []
+	readonly listPrincipalsInputs: ListPrincipalsInput[] = []
 
 	constructor(
 		private readonly canned: {
@@ -40,6 +43,7 @@ export class IamRpcStub implements IamRpc {
 			issueService?: IssueServiceTokenResult
 			revokeService?: RevokeServiceTokenResult
 			rotateService?: RotateServiceTokenResult
+			listPrincipals?: ListPrincipalsResult
 		} = {},
 	) {}
 
@@ -47,6 +51,13 @@ export class IamRpcStub implements IamRpc {
 		this.authenticateInputs.push(input)
 		return Promise.resolve(
 			this.canned.authenticate ?? { ok: false, reason: 'missing_token' },
+		)
+	}
+
+	listPrincipals(input: ListPrincipalsInput): Promise<ListPrincipalsResult> {
+		this.listPrincipalsInputs.push(input)
+		return Promise.resolve(
+			this.canned.listPrincipals ?? { ok: false, reason: 'not_allowed' },
 		)
 	}
 

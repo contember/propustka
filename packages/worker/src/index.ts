@@ -7,6 +7,9 @@ import type {
 	IssueCapabilityResult,
 	IssueServiceTokenInput,
 	IssueServiceTokenResult,
+	ListPrincipalsInput,
+	ListPrincipalsResult,
+	PrincipalListItem,
 	RedeemCapabilityInput,
 	RedeemCapabilityResult,
 	RevokeCapabilityInput,
@@ -118,6 +121,47 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 					console.error('audit write failed', err)
 				}),
 		)
+	}
+
+	async listPrincipals(input: ListPrincipalsInput): Promise<ListPrincipalsResult> {
+		const services = buildServices(this.env)
+		try {
+			// Resolve the CALLER from the forwarded credentials, exactly like authenticate() —
+			// never a self-asserted principal. The app we list is the aud-VERIFIED app, so an
+			// operator can only ever enumerate the roster of an app it authenticates to.
+			const outcome = await resolveRequest(services, {
+				app: input.app,
+				token: input.token,
+				cookie: input.cookie,
+				origin: input.origin,
+				requestId: input.requestId,
+			})
+			const caller = principalFromOutcome(outcome)
+			if (!caller || !outcome.result.ok) {
+				return outcome.result.ok ? { ok: false, reason: 'unknown_principal' } : { ok: false, reason: outcome.result.reason }
+			}
+			// Authorize: the caller must be a real MEMBER of the app — hold at least one permission
+			// on the verified app. A zero-grant lazy-created user (authenticated but ungranted) and
+			// the app-less local-dev bypass (verifiedApp === null) cannot enumerate the roster.
+			const app = outcome.verifiedApp
+			if (app === null || caller.permissions.length === 0) {
+				return { ok: false, reason: 'not_allowed' }
+			}
+			const rows = await services.db.getPrincipalsForApp(app)
+			const principals: PrincipalListItem[] = rows.map((p) => ({
+				id: p.id,
+				type: p.type,
+				label: p.label,
+				email: p.email,
+				disabled: p.disabled_at !== null,
+			}))
+			return { ok: true, principals }
+		} catch (err) {
+			// Same fail-closed posture as authenticate(): never surface a 500. A read needs no
+			// auth_log row (the auth_log `kind` union has only authenticate/redeem); fail closed.
+			console.error(`listPrincipals failed for request '${input.requestId}'`, err)
+			return { ok: false, reason: 'unknown_principal' }
+		}
 	}
 
 	async redeemCapability(input: RedeemCapabilityInput): Promise<RedeemCapabilityResult> {

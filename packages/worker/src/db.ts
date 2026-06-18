@@ -273,6 +273,27 @@ export class Db {
 		return results
 	}
 
+	/**
+	 * The USER principals who can access `app` — every user holding at least one non-expired
+	 * grant that applies to the app (the grant's `app` is NULL = cross-app, OR equals `app`).
+	 * `DISTINCT` collapses the per-grant duplicates a principal with several grants produces.
+	 * Services are excluded — this is the people directory (assignable users / actor labels),
+	 * not machine principals. Disabled users ARE returned (the caller decides whether to hide
+	 * them) so their labels still resolve. Ordered by label for a stable picker.
+	 */
+	async getPrincipalsForApp(app: string): Promise<PrincipalRow[]> {
+		const { results } = await this.d1
+			.prepare(`SELECT DISTINCT p.* FROM principals p
+				JOIN grants g ON g.principal_id = p.id
+				WHERE p.type = 'user'
+					AND (g.app IS NULL OR g.app = ?)
+					AND (g.expires_at IS NULL OR g.expires_at > unixepoch())
+				ORDER BY p.label`)
+			.bind(app)
+			.all<PrincipalRow>()
+		return results
+	}
+
 	async disablePrincipal(id: string): Promise<boolean> {
 		const result = await this.d1
 			.prepare('UPDATE principals SET disabled_at = unixepoch() WHERE id = ? AND disabled_at IS NULL')

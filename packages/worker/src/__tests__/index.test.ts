@@ -396,4 +396,13 @@ describe('Propustka RPC entrypoint (TEST-4)', () => {
 		})
 		expect(result).toEqual({ ok: false, reason: 'not_found' })
 	})
+
+	test('listPrincipals: the app-less local-dev bypass (no verified app) is not_allowed', async () => {
+		const ctx = makeCtx()
+		const worker = new Propustka(ctx, makeEnv(db))
+		// Local bypass resolves a global-admin caller but with NO aud-verified app — there is no
+		// app to scope the roster to, so the read fails closed.
+		const result = await worker.listPrincipals({ app: 'poplach', token: null, cookie: null, origin: null, requestId: 'req-list-local' })
+		expect(result).toEqual({ ok: false, reason: 'not_allowed' })
+	})
 })

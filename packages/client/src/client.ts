@@ -12,7 +12,9 @@ import type {
 	IssueFailure,
 	IssueServiceTokenFailure,
 	IssueServiceTokenRequest,
+	ListPrincipalsFailure,
 	PrincipalIdentity,
+	PrincipalList,
 	RevokedCapability,
 	RevokedServiceToken,
 	RevokeFailure,
@@ -140,6 +142,21 @@ export class IamClient {
 	}
 
 	/**
+	 * List the app's people directory — the USER principals who can access this app. Forwards the
+	 * CALLER's credentials; the IAM Worker resolves the caller and scopes the roster to the
+	 * aud-verified app (you only ever see your own app's people). For an assignee picker / actor
+	 * label list. Authorized for any member with a permission on the app; a zero-grant user → 403.
+	 */
+	async listPrincipals(req: Request): Promise<PrincipalList | ListPrincipalsFailure> {
+		const { token, cookie, origin, requestId } = readCredentials(req)
+		const result = await this.binding.listPrincipals({ app: this.appId, token, cookie, origin, requestId })
+		if (result.ok) {
+			return { ok: true, principals: result.principals }
+		}
+		return { ok: false, reason: result.reason, status: listPrincipalsStatus(result.reason) }
+	}
+
+	/**
 	 * Redeem a capability token (a share link). No identity. A bad/expired/revoked/exhausted
 	 * token reads as a 404 (the link is "invalid or expired"), never a leaky 401/403.
 	 */
@@ -253,6 +270,11 @@ function authFailureStatus(reason: AuthFailure['reason']): 401 | 403 {
 
 /** missing/invalid → 401; unknown_principal/disabled/not_allowed → 403. */
 function issueFailureStatus(reason: IssueFailure['reason']): 401 | 403 {
+	return reason === 'missing_token' || reason === 'invalid_token' ? 401 : 403
+}
+
+/** missing/invalid → 401; unknown_principal/disabled/not_allowed → 403. */
+function listPrincipalsStatus(reason: ListPrincipalsFailure['reason']): 401 | 403 {
 	return reason === 'missing_token' || reason === 'invalid_token' ? 401 : 403
 }
 

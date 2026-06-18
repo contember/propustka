@@ -241,6 +241,37 @@ describe('IamClient.redeemCapability', () => {
 	})
 })
 
+describe('IamClient.listPrincipals', () => {
+	test('forwards credentials and returns the roster on success', async () => {
+		const principals = [{ id: 'p1', type: 'user' as const, label: 'a@x.test', email: 'a@x.test', disabled: false }]
+		const stub = new IamRpcStub({ listPrincipals: { ok: true, principals } })
+		const result = await new IamClient(stub, 'app-z').listPrincipals(
+			makeRequest({ url: 'https://foo.example.com/p', token: 'jwt', cookie: 'ck', ray: 'ray-9' }),
+		)
+		expect(result.ok).toBe(true)
+		if (!result.ok) {
+			throw new Error('unreachable')
+		}
+		expect(result.principals).toEqual(principals)
+		expect(stub.listPrincipalsInputs[0]).toEqual({
+			app: 'app-z',
+			token: 'jwt',
+			cookie: 'ck',
+			origin: 'https://foo.example.com',
+			requestId: 'ray-9',
+		})
+	})
+
+	test('failure → status mapping (not_allowed → 403, missing_token → 401)', async () => {
+		const denied = await new IamClient(new IamRpcStub({ listPrincipals: { ok: false, reason: 'not_allowed' } }), 'app-x').listPrincipals(makeRequest())
+		expect(denied).toEqual({ ok: false, reason: 'not_allowed', status: 403 })
+		const unauthed = await new IamClient(new IamRpcStub({ listPrincipals: { ok: false, reason: 'missing_token' } }), 'app-x').listPrincipals(
+			makeRequest(),
+		)
+		expect(unauthed).toEqual({ ok: false, reason: 'missing_token', status: 401 })
+	})
+})
+
 describe('IamClient.issueCapability', () => {
 	test('ok → IssuedCapability and forwards issuer credentials + grants', async () => {
 		const stub = new IamRpcStub({ issue: { ok: true, token: 'plaintext', id: 'cap-1' } })

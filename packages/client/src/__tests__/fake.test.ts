@@ -154,6 +154,25 @@ describe('FakeIamClient persona mode', () => {
 		const denied = await dynamic.authenticate(new Request('https://app.example.com/'))
 		expect(denied.ok).toBe(false)
 	})
+
+	test('listPrincipals enumerates the configured personas as the dev roster', async () => {
+		const result = await client.listPrincipals(new Request('https://app.example.com/'))
+		if (!result.ok) throw new Error('unreachable')
+		const byId = new Map(result.principals.map((p) => [p.id, p]))
+		expect(new Set(byId.keys())).toEqual(new Set(['p-admin', 'p-appwide', 'p-scoped']))
+		// A user's label is their email; nobody is disabled in the fixture.
+		expect(byId.get('p-appwide')).toEqual({ id: 'p-appwide', type: 'user', label: 'appwide@x.test', email: 'appwide@x.test', disabled: false })
+	})
+})
+
+describe('FakeIamClient.listPrincipals (simple mode)', () => {
+	test('falls back to the single fixed identity when no personas are configured', async () => {
+		const result = await new FakeIamClient({ principal: { id: 'solo', label: 'solo@x.test' } }).listPrincipals(
+			new Request('https://app.example.com/'),
+		)
+		if (!result.ok) throw new Error('unreachable')
+		expect(result.principals).toEqual([{ id: 'solo', type: 'user', label: 'solo@x.test', email: 'solo@x.test', disabled: false }])
+	})
 })
 
 describe('FakeIamClient.redeemCapability', () => {

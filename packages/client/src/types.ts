@@ -1,4 +1,4 @@
-import type { DomainEvent, IssueCapabilityGrant, PrincipalType, Scope } from '@propustka/core'
+import type { DomainEvent, IssueCapabilityGrant, PrincipalListItem, PrincipalType, Scope } from '@propustka/core'
 
 /**
  * The resolved caller's identity — who Access says you are, as the IAM Worker recorded
@@ -87,6 +87,12 @@ export interface RevokedCapability {
 	revoked: boolean
 }
 
+/** Successful `listPrincipals` — the app's people directory (user principals). */
+export interface PrincipalList {
+	readonly ok: true
+	principals: PrincipalListItem[]
+}
+
 // ── Failures ─────────────────────────────────────────────────────────────────
 
 /** `authenticate` failure. missing/invalid → 401; unknown_principal/disabled → 403. */
@@ -115,6 +121,13 @@ export interface RevokeFailure {
 	readonly ok: false
 	reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'not_found'
 	status: 401 | 403 | 404
+}
+
+/** `listPrincipals` failure. missing/invalid → 401; unknown_principal/disabled/not_allowed → 403. */
+export interface ListPrincipalsFailure {
+	readonly ok: false
+	reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed'
+	status: 401 | 403
 }
 
 // ── Inputs ───────────────────────────────────────────────────────────────────
