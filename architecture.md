@@ -275,17 +275,24 @@ Idempotent operator scripts reconcile state that lives outside the Worker's own 
 run by hand (the operator holds the credentials; nothing is committed), and all support
 `--dry-run`:
 
-- **`scripts/provision-access.ts` — the Cloudflare Access edge (bootstrap + migration).**
-  Reconciles the whole stack's Access **edge rules** — three kinds, **service-auth** (machines:
-  `non_identity` / any valid service token), **human** (`allow` by email domain), **public**
-  (`bypass` for carve-out paths) — into Cloudflare as account-level **REUSABLE policies** (the new
-  CF model), attached to each app's Access application(s). It reuses the Worker's own
-  `reconcileAccess` + `CfAccessClient` (no duplicated logic), just driven with the operator token,
-  and prints a ready-to-paste `PROPUSTKA_ACCESS_APPS` value (the `{ aud → app-id }` map the
-  Worker's `ACCESS_APPS` var consumes). It is the BOOTSTRAP for `propustka-admin`'s own front door
-  (which gates the admin endpoint below) and never re-routes existing apps (it changes only their
-  `policies` array). Reconcile owns only the policies it manages (the `px:<app>:` name prefix) and
-  **never touches admin-composed ones** — the edge analogue of origin=`app` vs `custom`.
+- **`scripts/provision-access.ts` — bootstrap propustka-admin's OWN front door (operator, direct CF).**
+  Reconciles ONLY propustka's own Access app, declared in committed code
+  (`packages/worker/propustka.access.ts`: the `service-auth` + `human` rules fronting the admin
+  hostname), into Cloudflare as account-level **REUSABLE policies** (the new CF model). This is the
+  one irreducible chicken-and-egg: the admin endpoint every OTHER app's reconcile goes through can't
+  gate itself until `propustka-admin` exists. It reuses the Worker's own `reconcileAccess` +
+  `CfAccessClient` (no duplicated logic), driven with the operator token, and prints a ready-to-paste
+  `PROPUSTKA_ACCESS_APPS` value (the `{ aud → app-id }` map the Worker's `ACCESS_APPS` var consumes).
+  Downstream apps are NOT created here — they self-reconcile (next bullets) with a propustka-issued
+  provisioning key. Idempotent: never re-routes an existing app (changes only its `policies` array),
+  owns only the `px:<app>:` policies it manages, **never touches admin-composed ones**.
+
+- **`scripts/provision-key.ts` — mint a per-app PROVISIONING KEY.** Thin wrapper over
+  `POST /admin/api-keys` (`provisionApiKey`: a Cloudflare Access service token + a service principal +
+  a grant, in one). Each downstream app gets one; the returned client id/secret become that app's CI
+  `PROPUSTKA_ACCESS_CLIENT_ID/SECRET` for the self-reconcile path below. This replaces hand-creating
+  Zero Trust service tokens. Currently granted the built-in cross-app `admin` role (the same privilege
+  contember prod uses today); least-privilege per-app reconcile authz is a tracked follow-up.
 
 - **`scripts/provision-access-rules.ts` — each app's Access rules, the SDK path.** Just as an app
   declares its authz vocabulary, **each app declares its Access edge rules in its own code** as a

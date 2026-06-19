@@ -22,10 +22,19 @@ applies D1 migrations, `wrangler deploy`, then pushes the runtime Worker secrets
 
 The runtime `CF_API_TOKEN` secret needs **both** Access scopes: _Service Tokens — Edit_ (API-key
 provisioning) **and** _Apps and Policies — Edit_ (the `PUT /admin/apps/:app/access` reusable-policy
-reconcile). Cloudflare Access **edge rules** are Access-as-code now: each app declares its
-service-auth/human/public rules (`propustka.access.ts`) and reconciles them into reusable policies —
-operator bootstrap/migration via `scripts/provision-access.ts`, app self-reconcile via
-`scripts/provision-access-rules.ts`. See `architecture.md` → Access-as-code provisioning.
+reconcile). Cloudflare Access **edge rules** are Access-as-code:
+
+- **propustka declares its OWN front door** in committed code (`packages/worker/propustka.access.ts`,
+  parameterized by `PROPUSTKA_HOSTNAME` + `PROPUSTKA_ADMIN_EMAIL_DOMAINS`). The operator BOOTSTRAP
+  `scripts/provision-access.ts` reconciles just that one app directly into Cloudflare (the irreducible
+  chicken-and-egg) and prints the `PROPUSTKA_ACCESS_APPS` value.
+- **each downstream app** declares its own `propustka.access.ts` (+ schema) and self-reconciles via
+  the admin endpoint at deploy time (`scripts/provision-access-rules.ts` / the app's own
+  `provision:access`), authenticated with a **propustka-issued provisioning key** — mint one per app
+  with `scripts/provision-key.ts` (or the admin UI's api-keys) and store it as the app's
+  `PROPUSTKA_ACCESS_CLIENT_ID/SECRET`.
+
+See `architecture.md` → Access-as-code provisioning.
 
 npm releases (`@propustka/core`, `@propustka/client`) publish on a `v*` tag via `release.yml`
 (OIDC trusted publishing — no npm token).
