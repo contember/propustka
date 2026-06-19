@@ -11,18 +11,19 @@ on:
       # main → stage auto-deploy is OFF — stage is currently broken and every
       # main push went red. Re-add `- main` here once stage is fixed; until then
       # deploy stage on demand via workflow_dispatch (environment=stage).
-      - deploy/prod  # → prod
+      - deploy/prod      # → prod
+      - deploy/mangoweb  # → mangoweb (manGoweb CF account)
   workflow_dispatch:
     inputs:
       environment:
         type: choice
         description: Which CF environment to deploy to
-        options: [stage, prod]
+        options: [stage, prod, mangoweb]
         default: stage
 
 concurrency:
   # Serialize deploys per target so oblaka's KV state never races.
-  group: deploy-propustka-${{ github.event.inputs.environment || (github.ref == 'refs/heads/deploy/prod' && 'prod' || 'stage') }}
+  group: deploy-propustka-${{ github.event.inputs.environment || (github.ref == 'refs/heads/deploy/prod' && 'prod' || (github.ref == 'refs/heads/deploy/mangoweb' && 'mangoweb' || 'stage')) }}
   cancel-in-progress: false
 
 permissions:
@@ -32,7 +33,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/deploy/prod' && 'prod' || 'stage') }}
+    environment: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/deploy/prod' && 'prod' || (github.ref == 'refs/heads/deploy/mangoweb' && 'mangoweb' || 'stage')) }}
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -56,6 +57,8 @@ jobs:
             echo "env=${{ github.event.inputs.environment }}" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.ref }}" = "refs/heads/deploy/prod" ]; then
             echo "env=prod" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref }}" = "refs/heads/deploy/mangoweb" ]; then
+            echo "env=mangoweb" >> "$GITHUB_OUTPUT"
           else
             echo "env=stage" >> "$GITHUB_OUTPUT"
           fi
@@ -80,6 +83,8 @@ jobs:
         env:
           PROPUSTKA_ACCESS_APPS: ${{ vars.PROPUSTKA_ACCESS_APPS }}
           PROPUSTKA_TEAM: ${{ vars.PROPUSTKA_TEAM }}
+          # Per-target admin Custom Domain (GitHub Environment var). Unset → *.workers.dev.
+          PROPUSTKA_HOSTNAME: ${{ vars.PROPUSTKA_HOSTNAME }}
           # Normally empty ('[]'); set to the first admin's email for the bootstrap
           # deploy only, then clear it and re-run. See the repo variable.
           PROPUSTKA_BOOTSTRAP_ADMINS: ${{ vars.PROPUSTKA_BOOTSTRAP_ADMINS }}

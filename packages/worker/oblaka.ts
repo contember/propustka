@@ -59,7 +59,7 @@ function buildVars(env: string): PropustkaVars {
 	}
 }
 
-const KNOWN_ENVS = new Set(['local', 'stage', 'prod'])
+const KNOWN_ENVS = new Set(['local', 'stage', 'prod', 'mangoweb'])
 
 export default define(({ env }) => {
 	if (!KNOWN_ENVS.has(env)) {
@@ -67,19 +67,25 @@ export default define(({ env }) => {
 	}
 	const vars = buildVars(env)
 
+	// Admin hostname, bound below as a Custom Domain. Driven per-env by the PROPUSTKA_HOSTNAME
+	// deploy var (a GitHub Environment variable the workflow passes) so each target gets its OWN
+	// domain — contember prod -> propustka.contember.com, manGoweb -> propustka.mgwsite.com —
+	// instead of the hostname being hardcoded to one account. Unset (stage/local) -> *.workers.dev.
+	const hostname = env === 'local' ? undefined : process.env['PROPUSTKA_HOSTNAME']
+
 	return new Worker({
 		dir: '.',
 		name: 'propustka-worker', // app workers reference this name via ServiceReference
 		main: './src/index.ts',
 		compatibility_flags: ['nodejs_compat_v2'],
 		compatibility_date: '2025-10-01',
-		// Prod binds the admin hostname as a Custom Domain (auto-creates DNS + cert + route);
-		// Cloudflare Access fronts it. Declared HERE as IaC because oblaka regenerates
-		// wrangler.jsonc on every deploy — a domain attached only in the dashboard gets wiped by
-		// the next `wrangler deploy`. App workers still reach the IAM Worker via the service
-		// binding (no Access), so this domain is only for the admin SPA + the HTTP admin API
-		// (reconcile, etc.). Stage/local use *.workers.dev.
-		routes: env === 'prod' ? [{ pattern: 'propustka.contember.com', custom_domain: true }] : [],
+		// Bind the admin hostname (PROPUSTKA_HOSTNAME, above) as a Custom Domain (auto-creates DNS +
+		// cert + route); Cloudflare Access fronts it. Declared HERE as IaC because oblaka regenerates
+		// wrangler.jsonc on every deploy — a domain attached only in the dashboard gets wiped by the
+		// next `wrangler deploy`. App workers still reach the IAM Worker via the service binding (no
+		// Access), so this domain is only for the admin SPA + the HTTP admin API (reconcile, etc.).
+		// Unset (stage/local) -> *.workers.dev.
+		routes: hostname ? [{ pattern: hostname, custom_domain: true }] : [],
 		observability: { enabled: true },
 		// Daily prune of auth_log (retention: weeks); see scheduled() in src/index.ts.
 		triggers: { crons: ['0 3 * * *'] },
