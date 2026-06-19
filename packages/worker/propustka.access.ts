@@ -10,11 +10,10 @@ import type { AppAccess } from '@propustka/core'
  * until THIS front door exists. Every downstream app declares its own `propustka.access.ts` (e.g.
  * poplach's) and self-reconciles via that admin endpoint once propustka-admin is up.
  *
- * Per-target hostname comes from `PROPUSTKA_HOSTNAME` (the same deploy var `oblaka.ts` binds as the
- * Custom Domain), falling back to the contember host for a local `--dry-run`. WHO the humans are is
- * NOT declared here — propustka owns that centrally (`HUMAN_EMAIL_DOMAINS` / `HUMAN_EMAILS`), applied
- * to every app's human-gated paths including this one. This app only declares that the admin host is
- * service-auth + human-gated.
+ * Per-target hostname is REQUIRED, from `PROPUSTKA_HOSTNAME` (the same deploy var `oblaka.ts` binds
+ * as the Custom Domain) — no hardcoded default. WHO the humans are is NOT declared here — propustka
+ * owns that centrally (`HUMAN_EMAIL_DOMAINS` / `HUMAN_EMAILS`), applied to every app's human-gated
+ * paths including this one. This app only declares that the admin host is service-auth + human-gated.
  */
 
 /**
@@ -23,7 +22,10 @@ import type { AppAccess } from '@propustka/core'
  */
 export const propustkaAppId = 'propustka'
 
-const host = process.env['PROPUSTKA_HOSTNAME'] ?? 'propustka.contember.com'
+const host = process.env['PROPUSTKA_HOSTNAME']
+if (!host) {
+	throw new Error('PROPUSTKA_HOSTNAME is not set — provide it for the deploy/reconcile (no hardcoded default).')
+}
 
 export const propustkaAccess: AppAccess = {
 	apps: [

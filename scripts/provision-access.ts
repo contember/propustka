@@ -87,10 +87,8 @@ async function main(): Promise<void> {
 		return
 	}
 
-	// Fail loud if the target hostname wasn't set — otherwise the committed fallback would create a
-	// `propustka.contember.com` app in whatever account CF_ACCOUNT_ID points at.
-	required('PROPUSTKA_HOSTNAME')
-	// propustka owns the human audience centrally — the same list every app's human rule gets.
+	// PROPUSTKA_HOSTNAME is enforced at import (propustka.access.ts throws if unset). propustka owns
+	// the human audience centrally — the same list every app's human rule gets.
 	const human = humanAccess()
 
 	const cf = new CfAccessClient(required('CF_API_TOKEN'), required('CF_ACCOUNT_ID'))
