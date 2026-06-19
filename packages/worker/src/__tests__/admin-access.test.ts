@@ -137,12 +137,13 @@ describe('PUT/GET /admin/apps/:app/access', () => {
 		expect(res.status).toBe(400)
 	})
 
-	test('unknown :app → 404', async () => {
+	test('a not-yet-registered app reconciles + creates its CF app (first reconcile = registration)', async () => {
 		const h = createHarness()
 		const cf = new FakeCfAccess()
 		const token = await asAdmin(h)
-		const res = await run(h, cf, req('/admin/apps/nope/access', 'PUT', token, ACCESS))
-		expect(res.status).toBe(404)
+		const res = await run(h, cf, req('/admin/apps/newapp/access', 'PUT', token, ACCESS))
+		expect(res.status).toBe(200)
+		expect(cf.apps.size).toBeGreaterThan(0) // the CF Access app(s) were created
 	})
 
 	test('a validation failure mutates nothing in Cloudflare (validate before reconcile)', async () => {

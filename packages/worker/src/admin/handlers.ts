@@ -710,9 +710,8 @@ function parseAppSchema(body: unknown): { ok: true; schema: AppSchema } | { ok: 
  * action catalog. The `:app` path segment must be a configured ACCESS_APPS value.
  */
 export async function putAppSchema(c: AdminContext, app: string): Promise<Response> {
-	if (!knownApps(c).includes(app)) {
-		return error(404, 'unknown app')
-	}
+	// No knownApps gate: an app's FIRST schema reconcile is how it registers its vocabulary (this
+	// endpoint is admin-gated). Its aud is added to ACCESS_APPS separately, for runtime JWT validation.
 	const body = await readJson(c.request)
 	const parsed = parseAppSchema(body)
 	if (!parsed.ok) {
@@ -740,14 +739,11 @@ export async function putAppSchema(c: AdminContext, app: string): Promise<Respon
 			roles: Object.keys(schema.roles),
 		},
 	})
-	return getAppSchema(c, app)
+	return json(await readAppSchemaDto(c, app))
 }
 
-/** Return the app's scopes, actions, and origin='app' roles (the reconciled vocabulary). */
-export async function getAppSchema(c: AdminContext, app: string): Promise<Response> {
-	if (!knownApps(c).includes(app)) {
-		return error(404, 'unknown app')
-	}
+/** Read the app's scopes, actions, and origin='app' roles into a DTO (no auth gate). */
+async function readAppSchemaDto(c: AdminContext, app: string): Promise<AppSchemaDto> {
 	const scopeRows = await c.services.db.listAppScopes(app)
 	const actionRows = await c.services.db.listAppActions(app)
 	const roleRows = await c.services.db.listRolesByOrigin(app, 'app')
@@ -755,13 +751,20 @@ export async function getAppSchema(c: AdminContext, app: string): Promise<Respon
 	for (const row of roleRows) {
 		roles[row.role_key] = dbRoleToDef(row)
 	}
-	const dto: AppSchemaDto = {
+	return {
 		app,
 		scopes: scopeRows.map((r) => ({ type: r.scope_type, ...(r.label !== null ? { label: r.label } : {}) })),
 		actions: actionRows.map((r) => ({ action: r.action, ...(r.description !== null ? { description: r.description } : {}) })),
 		roles,
 	}
-	return json(dto)
+}
+
+/** Return the app's scopes, actions, and origin='app' roles (the reconciled vocabulary). */
+export async function getAppSchema(c: AdminContext, app: string): Promise<Response> {
+	if (!knownApps(c).includes(app)) {
+		return error(404, 'unknown app')
+	}
+	return json(await readAppSchemaDto(c, app))
 }
 
 // ── Access edge rules (reconciled into Cloudflare as reusable policies) ─────────
@@ -842,12 +845,10 @@ function toAppAccessDto(readback: AppAccessReadback): AppAccessDto {
 /**
  * Reconcile an app's declared Access edge rules into Cloudflare (idempotent). Creates/updates the
  * managed reusable policies (`px:<app>:…`) and repoints the CF apps' policy arrays; never touches
- * non-managed policies. Returns the live readback. The `:app` segment must be a configured app id.
+ * non-managed policies. Returns the live readback. An app's FIRST access reconcile registers it and
+ * creates its CF Access app — no prior ACCESS_APPS entry required (this endpoint is admin-gated).
  */
 export async function putAppAccess(c: AdminContext, app: string): Promise<Response> {
-	if (!knownApps(c).includes(app)) {
-		return error(404, 'unknown app')
-	}
 	const body = await readJson(c.request)
 	const parsed = parseAppAccess(body)
 	if (!parsed.ok) {

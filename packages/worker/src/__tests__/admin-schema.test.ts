@@ -156,11 +156,11 @@ describe('PUT/GET /admin/apps/:app/schema', () => {
 		expect(policies.items[0]?.permissions).toEqual(['project.read', 'report.export'])
 	})
 
-	test('unknown :app → 404', async () => {
+	test('a not-yet-registered app reconciles its schema (first reconcile = registration)', async () => {
 		const h = createHarness()
 		const token = await asAdmin(h)
-		const res = await run(h, req('/admin/apps/nope/schema', 'PUT', token, SCHEMA))
-		expect(res.status).toBe(404)
+		const res = await run(h, req('/admin/apps/newapp/schema', 'PUT', token, SCHEMA))
+		expect(res.status).toBe(200)
 	})
 })
 
