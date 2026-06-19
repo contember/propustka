@@ -71,6 +71,9 @@ async function main(): Promise<void> {
 		headers['CF-Access-Client-Id'] = clientId
 		headers['CF-Access-Client-Secret'] = clientSecret
 	}
+	// propustka's admin CSRF guard rejects state-changing requests whose Origin/Referer doesn't match
+	// its own origin (a browser sends Origin for free; an operator script must set it explicitly).
+	headers.Origin = new URL(url).origin
 
 	// app: null → a cross-app key; the built-in `admin` role resolves for every verified app.
 	const response = await fetch(`${url}/admin/api-keys`, {
