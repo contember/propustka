@@ -28,6 +28,14 @@ export interface Config {
 	readonly accessApps: AccessApps
 	/** Access team domain (JWKS issuer). */
 	readonly team: string
+	/**
+	 * Who may pass Cloudflare Access as a HUMAN — owned centrally by propustka, applied to EVERY
+	 * app's human-gated paths (`reconcileAccess`). Apps declare only which paths are human-gated.
+	 */
+	readonly human: {
+		readonly emailDomains: readonly string[]
+		readonly emails: readonly string[]
+	}
 	/** Bootstrap-admin emails (normally empty). Resolution-time only. */
 	readonly bootstrapAdmins: ReadonlySet<string>
 	readonly cfApiToken: string
@@ -68,6 +76,16 @@ function parseAccessApps(raw: string): AccessApps {
 	}
 }
 
+/** Parse a JSON array of strings (the central human-domain/email lists); [] on anything malformed. */
+function parseStringArray(raw: string): string[] {
+	try {
+		const parsed: unknown = JSON.parse(raw)
+		return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : []
+	} catch {
+		return []
+	}
+}
+
 function parseBootstrapAdmins(raw: string): Set<string> {
 	try {
 		const parsed: unknown = JSON.parse(raw)
@@ -93,6 +111,10 @@ export function buildServices(env: Env): Services {
 		config: {
 			accessApps,
 			team: env.TEAM,
+			human: {
+				emailDomains: parseStringArray(env.HUMAN_EMAIL_DOMAINS),
+				emails: parseStringArray(env.HUMAN_EMAILS),
+			},
 			bootstrapAdmins: parseBootstrapAdmins(env.IAM_BOOTSTRAP_ADMINS),
 			cfApiToken: env.CF_API_TOKEN,
 			cfAccountId: env.CF_ACCOUNT_ID,

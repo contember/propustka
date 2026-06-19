@@ -25,9 +25,13 @@ provisioning) **and** _Apps and Policies — Edit_ (the `PUT /admin/apps/:app/ac
 reconcile). Cloudflare Access **edge rules** are Access-as-code:
 
 - **propustka declares its OWN front door** in committed code (`packages/worker/propustka.access.ts`,
-  parameterized by `PROPUSTKA_HOSTNAME` + `PROPUSTKA_ADMIN_EMAIL_DOMAINS`). The operator BOOTSTRAP
-  `scripts/provision-access.ts` reconciles just that one app directly into Cloudflare (the irreducible
-  chicken-and-egg) and prints the `PROPUSTKA_ACCESS_APPS` value.
+  hostname from `PROPUSTKA_HOSTNAME`). The operator BOOTSTRAP `scripts/provision-access.ts` reconciles
+  just that one app directly into Cloudflare (the irreducible chicken-and-egg) and prints the
+  `PROPUSTKA_ACCESS_APPS` value.
+- **propustka owns the human audience centrally** — `HUMAN_EMAIL_DOMAINS` / `HUMAN_EMAILS` (deploy vars
+  `PROPUSTKA_HUMAN_EMAIL_DOMAINS` / `PROPUSTKA_HUMAN_EMAILS`) decide WHO may pass Access as a human, for
+  EVERY app. Apps declare only which paths are human-gated vs public, never the audience; any per-app
+  `emailDomains`/`emails` on a `human` rule are ignored.
 - **each downstream app** declares its own `propustka.access.ts` (+ schema) and self-reconciles via
   the admin endpoint at deploy time (`scripts/provision-access-rules.ts` / the app's own
   `provision:access`), authenticated with a **propustka-issued provisioning key** — mint one per app

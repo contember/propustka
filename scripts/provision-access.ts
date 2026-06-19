@@ -16,10 +16,11 @@
  * matched by name and updated in place, non-managed policies are never touched, and an EXISTING app
  * keeps its destinations (only its `policies` array changes) — so re-running never re-routes.
  *
- *   CF_API_TOKEN=…                            # Zero Trust → Access: Apps and Policies — Edit
+ *   CF_API_TOKEN=…                              # Zero Trust → Access: Apps and Policies — Edit
  *   CF_ACCOUNT_ID=…
- *   PROPUSTKA_HOSTNAME=propustka.example.com   # propustka-admin's hostname (the Custom Domain)
- *   PROPUSTKA_ADMIN_EMAIL_DOMAINS=a.com,b.com  # optional; human rule; defaults to contember.com
+ *   PROPUSTKA_HOSTNAME=propustka.example.com     # propustka-admin's hostname (the Custom Domain)
+ *   PROPUSTKA_HUMAN_EMAIL_DOMAINS=a.com,b.com    # central human audience (JSON array or CSV); required
+ *   PROPUSTKA_HUMAN_EMAILS=x@a.com               # optional; specific emails, in addition to the domains
  *   bun run scripts/provision-access.ts [--dry-run]
  *
  * --dry-run parses the committed declaration and prints the intended bootstrap without touching CF.
@@ -37,6 +38,33 @@ function required(name: string): string {
 	return value
 }
 
+/** Read an env var as a JSON array of strings, or a comma-separated list. [] when unset. */
+function list(name: string): string[] {
+	const raw = process.env[name]
+	if (raw === undefined || raw.trim() === '') {
+		return []
+	}
+	try {
+		const parsed: unknown = JSON.parse(raw)
+		if (Array.isArray(parsed)) {
+			return parsed.filter((v): v is string => typeof v === 'string')
+		}
+	} catch {
+		// not JSON — fall through to comma-separated
+	}
+	return raw.split(',').map((s) => s.trim()).filter(Boolean)
+}
+
+/** The central human Access audience propustka owns (who may pass Access as a human, all apps). */
+function humanAccess(): { emailDomains: string[]; emails: string[] } {
+	const emailDomains = list('PROPUSTKA_HUMAN_EMAIL_DOMAINS')
+	const emails = list('PROPUSTKA_HUMAN_EMAILS')
+	if (emailDomains.length === 0 && emails.length === 0) {
+		throw new Error('Set PROPUSTKA_HUMAN_EMAIL_DOMAINS (and/or PROPUSTKA_HUMAN_EMAILS) — the central human Access audience.')
+	}
+	return { emailDomains, emails }
+}
+
 const DRY_RUN = process.argv.includes('--dry-run')
 
 function describe(): string[] {
@@ -52,6 +80,9 @@ async function main(): Promise<void> {
 	if (DRY_RUN) {
 		console.log("DRY RUN — no changes. Would bootstrap propustka-admin's front door:\n")
 		for (const line of describe()) console.log(line)
+		console.log(
+			`\n  central human audience: domains=[${list('PROPUSTKA_HUMAN_EMAIL_DOMAINS').join(', ')}] emails=[${list('PROPUSTKA_HUMAN_EMAILS').join(', ')}]`,
+		)
 		console.log('\n1 app — none pushed (--dry-run).')
 		return
 	}
@@ -59,10 +90,12 @@ async function main(): Promise<void> {
 	// Fail loud if the target hostname wasn't set — otherwise the committed fallback would create a
 	// `propustka.contember.com` app in whatever account CF_ACCOUNT_ID points at.
 	required('PROPUSTKA_HOSTNAME')
+	// propustka owns the human audience centrally — the same list every app's human rule gets.
+	const human = humanAccess()
 
 	const cf = new CfAccessClient(required('CF_API_TOKEN'), required('CF_ACCOUNT_ID'))
 
-	const readback = await reconcileAccess(cf, propustkaAppId, propustkaAccess)
+	const readback = await reconcileAccess(cf, propustkaAppId, propustkaAccess, human)
 	const policies = readback.policies.map((p) => `${p.key}:${p.kind}`).join(', ')
 	console.log(`✓ ${propustkaAppId.padEnd(12)} ${readback.policies.length} reusable policy(ies): ${policies}`)
 

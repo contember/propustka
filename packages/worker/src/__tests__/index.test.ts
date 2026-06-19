@@ -156,6 +156,8 @@ function makeEnv(db: Database, overrides: Partial<Pick<Env, 'ACCESS_APPS' | 'ENV
 		ASSETS: assetsStub,
 		ACCESS_APPS: overrides.ACCESS_APPS ?? '{}',
 		TEAM: 'https://test.cloudflareaccess.com',
+		HUMAN_EMAIL_DOMAINS: '["contember.com"]',
+		HUMAN_EMAILS: '[]',
 		IAM_BOOTSTRAP_ADMINS: '[]',
 		CF_API_TOKEN: 'dummy-token',
 		CF_ACCOUNT_ID: 'dummy-account',

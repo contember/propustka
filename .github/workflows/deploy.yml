@@ -83,6 +83,10 @@ jobs:
         env:
           PROPUSTKA_ACCESS_APPS: ${{ vars.PROPUSTKA_ACCESS_APPS }}
           PROPUSTKA_TEAM: ${{ vars.PROPUSTKA_TEAM }}
+          # Central human Access audience (JSON arrays) — who may pass Access as a human, for every
+          # app propustka fronts. Domains required; emails optional.
+          PROPUSTKA_HUMAN_EMAIL_DOMAINS: ${{ vars.PROPUSTKA_HUMAN_EMAIL_DOMAINS }}
+          PROPUSTKA_HUMAN_EMAILS: ${{ vars.PROPUSTKA_HUMAN_EMAILS }}
           # Per-target admin Custom Domain (GitHub Environment var). Unset → *.workers.dev.
           PROPUSTKA_HOSTNAME: ${{ vars.PROPUSTKA_HOSTNAME }}
           # Normally empty ('[]'); set to the first admin's email for the bootstrap

@@ -10,11 +10,11 @@ import type { AppAccess } from '@propustka/core'
  * until THIS front door exists. Every downstream app declares its own `propustka.access.ts` (e.g.
  * poplach's) and self-reconciles via that admin endpoint once propustka-admin is up.
  *
- * Per-target, like poplach's: the hostname comes from `PROPUSTKA_HOSTNAME` (the same deploy var
- * `oblaka.ts` binds as the Custom Domain) and the human email domains from
- * `PROPUSTKA_ADMIN_EMAIL_DOMAINS` — so contember prod and manGoweb each front their own domain +
- * operators without the values being hardcoded to one account. Falls back to the contember values
- * for a local `--dry-run`.
+ * Per-target hostname comes from `PROPUSTKA_HOSTNAME` (the same deploy var `oblaka.ts` binds as the
+ * Custom Domain), falling back to the contember host for a local `--dry-run`. WHO the humans are is
+ * NOT declared here — propustka owns that centrally (`HUMAN_EMAIL_DOMAINS` / `HUMAN_EMAILS`), applied
+ * to every app's human-gated paths including this one. This app only declares that the admin host is
+ * service-auth + human-gated.
  */
 
 /**
@@ -25,22 +25,18 @@ export const propustkaAppId = 'propustka'
 
 const host = process.env['PROPUSTKA_HOSTNAME'] ?? 'propustka.contember.com'
 
-const adminEmailDomains = (process.env['PROPUSTKA_ADMIN_EMAIL_DOMAINS'] ?? 'contember.com')
-	.split(',')
-	.map((d) => d.trim())
-	.filter(Boolean)
-
 export const propustkaAccess: AppAccess = {
 	apps: [
 		{
 			// The gated admin host: machines (service tokens — app provisioning keys) AND humans.
+			// The human audience is propustka's central HUMAN_EMAIL_DOMAINS/HUMAN_EMAILS, not here.
 			key: 'admin',
 			name: 'propustka-admin',
 			destinations: [host],
 			sessionDuration: '24h',
 			rules: [
 				{ kind: 'service-auth' },
-				{ kind: 'human', emailDomains: adminEmailDomains },
+				{ kind: 'human' },
 			],
 		},
 	],

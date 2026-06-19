@@ -1,11 +1,22 @@
 import type { AppAccess } from '@propustka/core'
 import { describe, expect, test } from 'bun:test'
-import { managedName, parseManagedName, readAppAccess, reconcileAccess, ReconcileAccessError, ruleToSpec } from '../admin/reconcile-access'
+import {
+	type HumanAccess,
+	managedName,
+	parseManagedName,
+	readAppAccess,
+	reconcileAccess,
+	ReconcileAccessError,
+	ruleToSpec,
+} from '../admin/reconcile-access'
 import { FakeCfAccess } from './helpers/fake-cfaccess'
+
+// propustka's central human audience — apps no longer carry domains; the reconcile injects this.
+const HUMAN: HumanAccess = { emailDomains: ['contember.com'], emails: [] }
 
 describe('ruleToSpec (rule → Cloudflare decision/include)', () => {
 	test('service-auth → non_identity / any valid service token', () => {
-		expect(ruleToSpec('opice', 'operator', { kind: 'service-auth' })).toEqual({
+		expect(ruleToSpec('opice', 'operator', { kind: 'service-auth' }, HUMAN)).toEqual({
 			name: 'px:opice:operator:service-auth',
 			decision: 'non_identity',
 			include: [{ any_valid_service_token: {} }],
@@ -13,23 +24,32 @@ describe('ruleToSpec (rule → Cloudflare decision/include)', () => {
 	})
 
 	test('public → bypass / everyone', () => {
-		expect(ruleToSpec('opice', 'public', { kind: 'public' })).toEqual({
+		expect(ruleToSpec('opice', 'public', { kind: 'public' }, HUMAN)).toEqual({
 			name: 'px:opice:public:public',
 			decision: 'bypass',
 			include: [{ everyone: {} }],
 		})
 	})
 
-	test('human → allow, email_domain + email includes in order', () => {
-		expect(ruleToSpec('poplach', 'operator', { kind: 'human', emailDomains: ['contember.com'], emails: ['a@x.cz'] })).toEqual({
+	test('human → allow, from the CENTRAL audience (email_domain + email in order)', () => {
+		expect(ruleToSpec('poplach', 'operator', { kind: 'human' }, { emailDomains: ['contember.com'], emails: ['a@x.cz'] })).toEqual({
 			name: 'px:poplach:operator:human',
 			decision: 'allow',
 			include: [{ email_domain: { domain: 'contember.com' } }, { email: { email: 'a@x.cz' } }],
 		})
 	})
 
-	test('a human rule with no domains/emails throws (defensive — never an open allow)', () => {
-		expect(() => ruleToSpec('opice', 'operator', { kind: 'human' })).toThrow(ReconcileAccessError)
+	test('human IGNORES per-app rule domains — propustka owns the audience centrally', () => {
+		expect(ruleToSpec('poplach', 'operator', { kind: 'human', emailDomains: ['evil.example'] }, { emailDomains: ['contember.com'], emails: [] }))
+			.toEqual({
+				name: 'px:poplach:operator:human',
+				decision: 'allow',
+				include: [{ email_domain: { domain: 'contember.com' } }],
+			})
+	})
+
+	test('a human rule with no central audience throws (defensive — never an open allow)', () => {
+		expect(() => ruleToSpec('opice', 'operator', { kind: 'human' }, { emailDomains: [], emails: [] })).toThrow(ReconcileAccessError)
 	})
 })
 
@@ -46,14 +66,15 @@ describe('managed name round-trip', () => {
 	})
 })
 
-// One gated app (service-auth before human) + a public carve-out — the common shape.
+// One gated app (service-auth before human) + a public carve-out — the common shape. Human rules
+// carry no audience now (propustka injects HUMAN centrally).
 const DECL: AppAccess = {
 	apps: [
 		{
 			key: 'operator',
 			name: 'opice-operator',
 			destinations: ['opice.example.com'],
-			rules: [{ kind: 'service-auth' }, { kind: 'human', emailDomains: ['contember.com'] }],
+			rules: [{ kind: 'service-auth' }, { kind: 'human' }],
 		},
 		{ key: 'public', name: 'opice-public', destinations: ['opice.example.com/s'], rules: [{ kind: 'public' }] },
 	],
@@ -62,7 +83,7 @@ const DECL: AppAccess = {
 describe('reconcileAccess convergence', () => {
 	test('creates apps + reusable policies and attaches them in precedence order', async () => {
 		const cf = new FakeCfAccess()
-		const readback = await reconcileAccess(cf, 'opice', DECL)
+		const readback = await reconcileAccess(cf, 'opice', DECL, HUMAN)
 
 		// Two managed policies for the gated app, one for the bypass app.
 		expect(readback.policies.map((p) => p.name).sort()).toEqual([
@@ -89,10 +110,10 @@ describe('reconcileAccess convergence', () => {
 
 	test('is idempotent — re-run updates in place (stable ids, no duplicates)', async () => {
 		const cf = new FakeCfAccess()
-		await reconcileAccess(cf, 'opice', DECL)
+		await reconcileAccess(cf, 'opice', DECL, HUMAN)
 		const idsAfterFirst = new Map([...cf.policies.values()].map((p) => [p.name, p.id]))
 
-		await reconcileAccess(cf, 'opice', DECL)
+		await reconcileAccess(cf, 'opice', DECL, HUMAN)
 		const idsAfterSecond = new Map([...cf.policies.values()].map((p) => [p.name, p.id]))
 
 		expect(cf.policies.size).toBe(3) // no duplicates created
@@ -109,9 +130,9 @@ describe('reconcileAccess convergence', () => {
 				key: 'operator',
 				name: 'opice-operator',
 				destinations: ['opice.example.com'],
-				rules: [{ kind: 'service-auth' }, { kind: 'human', emailDomains: ['contember.com'] }],
+				rules: [{ kind: 'service-auth' }, { kind: 'human' }],
 			}],
-		})
+		}, HUMAN)
 
 		const app = await cf.findAppByName('opice-operator')
 		expect(app?.policyIds).not.toContain('legacy-inline-1') // legacy dropped off
@@ -129,9 +150,9 @@ describe('reconcileAccess convergence', () => {
 				key: 'operator',
 				name: 'opice-operator',
 				destinations: ['opice.example.com'],
-				rules: [{ kind: 'service-auth' }, { kind: 'human', emailDomains: ['contember.com'] }],
+				rules: [{ kind: 'service-auth' }, { kind: 'human' }],
 			}],
-		})
+		}, HUMAN)
 		expect([...cf.policies.values()].some((p) => p.name === 'px:opice:operator:service-auth')).toBe(true)
 
 		// Re-converge dropping the service-auth rule → it becomes an unreferenced managed orphan.
@@ -140,9 +161,9 @@ describe('reconcileAccess convergence', () => {
 				key: 'operator',
 				name: 'opice-operator',
 				destinations: ['opice.example.com'],
-				rules: [{ kind: 'human', emailDomains: ['contember.com'] }],
+				rules: [{ kind: 'human' }],
 			}],
-		})
+		}, HUMAN)
 
 		const names = [...cf.policies.values()].map((p) => p.name)
 		expect(names).not.toContain('px:opice:operator:service-auth') // managed orphan deleted
@@ -153,17 +174,17 @@ describe('reconcileAccess convergence', () => {
 	test('refuses a CF app with no rules (would leave it policy-less)', async () => {
 		const cf = new FakeCfAccess()
 		const empty: AppAccess = { apps: [{ key: 'operator', name: 'opice-operator', destinations: ['opice.example.com'], rules: [] }] }
-		await expect(reconcileAccess(cf, 'opice', empty)).rejects.toBeInstanceOf(ReconcileAccessError)
+		await expect(reconcileAccess(cf, 'opice', empty, HUMAN)).rejects.toBeInstanceOf(ReconcileAccessError)
 	})
 })
 
 describe('readAppAccess', () => {
 	test("returns only this app's managed policies, parsed + sorted", async () => {
 		const cf = new FakeCfAccess()
-		await reconcileAccess(cf, 'opice', DECL)
+		await reconcileAccess(cf, 'opice', DECL, HUMAN)
 		await reconcileAccess(cf, 'poplach', {
 			apps: [{ key: 'operator', name: 'poplach', destinations: ['poplach.example.com'], rules: [{ kind: 'service-auth' }] }],
-		})
+		}, HUMAN)
 
 		const opice = await readAppAccess(cf, 'opice')
 		expect(opice.app).toBe('opice')

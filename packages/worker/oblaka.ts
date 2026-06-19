@@ -18,6 +18,9 @@ import { D1Database, define, Worker } from 'oblaka-iac'
 interface PropustkaVars {
 	ACCESS_APPS: string
 	TEAM: string
+	// Central human Access audience (JSON arrays) — who may pass Access as a human, for every app.
+	HUMAN_EMAIL_DOMAINS: string
+	HUMAN_EMAILS: string
 	IAM_BOOTSTRAP_ADMINS: string
 }
 
@@ -29,12 +32,16 @@ function buildVars(env: string): PropustkaVars {
 		return {
 			ACCESS_APPS: '{}',
 			TEAM: 'https://example.cloudflareaccess.com',
+			HUMAN_EMAIL_DOMAINS: '[]',
+			HUMAN_EMAILS: '[]',
 			IAM_BOOTSTRAP_ADMINS: '[]',
 		}
 	}
 
 	const accessApps = process.env['PROPUSTKA_ACCESS_APPS']
 	const team = process.env['PROPUSTKA_TEAM']
+	// Central human Access audience: domains are required (the primary case), emails optional.
+	const humanEmailDomains = process.env['PROPUSTKA_HUMAN_EMAIL_DOMAINS']
 	// Validate the secrets are available to the deploy environment (provisioned separately
 	// via `wrangler secret put`), but do NOT include their values in the Worker config.
 	const cfApiToken = process.env['CF_API_TOKEN']
@@ -42,6 +49,7 @@ function buildVars(env: string): PropustkaVars {
 	const missing = [
 		['PROPUSTKA_ACCESS_APPS', accessApps],
 		['PROPUSTKA_TEAM', team],
+		['PROPUSTKA_HUMAN_EMAIL_DOMAINS', humanEmailDomains],
 		['CF_API_TOKEN', cfApiToken],
 		['CF_ACCOUNT_ID', cfAccountId],
 	].filter(([, value]) => !value).map(([name]) => name)
@@ -54,6 +62,8 @@ function buildVars(env: string): PropustkaVars {
 	return {
 		ACCESS_APPS: accessApps as string,
 		TEAM: team as string,
+		HUMAN_EMAIL_DOMAINS: humanEmailDomains as string,
+		HUMAN_EMAILS: process.env['PROPUSTKA_HUMAN_EMAILS'] ?? '[]',
 		// Normally empty; the first admin is bootstrapped, then the var is emptied.
 		IAM_BOOTSTRAP_ADMINS: process.env['PROPUSTKA_BOOTSTRAP_ADMINS'] ?? '[]',
 	}

@@ -47,8 +47,24 @@ export function parseManagedName(appId: string, name: string): { key: string; ki
 	return { key: rest.slice(0, lastColon), kind: rest.slice(lastColon + 1) }
 }
 
-/** Map one declared rule to its Cloudflare decision + include selectors. */
-export function ruleToSpec(appId: string, cfAppKey: string, rule: AccessRule): CfPolicySpec {
+/**
+ * propustka's central human-access audience — who may pass Cloudflare Access as a HUMAN, for every
+ * app propustka fronts. Both an email-domain allow-list AND specific emails are supported.
+ */
+export interface HumanAccess {
+	readonly emailDomains: readonly string[]
+	readonly emails: readonly string[]
+}
+
+/**
+ * Map one declared rule to its Cloudflare decision + include selectors.
+ *
+ * A `human` rule's audience is OWNED CENTRALLY by propustka (`human`, from the `HUMAN_EMAIL_DOMAINS`
+ * + `HUMAN_EMAILS` Worker vars) — apps declare only THAT a path is human-gated, never WHO. Any
+ * per-app `emailDomains`/`emails` on the rule are deliberately ignored: propustka is the single
+ * authority on who may pass Access. An empty central audience throws (never an open allow).
+ */
+export function ruleToSpec(appId: string, cfAppKey: string, rule: AccessRule, human: HumanAccess): CfPolicySpec {
 	const name = managedName(appId, cfAppKey, rule.kind)
 	switch (rule.kind) {
 		case 'service-auth':
@@ -57,12 +73,11 @@ export function ruleToSpec(appId: string, cfAppKey: string, rule: AccessRule): C
 			return { name, decision: 'bypass', include: [{ everyone: {} }] }
 		case 'human': {
 			const include: CfInclude[] = [
-				...(rule.emailDomains ?? []).map((domain) => ({ email_domain: { domain } })),
-				...(rule.emails ?? []).map((email) => ({ email: { email } })),
+				...human.emailDomains.map((domain) => ({ email_domain: { domain } })),
+				...human.emails.map((email) => ({ email: { email } })),
 			]
 			if (include.length === 0) {
-				// Guarded upstream by parseAppAccess; defensive so a bug can't create an open allow.
-				throw new ReconcileAccessError(`human rule for '${cfAppKey}' has no emailDomains/emails`)
+				throw new ReconcileAccessError(`human rule for '${cfAppKey}': no central HUMAN_EMAIL_DOMAINS/HUMAN_EMAILS configured`)
 			}
 			return { name, decision: 'allow', include }
 		}
@@ -119,7 +134,12 @@ export async function readAppAccess(cf: CfAccess, appId: string): Promise<AppAcc
  * `ReconcileAccessError` / `CfAccessError` on a CF failure — the caller (putAppAccess) maps it to a
  * 502; because each CF app's swap is individually atomic + idempotent, a re-run finishes the rest.
  */
-export async function reconcileAccess(cf: CfAccess, appId: string, decl: AppAccess): Promise<AppAccessReadback> {
+export async function reconcileAccess(
+	cf: CfAccess,
+	appId: string,
+	decl: AppAccess,
+	human: HumanAccess,
+): Promise<AppAccessReadback> {
 	// Snapshot reusable policies once; index by name so a re-run updates in place (ids stable).
 	const before = await cf.listReusablePolicies()
 	const byName = new Map(before.map((p) => [p.name, p]))
@@ -141,7 +161,7 @@ export async function reconcileAccess(cf: CfAccess, appId: string, decl: AppAcce
 		// 2. Create/update each rule's reusable policy; collect ids in declared (precedence) order.
 		const desiredIds: string[] = []
 		for (const rule of appDecl.rules) {
-			const spec = ruleToSpec(appId, appDecl.key, rule)
+			const spec = ruleToSpec(appId, appDecl.key, rule, human)
 			desiredNames.add(spec.name)
 			const existing = byName.get(spec.name)
 			const policy = existing ? await cf.updateReusablePolicy(existing.id, spec) : await cf.createReusablePolicy(spec)

@@ -240,6 +240,7 @@ export function createHarness(): Harness {
 		const config: Config = {
 			accessApps,
 			team: TEAM,
+			human: { emailDomains: ['contember.com'], emails: [] },
 			bootstrapAdmins: options.bootstrapAdmins ?? new Set(),
 			cfApiToken: '',
 			cfAccountId: '',

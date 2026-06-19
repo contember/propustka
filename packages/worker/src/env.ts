@@ -16,6 +16,14 @@ export interface Env {
 	ACCESS_APPS: string
 	/** Access team domain (e.g. `https://acme.cloudflareaccess.com`) — the JWKS issuer. */
 	TEAM: string
+	/**
+	 * JSON array of email domains that may pass Cloudflare Access as a HUMAN, for EVERY app propustka
+	 * fronts (e.g. `["mangoweb.cz","contember.com"]`). propustka owns this centrally — apps declare
+	 * only which paths are human-gated vs public, never the audience. Consumed by `reconcileAccess`.
+	 */
+	HUMAN_EMAIL_DOMAINS: string
+	/** JSON array of specific emails that may pass Access as a HUMAN, in ADDITION to the domains. */
+	HUMAN_EMAILS: string
 	/** JSON array of bootstrap-admin emails (normally empty). Resolution-time only. */
 	IAM_BOOTSTRAP_ADMINS: string
 	/**

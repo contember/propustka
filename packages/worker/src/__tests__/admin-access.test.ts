@@ -104,7 +104,7 @@ describe('PUT/GET /admin/apps/:app/access', () => {
 		expect(res.status).toBe(400)
 	})
 
-	test('a human rule with no emailDomains/emails → 400', async () => {
+	test('a human rule carries no per-app domains — propustka owns the audience centrally → 200', async () => {
 		const h = createHarness()
 		const cf = new FakeCfAccess()
 		const token = await asAdmin(h)
@@ -115,9 +115,9 @@ describe('PUT/GET /admin/apps/:app/access', () => {
 				apps: [{ key: 'operator', name: 'opice-operator', destinations: ['opice.example.com'], rules: [{ kind: 'human' }] }],
 			}),
 		)
-		expect(res.status).toBe(400)
-		const body: { error: string } = await res.json()
-		expect(body.error).toContain('emailDomains')
+		expect(res.status).toBe(200)
+		// The human policy was created from the CENTRAL audience (harness config.human), not the app.
+		expect([...cf.policies.values()].some((p) => p.name === 'px:opice:operator:human')).toBe(true)
 	})
 
 	test('duplicate app keys → 400', async () => {
@@ -153,7 +153,7 @@ describe('PUT/GET /admin/apps/:app/access', () => {
 			h,
 			cf,
 			req('/admin/apps/opice/access', 'PUT', token, {
-				apps: [{ key: 'operator', name: 'opice-operator', destinations: ['opice.example.com'], rules: [{ kind: 'human' }] }],
+				apps: [{ key: 'operator', name: 'opice-operator', destinations: ['opice.example.com'], rules: [{ kind: 'bogus' }] }],
 			}),
 		)
 		expect(res.status).toBe(400)

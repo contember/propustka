@@ -275,6 +275,13 @@ Idempotent operator scripts reconcile state that lives outside the Worker's own 
 run by hand (the operator holds the credentials; nothing is committed), and all support
 `--dry-run`:
 
+> **Who may pass Access as a HUMAN is owned CENTRALLY by propustka**, not per app: the
+> `HUMAN_EMAIL_DOMAINS` / `HUMAN_EMAILS` Worker vars (deploy vars `PROPUSTKA_HUMAN_EMAIL_DOMAINS` /
+> `PROPUSTKA_HUMAN_EMAILS`) are the single audience for EVERY app's `human` rule. `reconcileAccess`
+> injects them; an app's declaration says only THAT a path is human-gated (any per-app
+> `emailDomains`/`emails` on a `human` rule are ignored). Apps own only their path shape (public vs
+> gated) + their own authz — three concerns, cleanly split.
+
 - **`scripts/provision-access.ts` — bootstrap propustka-admin's OWN front door (operator, direct CF).**
   Reconciles ONLY propustka's own Access app, declared in committed code
   (`packages/worker/propustka.access.ts`: the `service-auth` + `human` rules fronting the admin

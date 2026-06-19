@@ -766,15 +766,6 @@ export async function getAppSchema(c: AdminContext, app: string): Promise<Respon
 
 // ── Access edge rules (reconciled into Cloudflare as reusable policies) ─────────
 
-/** Read an optional string-array field: `[]` when absent, `{ok:false}` when present-but-malformed. */
-function optionalStringArray(raw: unknown, key: string): { ok: true; value: string[] } | { ok: false } {
-	if (prop(raw, key) === undefined) {
-		return { ok: true, value: [] }
-	}
-	const value = arrayField(raw, key)
-	return value === undefined ? { ok: false } : { ok: true, value }
-}
-
 /** Validate one declared Access rule. */
 function parseAccessRule(raw: unknown): { ok: true; rule: AccessRule } | { ok: false; message: string } {
 	const kind = stringField(raw, 'kind')
@@ -788,22 +779,10 @@ function parseAccessRule(raw: unknown): { ok: true; rule: AccessRule } | { ok: f
 		return { ok: true, rule: { kind: 'public' } }
 	}
 	if (kind === 'human') {
-		const domains = optionalStringArray(raw, 'emailDomains')
-		const emails = optionalStringArray(raw, 'emails')
-		if (!domains.ok || !emails.ok) {
-			return { ok: false, message: 'human rule emailDomains/emails must be arrays of strings' }
-		}
-		if (domains.value.length === 0 && emails.value.length === 0) {
-			return { ok: false, message: 'human rule needs at least one of emailDomains / emails' }
-		}
-		return {
-			ok: true,
-			rule: {
-				kind: 'human',
-				...(domains.value.length > 0 ? { emailDomains: domains.value } : {}),
-				...(emails.value.length > 0 ? { emails: emails.value } : {}),
-			},
-		}
+		// The human AUDIENCE is owned centrally by propustka (HUMAN_EMAIL_DOMAINS / HUMAN_EMAILS), not
+		// by the app — a human rule declares only THAT a path is human-gated. Any per-app emailDomains
+		// / emails are ignored (accepted for back-compat, never applied).
+		return { ok: true, rule: { kind: 'human' } }
 	}
 	return { ok: false, message: `unknown rule kind: ${kind}` }
 }
@@ -876,7 +855,7 @@ export async function putAppAccess(c: AdminContext, app: string): Promise<Respon
 	}
 	let readback: AppAccessReadback
 	try {
-		readback = await reconcileAccess(c.services.cfAccess, app, parsed.access)
+		readback = await reconcileAccess(c.services.cfAccess, app, parsed.access, c.services.config.human)
 	} catch (err) {
 		if (err instanceof CfAccessError) {
 			return error(502, err.message)
