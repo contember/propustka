@@ -7,8 +7,11 @@ import type {
 	IssueCapabilityResult,
 	IssueServiceTokenInput,
 	IssueServiceTokenResult,
+	Jwks,
 	ListPrincipalsInput,
 	ListPrincipalsResult,
+	MintTokenInput,
+	MintTokenResult,
 	RedeemCapabilityInput,
 	RedeemCapabilityResult,
 	RevokeCapabilityInput,
@@ -33,6 +36,7 @@ export class IamRpcStub implements IamRpc {
 	readonly revokeServiceInputs: RevokeServiceTokenInput[] = []
 	readonly rotateServiceInputs: RotateServiceTokenInput[] = []
 	readonly listPrincipalsInputs: ListPrincipalsInput[] = []
+	readonly mintTokenInputs: MintTokenInput[] = []
 
 	constructor(
 		private readonly canned: {
@@ -44,8 +48,19 @@ export class IamRpcStub implements IamRpc {
 			revokeService?: RevokeServiceTokenResult
 			rotateService?: RotateServiceTokenResult
 			listPrincipals?: ListPrincipalsResult
+			mintToken?: MintTokenResult
+			jwks?: Jwks
 		} = {},
 	) {}
+
+	mintToken(input: MintTokenInput): Promise<MintTokenResult> {
+		this.mintTokenInputs.push(input)
+		return Promise.resolve(this.canned.mintToken ?? { ok: false, reason: 'no_session' })
+	}
+
+	getJwks(): Promise<Jwks> {
+		return Promise.resolve(this.canned.jwks ?? { keys: [] })
+	}
 
 	authenticate(input: AuthenticateInput): Promise<AuthenticateResult> {
 		this.authenticateInputs.push(input)

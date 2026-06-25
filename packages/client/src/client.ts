@@ -113,6 +113,16 @@ class RealCapability implements Capability {
 	}
 }
 
+/**
+ * Build an `AuthContext` from an already-resolved principal — the seam the propustka-native session
+ * path uses. There, the SDK has verified a permission token LOCALLY and parsed its claims into a
+ * `ResolvedPrincipal`; this wraps that in the same `permits`-backed context the RPC path returns, so
+ * `can()`/`scopedTo()`/`audit()` behave identically whichever way the caller was authenticated.
+ */
+export function buildAuthContext(binding: IamRpc, appId: string, resolved: ResolvedPrincipal): AuthContext {
+	return new RealAuthContext(binding, appId, resolved)
+}
+
 // ── IamClient ──────────────────────────────────────────────────────────────────
 
 /**

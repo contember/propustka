@@ -49,6 +49,7 @@
       "version": "0.0.5",
       "dependencies": {
         "@propustka/core": "workspace:*",
+        "jose": "^5.9.0",
       },
       "devDependencies": {
         "@cloudflare/workers-types": "^4.20251001.0",

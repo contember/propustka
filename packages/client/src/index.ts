@@ -7,6 +7,11 @@ export { IamClient } from './client'
 export { FakeIamClient } from './fake'
 export type { FakeIamConfig, FakePersona } from './fake'
 export { applyScope } from './scope'
+// propustka-native session auth: verify a per-app permission token LOCALLY (no per-request RPC),
+// minting a fresh one from the SSO session when needed. The middleware an app puts in front of its
+// request handler instead of the Cloudflare-Access-fronted `IamClient.authenticate` path.
+export { PropustkaAuth } from './session'
+export type { SessionAuthConfig, SessionAuthResult } from './session'
 // Deploy-time helpers: reconcile an app's declared AppSchema (authz vocabulary) and AppAccess
 // (Cloudflare Access edge rules) into Propustka (HTTP admin calls, NOT over the service binding).
 // Import from a deploy/provisioning step, never request handling.
