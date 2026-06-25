@@ -1,4 +1,27 @@
+import type { Jwks } from './token'
 import type { PermissionEntry, PrincipalType, Scope } from './types'
+
+// ── propustka-native session auth (mint a per-app permission token from an SSO session) ──
+//
+// The SDK middleware presents the browser's opaque SSO session cookie; the Worker validates it,
+// resolves the principal's permissions FOR THE CALLING APP, and signs a short-lived per-app
+// permission token. The SDK then verifies that token LOCALLY (via `getJwks`) on every request —
+// no per-request round-trip. `app` is self-asserted, but it is harmless: permissions are resolved
+// server-side per app and the token's `aud` binds it to that app (a token minted for app X is
+// rejected by any other app), so an app can only ever obtain its OWN permissions.
+
+export interface MintTokenInput {
+	/** The app requesting a permission token (the SDK bakes this into its constructor). */
+	app: string
+	/** The opaque SSO session cookie value (px_session); null when the browser has no session. */
+	session: string | null
+	requestId: string
+}
+
+export type MintTokenResult =
+	/** `expiresAt` (unix seconds) lets the SDK refresh ahead of expiry. */
+	| { ok: true; token: string; expiresAt: number }
+	| { ok: false; reason: 'no_session' | 'invalid_session' | 'unknown_principal' | 'disabled' }
 
 export interface AuthenticateInput {
 	/** Self-asserted caller app id; superseded by the aud-derived app id on valid tokens. */
@@ -215,6 +238,18 @@ export type ListPrincipalsResult =
  */
 export interface IamRpc {
 	authenticate(input: AuthenticateInput): Promise<AuthenticateResult>
+	/**
+	 * Mint a short-lived, per-app permission token from the browser's SSO session — the
+	 * propustka-native auth path. The SDK middleware calls this only when its cached permission
+	 * token is missing/near-expiry (≈ once per TTL), NOT per request: every other request verifies
+	 * the cached token locally against `getJwks`.
+	 */
+	mintToken(input: MintTokenInput): Promise<MintTokenResult>
+	/**
+	 * The public signing key set. The SDK fetches it ONCE per isolate (cached) over the binding —
+	 * which never traverses the Access edge — then verifies every permission token locally.
+	 */
+	getJwks(): Promise<Jwks>
 	audit(event: AuditInput): Promise<void>
 	/**
 	 * List the USER principals who can access the caller's app (its people directory). The caller

@@ -4,6 +4,7 @@ import type { CfAccess } from '../../cfaccess'
 import { Db } from '../../db'
 import { IdentityClient } from '../../identity'
 import { type AccessApps, JwtValidator } from '../../jwt'
+import { GoogleOidc } from '../../oidc'
 import type { Config, Services } from '../../services'
 import { FakeCfAccess } from './fake-cfaccess'
 import { allMigrations } from './migrations'
@@ -225,6 +226,12 @@ export interface MakeServicesOptions {
 	bootstrapAdmins?: ReadonlySet<string>
 	/** Cloudflare Access surface. Defaults to a fresh in-memory `FakeCfAccess`. */
 	cfAccess?: CfAccess
+	/** Google OIDC client. Defaults to a real one with a dummy config (only the callback flow uses it). */
+	oidc?: GoogleOidc
+	/** propustka's own origin (token `iss` + OIDC redirect base). */
+	issuer?: string
+	/** SSO session cookie `Domain`; empty = host-only. */
+	sessionCookieDomain?: string
 }
 
 /** Stand up a fresh in-memory DB + helpers. Call once per test for isolation. */
@@ -237,6 +244,7 @@ export function createHarness(): Harness {
 
 	function makeServices(options: MakeServicesOptions = {}): Services {
 		const accessApps = options.accessApps ?? {}
+		const issuer = options.issuer ?? 'http://localhost:18191'
 		const config: Config = {
 			accessApps,
 			team: TEAM,
@@ -245,12 +253,15 @@ export function createHarness(): Harness {
 			cfApiToken: '',
 			cfAccountId: '',
 			environment: options.environment ?? 'local',
+			issuer,
+			sessionCookieDomain: options.sessionCookieDomain ?? '',
 		}
 		return {
 			db,
 			jwt: new JwtValidator(TEAM, accessApps, localJwks),
 			identity,
 			cfAccess: options.cfAccess ?? new FakeCfAccess(),
+			oidc: options.oidc ?? new GoogleOidc({ clientId: 'dummy', clientSecret: 'dummy', redirectUri: `${issuer}/auth/callback` }),
 			config,
 		}
 	}

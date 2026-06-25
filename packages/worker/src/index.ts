@@ -7,8 +7,11 @@ import type {
 	IssueCapabilityResult,
 	IssueServiceTokenInput,
 	IssueServiceTokenResult,
+	Jwks,
 	ListPrincipalsInput,
 	ListPrincipalsResult,
+	MintTokenInput,
+	MintTokenResult,
 	PrincipalListItem,
 	RedeemCapabilityInput,
 	RedeemCapabilityResult,
@@ -21,11 +24,14 @@ import type {
 } from '@propustka/core'
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import { handleAdmin } from './admin/router'
+import { handleAuth } from './auth/routes'
 import { principalFromOutcome, resolveRequest } from './auth'
 import { issueCapability, redeemCapability, revokeCapability } from './capabilities'
 import type { Env } from './env'
 import { buildServices } from './services'
+import { getSigner } from './signing'
 import { issueServiceToken, revokeServiceToken, rotateServiceToken } from './servicetokens'
+import { mintToken } from './tokens'
 
 // Retention: prune `auth_log` rows older than this on the daily cron. `audit_events`
 // are kept long; only the dense, high-churn auth log is pruned.
@@ -94,6 +100,50 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 			)
 			return { ok: false, reason: 'unknown_principal' }
 		}
+	}
+
+	/**
+	 * Mint a per-app permission token from the browser's SSO session (propustka-native auth). The
+	 * session is validated, the principal's permissions for the calling app resolved, and a
+	 * short-lived token signed; the SDK then authorizes locally off it until it expires. Never
+	 * throws — fails closed to `invalid_session` (the SDK then bounces the user to /auth/login).
+	 */
+	async mintToken(input: MintTokenInput): Promise<MintTokenResult> {
+		const services = buildServices(this.env)
+		try {
+			const { result, principalId } = await mintToken(services, this.env, input)
+			this.ctx.waitUntil(
+				services.db.writeAuthLog({
+					requestId: input.requestId,
+					app: input.app,
+					kind: 'authenticate',
+					principalId,
+					decision: result.ok ? 'allow' : 'deny',
+					reason: result.ok ? 'mint' : result.reason,
+				}),
+			)
+			return result
+		} catch (err) {
+			// Same fail-closed posture as authenticate(): never surface a 500.
+			console.error(`mintToken failed for request '${input.requestId}'`, err)
+			this.ctx.waitUntil(
+				services.db.writeAuthLog({
+					requestId: input.requestId,
+					app: input.app,
+					kind: 'authenticate',
+					principalId: null,
+					decision: 'deny',
+					reason: 'internal_error',
+				}),
+			)
+			return { ok: false, reason: 'invalid_session' }
+		}
+	}
+
+	/** The public signing key set — fetched once per isolate by the SDK to verify tokens locally. */
+	async getJwks(): Promise<Jwks> {
+		const signer = await getSigner(this.env)
+		return signer.jwks()
 	}
 
 	/**
@@ -477,6 +527,11 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 	 */
 	override async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url)
+		// propustka-native auth: public (no Access gate) — login/callback/logout + the JWKS.
+		if (url.pathname === '/.well-known/jwks.json' || url.pathname === '/auth' || url.pathname.startsWith('/auth/')) {
+			const services = buildServices(this.env)
+			return handleAuth(request, services, this.env, this.ctx)
+		}
 		if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) {
 			const services = buildServices(this.env)
 			return handleAdmin(request, services, this.ctx)

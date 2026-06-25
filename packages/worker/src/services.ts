@@ -3,6 +3,7 @@ import { Db } from './db'
 import type { Env } from './env'
 import { IdentityClient } from './identity'
 import { type AccessApps, JwtValidator } from './jwt'
+import { GoogleOidc } from './oidc'
 
 /**
  * Pre-wired services + parsed config for every request. Handlers take `Services`
@@ -20,6 +21,8 @@ export interface Services {
 	readonly identity: IdentityClient
 	/** Cloudflare Access surface (service tokens + apps/reusable-policies). Tests inject a fake. */
 	readonly cfAccess: CfAccess
+	/** Google OIDC relying-party client (the propustka-native login upstream). Tests inject a fake. */
+	readonly oidc: GoogleOidc
 	readonly config: Config
 }
 
@@ -41,6 +44,11 @@ export interface Config {
 	readonly cfApiToken: string
 	readonly cfAccountId: string
 	readonly environment: string
+	// ── propustka-native auth ──
+	/** propustka's own origin — the `iss` of minted tokens and the OIDC redirect base. */
+	readonly issuer: string
+	/** `Domain` for the SSO session cookie (e.g. `.example.com`); empty = host-only. */
+	readonly sessionCookieDomain: string
 }
 
 // ── Per-isolate memoised state ────────────────────────────────────────────────
@@ -108,6 +116,11 @@ export function buildServices(env: Env): Services {
 		jwt: getJwtValidator(env.TEAM, accessApps),
 		identity: cachedIdentity,
 		cfAccess: new CfAccessClient(env.CF_API_TOKEN, env.CF_ACCOUNT_ID),
+		oidc: new GoogleOidc({
+			clientId: env.GOOGLE_CLIENT_ID,
+			clientSecret: env.GOOGLE_CLIENT_SECRET,
+			redirectUri: `${env.ISSUER}/auth/callback`,
+		}),
 		config: {
 			accessApps,
 			team: env.TEAM,
@@ -119,6 +132,8 @@ export function buildServices(env: Env): Services {
 			cfApiToken: env.CF_API_TOKEN,
 			cfAccountId: env.CF_ACCOUNT_ID,
 			environment: env.ENVIRONMENT,
+			issuer: env.ISSUER,
+			sessionCookieDomain: env.SESSION_COOKIE_DOMAIN,
 		},
 	}
 }
