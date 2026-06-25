@@ -86,6 +86,29 @@ export interface CapabilityTokenClaims extends BaseClaims {
 
 export type PropustkaTokenClaims = PrincipalTokenClaims | CapabilityTokenClaims
 
+// ── Public JWKS (the SDK fetches this once, then verifies tokens locally) ───────
+//
+// Transport is the IAM service binding (`getJwks()` RPC), NOT a public HTTPS URL: app↔IAM is
+// RPC over the binding, which never traverses the Access edge — so the SDK reaches the key set
+// even while propustka's own hostname is still gated by Cloudflare Access. The Worker also
+// serves the standard `/.well-known/jwks.json`, for when Access is gone. Both emit this shape.
+
+/** A published public signing key (EC P-256 / ES256). A jose-compatible JWK subset. */
+export interface PublicJwk {
+	kty: string
+	crv?: string
+	x?: string
+	y?: string
+	kid?: string
+	alg?: string
+	use?: string
+}
+
+/** The public key set the SDK feeds to a local JWKS verifier. */
+export interface Jwks {
+	keys: PublicJwk[]
+}
+
 // ── Build (Worker side, pre-sign) ──────────────────────────────────────────────
 
 export interface PrincipalTokenParams {

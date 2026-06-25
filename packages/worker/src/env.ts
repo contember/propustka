@@ -36,4 +36,28 @@ export interface Env {
 	CF_ACCOUNT_ID: string
 	/** `local` / `stage` / `prod`. */
 	ENVIRONMENT: string
+
+	// ── propustka-native auth (propustka issues its own tokens; see token.ts / signing.ts) ──
+
+	/**
+	 * propustka's OWN origin, e.g. `https://propustka.example.com` — the `iss` of every minted
+	 * token AND the base for the Google OIDC redirect URI. Derived from `PROPUSTKA_HOSTNAME` at
+	 * deploy time; a localhost value locally.
+	 */
+	ISSUER: string
+	/**
+	 * **Secret.** JSON array of ES256 (EC P-256) PRIVATE JWKs. Index 0 is the active signer; all are
+	 * published in the JWKS so a rotation key verifies before it signs. Empty locally → an ephemeral
+	 * key is generated per isolate (dev only). Never placed in `vars` — provisioned like CF_API_TOKEN.
+	 */
+	PROPUSTKA_SIGNING_KEYS: string
+	/**
+	 * Cookie `Domain` for the SSO session cookie, e.g. `.example.com`, so one login is shared across
+	 * `*.example.com` apps. Empty → host-only (single-host / local dev).
+	 */
+	SESSION_COOKIE_DOMAIN: string
+	/** Google OIDC client id (public). The SSO upstream — propustka federates here for human login. */
+	GOOGLE_CLIENT_ID: string
+	/** **Secret.** Google OIDC client secret (the code-exchange credential). */
+	GOOGLE_CLIENT_SECRET: string
 }

@@ -10,3 +10,10 @@
 # and `wrangler secret put CF_ACCOUNT_ID`. See packages/worker/oblaka.ts.
 CF_API_TOKEN=local-cf-api-token
 CF_ACCOUNT_ID=local-cf-account-id
+
+# propustka-native auth secrets. Empty PROPUSTKA_SIGNING_KEYS → an ephemeral ES256 key is
+# generated per isolate (dev only; sessions reset on restart). Real keys (stage/prod) are a JSON
+# array of EC P-256 private JWKs, provisioned via `wrangler secret put PROPUSTKA_SIGNING_KEYS`.
+PROPUSTKA_SIGNING_KEYS=
+# Google OIDC client secret — dummy locally (no real Google upstream in dev).
+GOOGLE_CLIENT_SECRET=local-google-client-secret

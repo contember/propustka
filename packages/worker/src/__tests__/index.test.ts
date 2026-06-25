@@ -162,6 +162,11 @@ function makeEnv(db: Database, overrides: Partial<Pick<Env, 'ACCESS_APPS' | 'ENV
 		CF_API_TOKEN: 'dummy-token',
 		CF_ACCOUNT_ID: 'dummy-account',
 		ENVIRONMENT: overrides.ENVIRONMENT ?? 'local',
+		ISSUER: 'http://localhost:18191',
+		PROPUSTKA_SIGNING_KEYS: '',
+		SESSION_COOKIE_DOMAIN: '',
+		GOOGLE_CLIENT_ID: '',
+		GOOGLE_CLIENT_SECRET: 'dummy-google-secret',
 	}
 }
 
