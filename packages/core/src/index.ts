@@ -3,4 +3,5 @@
 export * from './ids'
 export * from './permissions'
 export * from './rpc'
+export * from './token'
 export * from './types'
