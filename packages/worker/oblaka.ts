@@ -22,11 +22,14 @@ interface PropustkaVars {
 	HUMAN_EMAIL_DOMAINS: string
 	HUMAN_EMAILS: string
 	IAM_BOOTSTRAP_ADMINS: string
-	// propustka-native auth (propustka issues its own tokens). The signing keys + Google client
+	// propustka-native auth (propustka issues its own tokens). The signing keys + OIDC client
 	// SECRET are NOT here — they ship like CF_API_TOKEN (`.dev.vars` local / `wrangler secret` remote).
 	ISSUER: string
 	SESSION_COOKIE_DOMAIN: string
-	GOOGLE_CLIENT_ID: string
+	OIDC_ISSUER: string
+	OIDC_CLIENT_ID: string
+	OIDC_SCOPES: string
+	OIDC_REQUIRE_VERIFIED_EMAIL: string
 }
 
 function buildVars(env: string, hostname: string | undefined): PropustkaVars {
@@ -40,12 +43,15 @@ function buildVars(env: string, hostname: string | undefined): PropustkaVars {
 			HUMAN_EMAIL_DOMAINS: '[]',
 			HUMAN_EMAILS: '[]',
 			IAM_BOOTSTRAP_ADMINS: '[]',
-			// `dev` serves on :18191 (see package.json); no real Google upstream locally — the signing
+			// `dev` serves on :18191 (see package.json); no real OIDC upstream locally — the signing
 			// key is ephemeral (empty PROPUSTKA_SIGNING_KEYS), so login flows are exercised against a
-			// real Access/Google host, not here.
+			// real IdP host, not here. OIDC_ISSUER is a placeholder (discovery never runs in dev).
 			ISSUER: 'http://localhost:18191',
 			SESSION_COOKIE_DOMAIN: '',
-			GOOGLE_CLIENT_ID: '',
+			OIDC_ISSUER: 'https://accounts.google.com',
+			OIDC_CLIENT_ID: '',
+			OIDC_SCOPES: '',
+			OIDC_REQUIRE_VERIFIED_EMAIL: 'true',
 		}
 	}
 
@@ -57,21 +63,23 @@ function buildVars(env: string, hostname: string | undefined): PropustkaVars {
 	// via `wrangler secret put`), but do NOT include their values in the Worker config.
 	const cfApiToken = process.env['CF_API_TOKEN']
 	const cfAccountId = process.env['CF_ACCOUNT_ID']
-	// propustka-native auth: Google client id (public), and the signing-keys / client-secret
+	// propustka-native auth: OIDC issuer + client id (public), and the signing-keys / client-secret
 	// SECRETS validated-present here but provisioned out-of-band (never written into vars).
-	const googleClientId = process.env['PROPUSTKA_GOOGLE_CLIENT_ID']
+	const oidcIssuer = process.env['PROPUSTKA_OIDC_ISSUER']
+	const oidcClientId = process.env['PROPUSTKA_OIDC_CLIENT_ID']
 	const signingKeys = process.env['PROPUSTKA_SIGNING_KEYS']
-	const googleClientSecret = process.env['PROPUSTKA_GOOGLE_CLIENT_SECRET']
+	const oidcClientSecret = process.env['PROPUSTKA_OIDC_CLIENT_SECRET']
 	const missing = [
 		['PROPUSTKA_ACCESS_APPS', accessApps],
 		['PROPUSTKA_TEAM', team],
 		['PROPUSTKA_HUMAN_EMAIL_DOMAINS', humanEmailDomains],
 		['PROPUSTKA_HOSTNAME', hostname],
-		['PROPUSTKA_GOOGLE_CLIENT_ID', googleClientId],
+		['PROPUSTKA_OIDC_ISSUER', oidcIssuer],
+		['PROPUSTKA_OIDC_CLIENT_ID', oidcClientId],
 		['CF_API_TOKEN', cfApiToken],
 		['CF_ACCOUNT_ID', cfAccountId],
 		['PROPUSTKA_SIGNING_KEYS', signingKeys],
-		['PROPUSTKA_GOOGLE_CLIENT_SECRET', googleClientSecret],
+		['PROPUSTKA_OIDC_CLIENT_SECRET', oidcClientSecret],
 	].filter(([, value]) => !value).map(([name]) => name)
 	if (missing.length > 0) {
 		throw new Error(
@@ -89,7 +97,10 @@ function buildVars(env: string, hostname: string | undefined): PropustkaVars {
 		// propustka's own origin (iss + OIDC redirect base) is its admin hostname.
 		ISSUER: `https://${hostname as string}`,
 		SESSION_COOKIE_DOMAIN: process.env['PROPUSTKA_SESSION_COOKIE_DOMAIN'] ?? '',
-		GOOGLE_CLIENT_ID: googleClientId as string,
+		OIDC_ISSUER: oidcIssuer as string,
+		OIDC_CLIENT_ID: oidcClientId as string,
+		OIDC_SCOPES: process.env['PROPUSTKA_OIDC_SCOPES'] ?? '',
+		OIDC_REQUIRE_VERIFIED_EMAIL: process.env['PROPUSTKA_OIDC_REQUIRE_VERIFIED_EMAIL'] ?? 'true',
 	}
 }
 

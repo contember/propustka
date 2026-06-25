@@ -3,7 +3,7 @@ import { Db } from './db'
 import type { Env } from './env'
 import { IdentityClient } from './identity'
 import { type AccessApps, JwtValidator } from './jwt'
-import { GoogleOidc } from './oidc'
+import { OidcClient } from './oidc'
 
 /**
  * Pre-wired services + parsed config for every request. Handlers take `Services`
@@ -21,8 +21,8 @@ export interface Services {
 	readonly identity: IdentityClient
 	/** Cloudflare Access surface (service tokens + apps/reusable-policies). Tests inject a fake. */
 	readonly cfAccess: CfAccess
-	/** Google OIDC relying-party client (the propustka-native login upstream). Tests inject a fake. */
-	readonly oidc: GoogleOidc
+	/** OIDC relying-party client (the propustka-native login upstream). Tests inject a fake. */
+	readonly oidc: OidcClient
 	readonly config: Config
 }
 
@@ -116,10 +116,14 @@ export function buildServices(env: Env): Services {
 		jwt: getJwtValidator(env.TEAM, accessApps),
 		identity: cachedIdentity,
 		cfAccess: new CfAccessClient(env.CF_API_TOKEN, env.CF_ACCOUNT_ID),
-		oidc: new GoogleOidc({
-			clientId: env.GOOGLE_CLIENT_ID,
-			clientSecret: env.GOOGLE_CLIENT_SECRET,
+		oidc: new OidcClient({
+			issuer: env.OIDC_ISSUER,
+			clientId: env.OIDC_CLIENT_ID,
+			clientSecret: env.OIDC_CLIENT_SECRET,
 			redirectUri: `${env.ISSUER}/auth/callback`,
+			scopes: env.OIDC_SCOPES,
+			// Require a verified email by default; opt out only with the explicit string 'false'.
+			requireVerifiedEmail: env.OIDC_REQUIRE_VERIFIED_EMAIL !== 'false',
 		}),
 		config: {
 			accessApps,

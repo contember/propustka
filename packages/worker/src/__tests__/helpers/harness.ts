@@ -4,7 +4,7 @@ import type { CfAccess } from '../../cfaccess'
 import { Db } from '../../db'
 import { IdentityClient } from '../../identity'
 import { type AccessApps, JwtValidator } from '../../jwt'
-import { GoogleOidc } from '../../oidc'
+import { OidcClient, type OidcMetadata } from '../../oidc'
 import type { Config, Services } from '../../services'
 import { FakeCfAccess } from './fake-cfaccess'
 import { allMigrations } from './migrations'
@@ -27,6 +27,14 @@ import { allMigrations } from './migrations'
  */
 
 // ── Access config used across the suite ───────────────────────────────────────
+
+/** Offline OIDC discovery metadata for the harness default client (no network in tests). */
+export const HARNESS_OIDC_METADATA: OidcMetadata = {
+	issuer: 'https://idp.test',
+	authorizationEndpoint: 'https://idp.test/authorize',
+	tokenEndpoint: 'https://idp.test/token',
+	jwksUri: 'https://idp.test/jwks',
+}
 
 export const TEAM = 'https://team.cloudflareaccess.com'
 const ALG = 'RS256'
@@ -226,8 +234,8 @@ export interface MakeServicesOptions {
 	bootstrapAdmins?: ReadonlySet<string>
 	/** Cloudflare Access surface. Defaults to a fresh in-memory `FakeCfAccess`. */
 	cfAccess?: CfAccess
-	/** Google OIDC client. Defaults to a real one with a dummy config (only the callback flow uses it). */
-	oidc?: GoogleOidc
+	/** OIDC client. Defaults to one with injected (offline) discovery metadata; tests override for the callback flow. */
+	oidc?: OidcClient
 	/** propustka's own origin (token `iss` + OIDC redirect base). */
 	issuer?: string
 	/** SSO session cookie `Domain`; empty = host-only. */
@@ -261,7 +269,17 @@ export function createHarness(): Harness {
 			jwt: new JwtValidator(TEAM, accessApps, localJwks),
 			identity,
 			cfAccess: options.cfAccess ?? new FakeCfAccess(),
-			oidc: options.oidc ?? new GoogleOidc({ clientId: 'dummy', clientSecret: 'dummy', redirectUri: `${issuer}/auth/callback` }),
+			oidc: options.oidc ?? new OidcClient(
+				{
+					issuer: 'https://idp.test',
+					clientId: 'dummy',
+					clientSecret: 'dummy',
+					redirectUri: `${issuer}/auth/callback`,
+					scopes: '',
+					requireVerifiedEmail: true,
+				},
+				{ metadata: HARNESS_OIDC_METADATA },
+			),
 			config,
 		}
 	}

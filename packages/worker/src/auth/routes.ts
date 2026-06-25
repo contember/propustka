@@ -65,7 +65,7 @@ async function handleLogin(request: Request, services: Services, secure: boolean
 
 	const { verifier, challenge } = await generatePkce()
 	const state = randomToken(16)
-	const location = services.oidc.authorizationUrl({ state, codeChallenge: challenge })
+	const location = await services.oidc.authorizationUrl({ state, codeChallenge: challenge })
 
 	const flight = encodeFlight({ state, verifier, redirect })
 	const headers = new Headers({ location })

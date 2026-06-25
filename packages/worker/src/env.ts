@@ -56,8 +56,18 @@ export interface Env {
 	 * `*.example.com` apps. Empty → host-only (single-host / local dev).
 	 */
 	SESSION_COOKIE_DOMAIN: string
-	/** Google OIDC client id (public). The SSO upstream — propustka federates here for human login. */
-	GOOGLE_CLIENT_ID: string
-	/** **Secret.** Google OIDC client secret (the code-exchange credential). */
-	GOOGLE_CLIENT_SECRET: string
+	/**
+	 * OIDC provider issuer URL (e.g. `https://accounts.google.com`, an Auth0/Okta/Keycloak/Entra
+	 * tenant). propustka discovers the endpoints from `${OIDC_ISSUER}/.well-known/openid-configuration`
+	 * — so ANY OIDC provider works via config, no per-provider code.
+	 */
+	OIDC_ISSUER: string
+	/** OIDC client id (public). The SSO upstream — propustka federates here for human login. */
+	OIDC_CLIENT_ID: string
+	/** **Secret.** OIDC client secret (the code-exchange credential). */
+	OIDC_CLIENT_SECRET: string
+	/** Space-separated OIDC scopes; empty → `openid email profile`. */
+	OIDC_SCOPES: string
+	/** `'false'` to accept logins whose `email_verified` claim is absent (an IdP that omits it); else verified is required. */
+	OIDC_REQUIRE_VERIFIED_EMAIL: string
 }

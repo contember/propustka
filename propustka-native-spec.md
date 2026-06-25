@@ -1,8 +1,8 @@
 # Propustka-native auth — spec
 
 How propustka stops _riding on_ Cloudflare Access and becomes the auth layer itself: its own SSO
-(Google OIDC), its own API keys, its own per-app tokens — so apps no longer depend on CF Access and
-we no longer pay for / sync with CF Access Teams.
+(any OIDC provider), its own API keys, its own per-app tokens — so apps no longer depend on CF Access
+and we no longer pay for / sync with CF Access Teams.
 
 This document specifies the model. It complements `iam-service-spec.md` (authz) and
 `admin-ui-spec.md` (admin), and is the design of record for the `feat/propustka-native-auth` work.
@@ -23,8 +23,9 @@ Pulling authn into propustka removes that coupling — and, because we now issue
 - **Middleware, not a proxy.** Protected apps are CF Workers we own, so each runs a thin SDK
   middleware (`PropustkaAuth`) that verifies a token locally. propustka stays OUT of the data path
   (no reverse proxy, no availability/latency hit on app traffic).
-- **Google only** (for now) as the IdP. One OIDC connector; no GitHub-teams / get-identity group
-  resolution in v1 (group→role mapping is a later add via the Google Admin SDK if ever needed).
+- **Any OIDC provider, configured by env** (discovery-based) — Google, Auth0, Okta, Keycloak,
+  Microsoft Entra, … Set `OIDC_ISSUER` + client id/secret; endpoints come from the provider's
+  `/.well-known/openid-configuration`. No group→role resolution (IdP groups / get-identity) in v1.
 - **Incremental migration.** The new path runs ALONGSIDE the existing Access path; apps flip one at
   a time. The CF Access machinery is deleted last (a follow-up), not in the foundation.
 - **TTL-bounded revocation is acceptable** (~5 min). That makes the hot path purely stateless: local
@@ -60,15 +61,18 @@ refetched once on a key-rotation (unknown `kid`).
 > TTL per app — NOT literally never. The win over today (RPC every request) is large, and an
 > unexpired token keeps working even if propustka is briefly down (tolerance window = the TTL).
 
-### Login flow (Google OIDC)
+### Login flow (OIDC — any provider via discovery)
 
 ```
-GET /auth/login?redirect=… → PKCE + state in an httpOnly /auth cookie → 302 to Google
+GET /auth/login?redirect=… → PKCE + state in an httpOnly /auth cookie → 302 to the IdP
 GET /auth/callback          → exchange code → verify id_token (iss/aud/verified-email)
-                            → resolve/lazy-create the principal (by Google sub + email)
+                            → resolve/lazy-create the principal (by IdP sub + email)
                             → create the SSO session, Set-Cookie px_session, 302 back
 GET|POST /auth/logout       → revoke the session, clear the cookie
 ```
+
+Endpoints (authorization/token/jwks) + the canonical issuer are read from the provider's discovery
+document (`${OIDC_ISSUER}/.well-known/openid-configuration`), fetched once per isolate and cached.
 
 Open-redirect guard on the return target: only the issuer host, the configured session-cookie
 domain, or localhost (dev) are accepted; anything else falls back to the issuer origin.
@@ -97,14 +101,15 @@ locally`. The token's `kind` claim discriminates what it carries; the SEMANTICS 
 
 - `@propustka/core`: the token contract (`token.ts`) — `principal` + `capability` claim shapes,
   build/parse helpers, the public-JWKS types; `mintToken`/`getJwks` added to `IamRpc`.
-- `@propustka/worker`: ES256 signing (`signing.ts`), `sessions` table + Db access, Google OIDC
+- `@propustka/worker`: ES256 signing (`signing.ts`), `sessions` table + Db access, generic OIDC
   client (`oidc.ts`), `mintToken`/`getJwks` RPC, and the public `/auth/*` + `/.well-known/jwks.json`
   HTTP surface.
 - `@propustka/client`: `PropustkaAuth` — local verify + session middleware (jose).
 - `examples/app`: wired onto `PropustkaAuth`.
 
-New env: `ISSUER`, `PROPUSTKA_SIGNING_KEYS` (secret), `SESSION_COOKIE_DOMAIN`, `GOOGLE_CLIENT_ID`,
-`GOOGLE_CLIENT_SECRET` (secret) — threaded through `oblaka.ts` (vars) / `.dev.vars` (secrets).
+New env: `ISSUER`, `PROPUSTKA_SIGNING_KEYS` (secret), `SESSION_COOKIE_DOMAIN`, `OIDC_ISSUER`,
+`OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` (secret), `OIDC_SCOPES`, `OIDC_REQUIRE_VERIFIED_EMAIL` —
+threaded through `oblaka.ts` (vars) / `.dev.vars` (secrets).
 
 ## Follow-ups (NOT in this slice)
 

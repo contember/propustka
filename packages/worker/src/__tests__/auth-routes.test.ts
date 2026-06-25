@@ -2,7 +2,7 @@ import { SESSION_COOKIE } from '@propustka/core'
 import { describe, expect, test } from 'bun:test'
 import { handleAuth } from '../auth/routes'
 import { hashToken } from '../capabilities'
-import { type GoogleIdentity, GoogleOidc } from '../oidc'
+import { OidcClient, type OidcIdentity, type OidcMetadata } from '../oidc'
 import { createHarness, seedUser } from './helpers/harness'
 
 const AUTH_ENV = { PROPUSTKA_SIGNING_KEYS: '', ENVIRONMENT: 'local' }
@@ -23,15 +23,25 @@ function setCookieValue(res: Response, name: string): string | null {
 	return null
 }
 
-/** A GoogleOidc that skips the network: returns a fixed identity (or null) from the exchange/verify. */
-class FakeOidc extends GoogleOidc {
-	constructor(private readonly identity: GoogleIdentity | null) {
-		super({ clientId: 'x', clientSecret: 'y', redirectUri: `${ISSUER}/auth/callback` })
+const IDP_METADATA: OidcMetadata = {
+	issuer: 'https://idp.test',
+	authorizationEndpoint: 'https://idp.test/authorize',
+	tokenEndpoint: 'https://idp.test/token',
+	jwksUri: 'https://idp.test/jwks',
+}
+
+/** An OidcClient that skips the network: discovery injected, fixed identity from the exchange/verify. */
+class FakeOidc extends OidcClient {
+	constructor(private readonly identity: OidcIdentity | null) {
+		super(
+			{ issuer: 'https://idp.test', clientId: 'x', clientSecret: 'y', redirectUri: `${ISSUER}/auth/callback`, scopes: '', requireVerifiedEmail: true },
+			{ metadata: IDP_METADATA },
+		)
 	}
 	override async exchangeCode(): Promise<string | null> {
 		return 'fake-id-token'
 	}
-	override async verifyIdToken(): Promise<GoogleIdentity | null> {
+	override async verifyIdToken(): Promise<OidcIdentity | null> {
 		return this.identity
 	}
 }
@@ -48,7 +58,7 @@ describe('GET /.well-known/jwks.json', () => {
 })
 
 describe('GET /auth/login', () => {
-	test('302s to Google with PKCE and sets the in-flight cookie', async () => {
+	test('302s to the IdP with PKCE and sets the in-flight cookie', async () => {
 		const h = createHarness()
 		const res = await handleAuth(
 			new Request(`${ISSUER}/auth/login?redirect=${encodeURIComponent(`${ISSUER}/back`)}`),
@@ -58,7 +68,7 @@ describe('GET /auth/login', () => {
 		)
 		expect(res.status).toBe(302)
 		const location = new URL(res.headers.get('location') ?? '')
-		expect(location.hostname).toBe('accounts.google.com')
+		expect(location.hostname).toBe('idp.test')
 		expect(location.searchParams.get('code_challenge_method')).toBe('S256')
 		expect(setCookieValue(res, 'px_oidc')).toBeTruthy()
 	})
@@ -73,16 +83,16 @@ describe('GET /auth/login', () => {
 		)
 		// The bad redirect is dropped; login still proceeds (the redirect is only used post-callback).
 		expect(res.status).toBe(302)
-		expect(new URL(res.headers.get('location') ?? '').hostname).toBe('accounts.google.com')
+		expect(new URL(res.headers.get('location') ?? '').hostname).toBe('idp.test')
 	})
 })
 
-describe('login → callback (end to end with a fake Google)', () => {
+describe('login → callback (end to end with a fake IdP)', () => {
 	test('creates a session, sets px_session, and 302s back to the original target', async () => {
 		const h = createHarness()
 		const services = h.makeServices({ issuer: ISSUER, oidc: new FakeOidc({ sub: 'g-42', email: 'user@contember.com' }) })
 
-		// 1. Login: capture the state (from the Google URL) and the in-flight cookie.
+		// 1. Login: capture the state (from the IdP URL) and the in-flight cookie.
 		const login = await handleAuth(
 			new Request(`${ISSUER}/auth/login?redirect=${encodeURIComponent(`${ISSUER}/back`)}`),
 			services,
@@ -93,7 +103,7 @@ describe('login → callback (end to end with a fake Google)', () => {
 		const flightCookie = setCookieValue(login, 'px_oidc')
 		expect(state && flightCookie).toBeTruthy()
 
-		// 2. Callback: Google bounces back with code + matching state; the in-flight cookie is replayed.
+		// 2. Callback: the IdP bounces back with code + matching state; the in-flight cookie is replayed.
 		const callback = await handleAuth(
 			new Request(`${ISSUER}/auth/callback?code=abc&state=${state}`, {
 				headers: { Cookie: `px_oidc=${flightCookie}` },

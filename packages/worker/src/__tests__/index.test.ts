@@ -165,8 +165,11 @@ function makeEnv(db: Database, overrides: Partial<Pick<Env, 'ACCESS_APPS' | 'ENV
 		ISSUER: 'http://localhost:18191',
 		PROPUSTKA_SIGNING_KEYS: '',
 		SESSION_COOKIE_DOMAIN: '',
-		GOOGLE_CLIENT_ID: '',
-		GOOGLE_CLIENT_SECRET: 'dummy-google-secret',
+		OIDC_ISSUER: 'https://idp.test',
+		OIDC_CLIENT_ID: '',
+		OIDC_CLIENT_SECRET: 'dummy-oidc-secret',
+		OIDC_SCOPES: '',
+		OIDC_REQUIRE_VERIFIED_EMAIL: 'true',
 	}
 }
 
