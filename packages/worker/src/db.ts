@@ -116,6 +116,18 @@ export interface CapabilityGrantRow {
 	resource: string
 }
 
+/** An SSO session row (the `sessions` table). Only the cookie's hash is stored, never plaintext. */
+export interface SessionRow {
+	id: string
+	token_hash: string
+	principal_id: string
+	idp_sub: string
+	email: string | null
+	created_at: number
+	expires_at: number
+	revoked_at: number | null
+}
+
 /** Derived principal status — invited (unclaimed) → active → disabled. */
 export type PrincipalStatus = 'invited' | 'active' | 'disabled'
 
@@ -709,6 +721,65 @@ export class Db {
 			.bind(id)
 			.run()
 		return (result.meta.changes ?? 0) > 0
+	}
+
+	// ── SSO sessions ──────────────────────────────────────────────────────────
+
+	/** Create a session. Only the hash of the opaque cookie value is stored; returns the new id. */
+	async createSession(input: {
+		tokenHash: string
+		principalId: string
+		idpSub: string
+		email?: string | null
+		expiresAt: number
+	}): Promise<string> {
+		const id = uuidv7()
+		await this.d1
+			.prepare(`INSERT INTO sessions (id, token_hash, principal_id, idp_sub, email, expires_at)
+				VALUES (?, ?, ?, ?, ?, ?)`)
+			.bind(id, input.tokenHash, input.principalId, input.idpSub, input.email ?? null, input.expiresAt)
+			.run()
+		return id
+	}
+
+	/**
+	 * Look up a session by the cookie's hash, but ONLY while still valid (not revoked, not expired).
+	 * An invalid/absent session returns null — the caller re-authenticates. Single-statement so the
+	 * validity check and the read can't race a concurrent revoke.
+	 */
+	async getActiveSessionByHash(tokenHash: string): Promise<SessionRow | null> {
+		return this.d1
+			.prepare(`SELECT * FROM sessions
+				WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > unixepoch()`)
+			.bind(tokenHash)
+			.first<SessionRow>()
+	}
+
+	/** Revoke a session by the cookie's hash (logout). Idempotent — already-revoked → false. */
+	async revokeSessionByHash(tokenHash: string): Promise<boolean> {
+		const result = await this.d1
+			.prepare('UPDATE sessions SET revoked_at = unixepoch() WHERE token_hash = ? AND revoked_at IS NULL')
+			.bind(tokenHash)
+			.run()
+		return (result.meta.changes ?? 0) > 0
+	}
+
+	/** Sessions for a principal (admin list / bulk revoke on disable). */
+	async listSessionsForPrincipal(principalId: string): Promise<SessionRow[]> {
+		const { results } = await this.d1
+			.prepare('SELECT * FROM sessions WHERE principal_id = ? ORDER BY created_at DESC')
+			.bind(principalId)
+			.all<SessionRow>()
+		return results
+	}
+
+	/** Prune expired or revoked sessions (cron). Returns the number removed. */
+	async pruneSessions(now: number): Promise<number> {
+		const result = await this.d1
+			.prepare('DELETE FROM sessions WHERE expires_at < ? OR revoked_at IS NOT NULL')
+			.bind(now)
+			.run()
+		return result.meta.changes ?? 0
 	}
 
 	// ── Audit (append-only) ───────────────────────────────────────────────────
