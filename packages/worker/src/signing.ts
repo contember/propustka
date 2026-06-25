@@ -13,15 +13,7 @@
  */
 
 import { type Jwks, type PropustkaTokenClaims, type PublicJwk, TOKEN_ALG } from '@propustka/core'
-import {
-	calculateJwkThumbprint,
-	exportJWK,
-	generateKeyPair,
-	importJWK,
-	type JWK,
-	type KeyLike,
-	SignJWT,
-} from 'jose'
+import { calculateJwkThumbprint, exportJWK, generateKeyPair, importJWK, type JWK, type KeyLike, SignJWT } from 'jose'
 import type { Env } from './env'
 import { stringField } from './json'
 

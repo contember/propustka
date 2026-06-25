@@ -8,4 +8,7 @@ export interface Env {
 	// Dev flag: in real apps, select `FakeIamClient` when this is set so `wrangler dev` needs no
 	// Access and no IAM Worker. This example always uses the real binding to exercise the RPC path.
 	DEV: string
+	// propustka's origin — the base for the login redirect and the `iss`/JWKS the SDK verifies
+	// minted permission tokens against (see PropustkaAuth in src/index.ts).
+	PROPUSTKA_ISSUER: string
 }

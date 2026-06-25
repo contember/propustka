@@ -24,13 +24,13 @@ import type {
 } from '@propustka/core'
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import { handleAdmin } from './admin/router'
-import { handleAuth } from './auth/routes'
 import { principalFromOutcome, resolveRequest } from './auth'
+import { handleAuth } from './auth/routes'
 import { issueCapability, redeemCapability, revokeCapability } from './capabilities'
 import type { Env } from './env'
 import { buildServices } from './services'
-import { getSigner } from './signing'
 import { issueServiceToken, revokeServiceToken, rotateServiceToken } from './servicetokens'
+import { getSigner } from './signing'
 import { mintToken } from './tokens'
 
 // Retention: prune `auth_log` rows older than this on the daily cron. `audit_events`

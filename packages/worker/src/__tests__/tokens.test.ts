@@ -56,7 +56,9 @@ describe('mintToken', () => {
 		if (!result.ok) {
 			throw new Error('expected ok')
 		}
-		const claims = parseTokenClaims((await jwtVerify(result.token, createLocalJWKSet((await getSigner(ENV)).jwks()), { issuer: 'https://propustka.test', audience: 'app-b' })).payload)
+		const claims = parseTokenClaims(
+			(await jwtVerify(result.token, createLocalJWKSet((await getSigner(ENV)).jwks()), { issuer: 'https://propustka.test', audience: 'app-b' })).payload,
+		)
 		expect(claims?.kind === 'principal' && claims.perms).toEqual([])
 	})
 

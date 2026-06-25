@@ -1,8 +1,8 @@
 import { SESSION_COOKIE } from '@propustka/core'
 import { describe, expect, test } from 'bun:test'
+import { handleAuth } from '../auth/routes'
 import { hashToken } from '../capabilities'
 import { type GoogleIdentity, GoogleOidc } from '../oidc'
-import { handleAuth } from '../auth/routes'
 import { createHarness, seedUser } from './helpers/harness'
 
 const AUTH_ENV = { PROPUSTKA_SIGNING_KEYS: '', ENVIRONMENT: 'local' }

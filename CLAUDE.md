@@ -40,5 +40,22 @@ reconcile). Cloudflare Access **edge rules** are Access-as-code:
 
 See `architecture.md` → Access-as-code provisioning.
 
+## propustka-native auth (in progress — `propustka-native-spec.md`)
+
+We are absorbing Cloudflare Access's job INTO propustka: its own SSO (Google OIDC), its own per-app
+tokens, and (planned) its own API keys — so apps stop depending on CF Access and we stop paying for /
+syncing with Access Teams. The foundation is built and runs ALONGSIDE the Access path (incremental
+migration); CF Access machinery is deleted in a later follow-up.
+
+- propustka now ISSUES short-lived per-app permission tokens (ES256, `PROPUSTKA_SIGNING_KEYS`) that
+  embed the resolved permissions, so the SDK (`PropustkaAuth` in `@propustka/client`) authorizes
+  **locally** — no per-request RPC. Login is Google OIDC at `/auth/login` → opaque SSO session
+  (`px_session`); the SDK mints/refreshes a `px_token` via the `mintToken` binding RPC.
+- New deploy vars/secrets: `PROPUSTKA_HOSTNAME` (now also the token `iss`), `PROPUSTKA_GOOGLE_CLIENT_ID`,
+  and the SECRETS `PROPUSTKA_SIGNING_KEYS` (JSON array of EC P-256 private JWKs) +
+  `PROPUSTKA_GOOGLE_CLIENT_SECRET` (`wrangler secret put` remote / `.dev.vars` local, like CF_API_TOKEN).
+- **Read `propustka-native-spec.md` before touching this** — it has the model, what's built, and the
+  follow-ups (own API keys, unified share-link pipeline, CF Access removal, Access bypass for `/auth/*`).
+
 npm releases (`@propustka/core`, `@propustka/client`) publish on a `v*` tag via `release.yml`
 (OIDC trusted publishing — no npm token).

@@ -1,34 +1,43 @@
-import { IamClient } from '@propustka/client'
+import { PropustkaAuth } from '@propustka/client'
 import type { Env } from './env'
 
-// Minimal example app: authenticates the request through the IAM Worker over a service
-// binding, then makes local `can()` / `scopedTo()` checks and emits a domain audit event.
+// Minimal example app on the propustka-NATIVE auth path: instead of sitting behind Cloudflare
+// Access and resolving a CF JWT over RPC on every request, it runs `PropustkaAuth` as middleware.
 //
-// Behind Cloudflare Access this receives a real Access JWT and resolves a real principal.
-// Run locally (no Access) it returns `missing_token` — which still proves the end-to-end
-// app↔IAM RPC path: env.IAM.authenticate() reaches the IAM Worker over the binding and the
-// structured failure comes back through it.
+// PropustkaAuth verifies the per-app permission token LOCALLY against propustka's JWKS (no
+// per-request round-trip); when there's no valid token it mints one from the browser's SSO session
+// (a single `mintToken` over the binding, ≈ once per token TTL), and when there's no session at all
+// it hands back a login URL to bounce the browser to propustka's Google login.
+//
+// (The legacy `IamClient.authenticate(request)` path — for apps still fronted by Cloudflare Access —
+// still exists; an app picks whichever front door it's migrated to.)
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		const iam = new IamClient(env.IAM, 'example-app')
+		const auth = new PropustkaAuth(env.IAM, 'example-app', { issuer: env.PROPUSTKA_ISSUER })
 
-		const auth = await iam.authenticate(request)
-		if (!auth.ok) {
-			return Response.json({ authenticated: false, reason: auth.reason }, { status: auth.status })
+		const result = await auth.authenticate(request)
+		if (!result.ok) {
+			// No valid session → send the browser to log in, returning here afterwards.
+			return Response.redirect(result.loginUrl, 302)
 		}
 
-		// Authorization uses the generic scope model — `can(action, { type, value })` and
-		// `scopedTo(action, dimension)`. The actions/dimensions here match what the app
-		// DECLARES in `propustka.schema.ts` (reconciled via scripts/provision-schemas.ts).
+		// Authorization is identical to the RPC path — `can()` / `scopedTo()` over the resolved
+		// permissions, here read straight from the locally-verified token's claims.
 		const body = {
 			authenticated: true,
-			canEditDemoProject: auth.can('example.settings.update', { type: 'project', value: 'demo' }),
-			readableProjects: auth.scopedTo('example.read', 'project'),
+			principal: result.context.principal,
+			canEditDemoProject: result.context.can('example.settings.update', { type: 'project', value: 'demo' }),
+			readableProjects: result.context.scopedTo('example.read', 'project'),
 		}
 
 		// Fire-and-forget domain audit — never blocks the response.
-		ctx.waitUntil(auth.audit({ action: 'example.view', resourceType: 'example', resourceId: 'demo' }))
+		ctx.waitUntil(result.context.audit({ action: 'example.view', resourceType: 'example', resourceId: 'demo' }))
 
-		return Response.json(body)
+		const response = Response.json(body)
+		// When the token was just (re)minted, persist it so the next request hits the local fast path.
+		if (result.setCookie) {
+			response.headers.append('Set-Cookie', result.setCookie)
+		}
+		return response
 	},
 }

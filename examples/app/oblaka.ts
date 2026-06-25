@@ -23,6 +23,10 @@ export default define(() =>
 		},
 		vars: {
 			DEV: 'true',
+			// propustka's origin — where the session middleware sends the browser to log in, and
+			// the `iss`/JWKS the SDK verifies minted tokens against. Locally the IAM Worker's dev
+			// origin; in a real app the deployed propustka hostname (PROPUSTKA_HOSTNAME).
+			PROPUSTKA_ISSUER: 'http://localhost:18191',
 		},
 	})
 )
