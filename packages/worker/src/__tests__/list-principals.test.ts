@@ -1,10 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { resolveRequest } from '../auth'
 import { createHarness, seedInlineGrant, seedService, seedUser } from './helpers/harness'
 
 // listPrincipals (the app's people directory): the DB layer's app-scoped, user-only,
-// deduped enumeration (`getPrincipalsForApp`) plus the aud-derived isolation through the
-// real resolve path — an operator only ever sees the roster of the app it authenticates to.
+// deduped enumeration (`getPrincipalsForApp`) — an operator only ever sees the roster of
+// the app it is scoped to.
 
 describe('Db.getPrincipalsForApp', () => {
 	test('returns app + cross-app users, excludes other apps and services, dedups, flags disabled', () => {
@@ -59,29 +58,17 @@ describe('Db.getPrincipalsForApp', () => {
 		)
 		expect(await h.db.getPrincipalsForApp('poplach')).toEqual([])
 	})
-})
 
-describe('aud-derived isolation (resolve → roster)', () => {
-	const ACCESS_APPS = { 'aud-poplach': 'poplach', 'aud-opice': 'opice' }
-
-	test('an operator authenticated for poplach resolves to the poplach roster, never opice', async () => {
+	test('the roster is app-scoped — a poplach read never includes an opice-only user', async () => {
 		const h = createHarness()
-		const services = h.makeServices({ environment: 'stage', accessApps: ACCESS_APPS })
-
-		const caller = seedUser(h.sqlite, { sub: 'op-sub', email: 'op@poplach.test' })
-		seedInlineGrant(h.sqlite, caller, ['project.read'], null, 'poplach')
+		const inPoplach = seedUser(h.sqlite, { sub: 'op-sub', email: 'op@poplach.test' })
+		seedInlineGrant(h.sqlite, inPoplach, ['project.read'], null, 'poplach')
 		const teammate = seedUser(h.sqlite, { sub: 't-sub', email: 'teammate@poplach.test' })
 		seedInlineGrant(h.sqlite, teammate, ['project.read'], null, 'poplach')
 		const opicePerson = seedUser(h.sqlite, { sub: 'o-sub', email: 'someone@opice.test' })
 		seedInlineGrant(h.sqlite, opicePerson, ['project.read'], null, 'opice')
 
-		const token = await h.signToken({ sub: 'op-sub', email: 'op@poplach.test' }, { audience: 'aud-poplach' })
-		const outcome = await resolveRequest(services, { app: 'poplach', token, cookie: null, origin: null, requestId: 'r1' })
-		expect(outcome.result.ok).toBe(true)
-		expect(outcome.verifiedApp).toBe('poplach')
-
-		const roster = await h.db.getPrincipalsForApp(outcome.verifiedApp!)
-		const emails = roster.map((r) => r.email)
+		const emails = (await h.db.getPrincipalsForApp('poplach')).map((r) => r.email)
 		expect(new Set(emails)).toEqual(new Set(['op@poplach.test', 'teammate@poplach.test']))
 		expect(emails).not.toContain('someone@opice.test')
 	})

@@ -1,13 +1,13 @@
 import type { PermissionEntry, RoleDef, Scope } from '@propustka/core'
 import { describe, expect, test } from 'bun:test'
-import type { GrantRow, GroupMappingRow } from '../db'
+import type { GrantRow } from '../db'
 import { computePermissions, type ResolutionInputs } from '../resolve'
 import { makeRoleSource } from '../roles'
 
 // computePermissions is PURE: it takes already-fetched rows plus an app-aware
 // RoleSource (built-ins layered over the calling app's DB roles, loaded up front).
 // These tests build that RoleSource from an in-memory role map and assert the union /
-// expansion / dedup behavior across role grants, inline grants, groups and bootstrap.
+// expansion / dedup behavior across role grants, inline grants and bootstrap.
 
 const APP = 'opice'
 
@@ -45,20 +45,6 @@ const inlineGrant = (permissions: string[], scope: Scope | null): GrantRow => ({
 	created_at: 0,
 })
 
-const mapping = (roleKey: string, groupRef: string, scope: Scope | null): { mapping: GroupMappingRow; groupRef: string } => ({
-	groupRef,
-	mapping: {
-		id: `m-${roleKey}`,
-		provider: 'github',
-		group_ref: groupRef,
-		role_key: roleKey,
-		app: APP,
-		scope_type: scope?.type ?? null,
-		scope_value: scope?.value ?? null,
-		created_at: 0,
-	},
-})
-
 const TEAM = (value: string): Scope => ({ type: 'team', value })
 
 const scopeEq = (a: Scope | null, b: Scope | null): boolean => a === null ? b === null : b !== null && a.type === b.type && a.value === b.value
@@ -66,7 +52,7 @@ const scopeEq = (a: Scope | null, b: Scope | null): boolean => a === null ? b ==
 const has = (entries: PermissionEntry[], action: string, scope: Scope | null, source: string): boolean =>
 	entries.some((e) => e.action === action && scopeEq(e.scope, scope) && e.source === source)
 
-const base: ResolutionInputs = { app: APP, grants: [], groupMappings: [], isBootstrapAdmin: false }
+const base: ResolutionInputs = { app: APP, grants: [], isBootstrapAdmin: false }
 
 describe('computePermissions — role grants', () => {
 	test('expands a grant role into its permission patterns (source grant)', () => {
@@ -122,7 +108,7 @@ describe('computePermissions — built-in admin & per-app resolution', () => {
 	test('the built-in admin role resolves even with no app DB roles loaded', () => {
 		const emptyRoles = makeRoleSource({})
 		const entries = computePermissions(
-			{ app: APP, grants: [roleGrant('admin', null)], groupMappings: [], isBootstrapAdmin: false },
+			{ app: APP, grants: [roleGrant('admin', null)], isBootstrapAdmin: false },
 			emptyRoles,
 		)
 		expect(entries).toEqual([{ action: '*', scope: null, source: 'grant' }])
@@ -132,7 +118,7 @@ describe('computePermissions — built-in admin & per-app resolution', () => {
 		const emptyRoles = makeRoleSource({})
 		const adminGrant: GrantRow = { ...roleGrant('admin', null), app: null }
 		const entries = computePermissions(
-			{ app: null, grants: [adminGrant], groupMappings: [], isBootstrapAdmin: false },
+			{ app: null, grants: [adminGrant], isBootstrapAdmin: false },
 			emptyRoles,
 		)
 		expect(entries).toEqual([{ action: '*', scope: null, source: 'grant' }])
@@ -142,37 +128,25 @@ describe('computePermissions — built-in admin & per-app resolution', () => {
 		// `viewer` lives in APP_ROLES; an empty source must not resolve it.
 		const emptyRoles = makeRoleSource({})
 		const entries = computePermissions(
-			{ app: APP, grants: [roleGrant('viewer', null)], groupMappings: [], isBootstrapAdmin: false },
+			{ app: APP, grants: [roleGrant('viewer', null)], isBootstrapAdmin: false },
 			emptyRoles,
 		)
 		expect(entries).toEqual([])
 	})
 })
 
-describe('computePermissions — groups & bootstrap', () => {
-	test('group-derived roles carry source group:<ref>', () => {
-		const entries = computePermissions({ ...base, groupMappings: [mapping('editor', 'acme/core', TEAM('acme'))] }, roles)
-		expect(has(entries, 'project.*', TEAM('acme'), 'group:acme/core')).toBe(true)
-		expect(has(entries, 'report.*', TEAM('acme'), 'group:acme/core')).toBe(true)
-	})
-
+describe('computePermissions — bootstrap', () => {
 	test('bootstrap admin unions a global admin role with source bootstrap', () => {
 		const entries = computePermissions({ ...base, isBootstrapAdmin: true }, roles)
 		expect(entries).toEqual([{ action: '*', scope: null, source: 'bootstrap' }])
 	})
 
-	test('unions all sources', () => {
+	test('unions grants and bootstrap', () => {
 		const entries = computePermissions(
-			{
-				app: APP,
-				grants: [roleGrant('viewer', TEAM('acme'))],
-				groupMappings: [mapping('editor', 'acme/core', null)],
-				isBootstrapAdmin: true,
-			},
+			{ app: APP, grants: [roleGrant('viewer', TEAM('acme'))], isBootstrapAdmin: true },
 			roles,
 		)
 		expect(has(entries, 'project.read', TEAM('acme'), 'grant')).toBe(true)
-		expect(has(entries, 'project.*', null, 'group:acme/core')).toBe(true)
 		expect(has(entries, '*', null, 'bootstrap')).toBe(true)
 	})
 })
@@ -184,12 +158,11 @@ describe('computePermissions — dedup', () => {
 	})
 
 	test('same permission from different sources is kept separately (source distinguishes)', () => {
-		const entries = computePermissions(
-			{ ...base, grants: [roleGrant('viewer', null)], groupMappings: [mapping('viewer', 'acme/core', null)] },
-			roles,
-		)
-		expect(has(entries, 'project.read', null, 'grant')).toBe(true)
-		expect(has(entries, 'project.read', null, 'group:acme/core')).toBe(true)
+		// A global `admin` grant (→ '*' source 'grant') plus bootstrap (→ '*' source 'bootstrap'):
+		// same action+scope, different source, kept as two distinct entries.
+		const entries = computePermissions({ ...base, grants: [roleGrant('admin', null)], isBootstrapAdmin: true }, roles)
+		expect(has(entries, '*', null, 'grant')).toBe(true)
+		expect(has(entries, '*', null, 'bootstrap')).toBe(true)
 	})
 
 	test('no sources → empty', () => {

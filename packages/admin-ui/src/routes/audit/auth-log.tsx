@@ -54,8 +54,8 @@ export default createPage()
 				<div className="page-head">
 					<h1>Audit — auth log</h1>
 					<p className="hint">
-						Outcomes of <code>authenticate()</code> / <code>mintFromKey()</code>. This is where you debug "login looks broken" — e.g.{' '}
-						<code>aud_not_configured</code> or <code>groups_unavailable</code>.
+						Outcomes of <code>mintToken()</code> / <code>mintFromKey()</code> and the OIDC login. This is where you debug "login looks broken" — e.g.{' '}
+						<code>invalid_token</code>, <code>unknown_principal</code>, or <code>disabled</code>.
 					</p>
 				</div>
 

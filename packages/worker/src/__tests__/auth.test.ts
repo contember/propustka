@@ -1,155 +1,74 @@
-import { type AuthenticateInput, permits } from '@propustka/core'
 import { describe, expect, test } from 'bun:test'
-import { LOCAL_DEV_ADMIN_ID, resolveRequest } from '../auth'
-import { createHarness, DEFAULT_AUD, seedGrant, seedRole, seedUser } from './helpers/harness'
+import { LOCAL_DEV_ADMIN_ID, resolveCaller } from '../auth'
+import type { Env } from '../env'
+import { hashToken } from '../secret'
+import { createHarness, seedUser } from './helpers/harness'
 
-// FINDING TEST-1 (SEC-1): the local dev-bypass guard in resolveRequest. There is no
-// Cloudflare Access in front of `lopata`/`wrangler dev`, so the Worker resolves a
-// fixed global-admin identity when ENVIRONMENT='local' AND no token is presented AND
-// no Access is configured (ACCESS_APPS empty). Every one of those preconditions is a
-// security boundary: this drives resolveRequest end to end (real JwtValidator, real
-// Db over bun:sqlite) and proves the bypass fires ONLY for that exact combination —
-// and that a real token is never hijacked by it even on local.
+// SEC-1: the local-dev bypass guard in `resolveCaller`. The bypass resolves an unauthenticated
+// global-admin caller so the example app / admin scripts work against `lopata`/`wrangler dev`. It
+// must be IMPOSSIBLE outside local dev — so it fires ONLY when ENVIRONMENT=local AND no durable
+// signing keys are configured AND no credential is presented. Plus the `px_` key resolution path.
 
-// The verified app for the default signed token (DEFAULT_AUD → 'iam-admin').
-const APP = 'iam-admin'
+const REQUEST = 'r1'
 
-// Seed the standard editor/viewer roles for an app (admin is a built-in, not seeded).
-function seedStdRoles(h: ReturnType<typeof createHarness>, app: string): void {
-	seedRole(h.sqlite, app, 'editor', ['project.*', 'report.*'])
-	seedRole(h.sqlite, app, 'viewer', ['project.read', 'report.read'])
+/** env slice resolveCaller needs. Default: no durable signing keys (the dev signal). */
+function env(signingKeys = ''): Pick<Env, 'PROPUSTKA_SIGNING_KEYS' | 'ENVIRONMENT'> {
+	return { PROPUSTKA_SIGNING_KEYS: signingKeys, ENVIRONMENT: 'local' }
 }
 
-// A bare AuthenticateInput; tests override `token` per case.
-function input(overrides: Partial<AuthenticateInput> = {}): AuthenticateInput {
-	return {
-		app: 'iam-admin',
-		token: null,
-		cookie: null,
-		origin: null,
-		requestId: 'req-1',
-		...overrides,
-	}
-}
-
-describe('resolveRequest — local dev bypass (SEC-1 guard)', () => {
-	test('local + no token + empty ACCESS_APPS → bypass fires: global-admin bootstrap principal', async () => {
+describe('resolveCaller — local dev bypass (SEC-1 guard)', () => {
+	test('fires in local with no signing keys and no credential → global-admin caller', async () => {
 		const h = createHarness()
-		const services = h.makeServices({ environment: 'local', accessApps: {} })
-
-		const outcome = await resolveRequest(services, input({ token: null }))
-
-		expect(outcome.result.ok).toBe(true)
-		if (!outcome.result.ok) throw new Error('expected ok')
-		expect(outcome.result.principal.id).toBe(LOCAL_DEV_ADMIN_ID)
-		expect(outcome.result.principal.permissions).toEqual([{ action: '*', scope: null, source: 'bootstrap' }])
-		expect(outcome.logReason).toBe('local_bypass')
+		const services = h.makeServices({ environment: 'local' })
+		const res = await resolveCaller(services, env(), { app: 'reports', credential: null, requestId: REQUEST })
+		expect(res.ok).toBe(true)
+		if (!res.ok) throw new Error('unreachable')
+		expect(res.caller.id).toBe(LOCAL_DEV_ADMIN_ID)
+		expect(res.caller.permissions).toEqual([{ action: '*', scope: null, source: 'bootstrap' }])
+		// Unlike the old CF-Access bypass, the verified app IS the requested app.
+		expect(res.verifiedApp).toBe('reports')
 	})
 
-	test('local + no token + NON-empty ACCESS_APPS → bypass does NOT fire → missing_token', async () => {
-		// The defense-in-depth precondition: any real Access deploy has a non-empty
-		// audience map, so even a mis-pinned ENVIRONMENT=local cannot unlock admin.
+	test('does NOT fire in stage (no credential → missing_token)', async () => {
 		const h = createHarness()
-		const services = h.makeServices({ environment: 'local', accessApps: { aud: 'app' } })
-
-		const outcome = await resolveRequest(services, input({ token: null }))
-
-		expect(outcome.result.ok).toBe(false)
-		if (outcome.result.ok) throw new Error('expected failure')
-		expect(outcome.result.reason).toBe('missing_token')
+		const services = h.makeServices({ environment: 'stage' })
+		const res = await resolveCaller(services, env(), { app: 'reports', credential: null, requestId: REQUEST })
+		expect(res).toEqual({ ok: false, reason: 'missing_token' })
 	})
 
-	test('stage + no token → bypass does NOT fire (environment gate) → missing_token', async () => {
+	test('does NOT fire in local when durable signing keys ARE configured', async () => {
 		const h = createHarness()
-		const services = h.makeServices({ environment: 'stage', accessApps: {} })
-
-		const outcome = await resolveRequest(services, input({ token: null }))
-
-		expect(outcome.result.ok).toBe(false)
-		if (outcome.result.ok) throw new Error('expected failure')
-		expect(outcome.result.reason).toBe('missing_token')
-	})
-
-	test('local + a VALID user token → real grants win, bypass never hijacks the token', async () => {
-		// Even on local, a presented token validates normally: the bypass requires
-		// token === null. A user with only a scope-bound `viewer` grant must resolve to
-		// that grant's permissions, NOT the global-admin bootstrap.
-		const h = createHarness()
-		seedStdRoles(h, APP)
-		const principalId = seedUser(h.sqlite, { sub: 'sub-alice', email: 'alice@example.com' })
-		seedGrant(h.sqlite, principalId, 'viewer', { type: 'team', value: 'acme' }, APP)
-
-		// ACCESS_APPS must be non-empty for jose to accept the token's aud — but that
-		// also means the no-token bypass precondition is off, which is the real shape
-		// of any deploy that actually validates tokens.
-		const services = h.makeServices({ environment: 'local', accessApps: { [DEFAULT_AUD]: APP } })
-		const token = await h.signToken({ email: 'alice@example.com', sub: 'sub-alice' })
-
-		const outcome = await resolveRequest(services, input({ token }))
-
-		expect(outcome.result.ok).toBe(true)
-		if (!outcome.result.ok) throw new Error('expected ok')
-		// The real principal, not the bypass identity.
-		expect(outcome.result.principal.id).toBe(principalId)
-		expect(outcome.result.principal.id).not.toBe(LOCAL_DEV_ADMIN_ID)
-		// viewer → project.read + report.read, scoped to team:acme, source 'grant'.
-		expect(outcome.result.principal.permissions).toEqual([
-			{ action: 'project.read', scope: { type: 'team', value: 'acme' }, source: 'grant' },
-			{ action: 'report.read', scope: { type: 'team', value: 'acme' }, source: 'grant' },
-		])
-		// No global-admin `*` leaked in from the bypass.
-		expect(outcome.result.principal.permissions.some((p) => p.action === '*')).toBe(false)
-		expect(outcome.logReason).not.toBe('local_bypass')
+		const services = h.makeServices({ environment: 'local' })
+		const res = await resolveCaller(services, env('[{"kty":"EC"}]'), { app: 'reports', credential: null, requestId: REQUEST })
+		expect(res).toEqual({ ok: false, reason: 'missing_token' })
 	})
 })
 
-// The cross-app isolation contract: a grant carries an `app` dimension and
-// authenticate() filters a principal's permissions to the aud-verified calling app
-// (or NULL = cross-app). A grant for one app must never confer permissions in another.
-describe('resolveRequest — app-scoped grants (cross-app isolation)', () => {
-	test('grants for OTHER apps do not apply; calling-app + cross-app (NULL) grants do', async () => {
+describe('resolveCaller — px_ key resolution', () => {
+	test('an unknown px_ key → invalid_token', async () => {
 		const h = createHarness()
-		// Roles are per-app: editor@iam-admin and viewer for the cross-app grant. The
-		// cross-app (NULL-app) grant resolves roles against the calling app's set, so
-		// `viewer` must also exist for iam-admin (the verified calling app).
-		seedStdRoles(h, APP)
-		seedRole(h.sqlite, 'other-app', 'admin-like', ['*']) // unused by the calling app
-		const principalId = seedUser(h.sqlite, { sub: 'sub-bob', email: 'bob@example.com' })
-		seedGrant(h.sqlite, principalId, 'editor', null, APP) // applies (same app)
-		seedGrant(h.sqlite, principalId, 'admin', null, 'other-app') // must NOT apply (different app)
-		seedGrant(h.sqlite, principalId, 'viewer', null, null) // applies (cross-app)
-
-		const services = h.makeServices({ environment: 'stage', accessApps: { [DEFAULT_AUD]: APP } })
-		const token = await h.signToken({ email: 'bob@example.com', sub: 'sub-bob' })
-		const outcome = await resolveRequest(services, input({ token }))
-
-		expect(outcome.result.ok).toBe(true)
-		if (!outcome.result.ok) throw new Error('expected ok')
-		const perms = outcome.result.principal.permissions
-		expect(permits(perms, 'project.write')).toBe(true) // editor@iam-admin applied
-		expect(permits(perms, 'report.read')).toBe(true) // viewer (cross-app) applied
-		expect(permits(perms, 'iam.admin')).toBe(false) // admin@other-app did NOT leak across apps
+		const services = h.makeServices({ environment: 'stage' })
+		const res = await resolveCaller(services, env(), { app: 'reports', credential: 'px_nope', requestId: REQUEST })
+		expect(res).toEqual({ ok: false, reason: 'invalid_token' })
 	})
 
-	test('authenticating as a DIFFERENT app drops the other-app grant, keeps only cross-app', async () => {
+	test('a valid anonymous px_ key resolves to an anonymous caller carrying its frozen grants', async () => {
 		const h = createHarness()
-		// admin is a built-in; viewer must exist for the calling app (poplach) so the
-		// cross-app viewer grant resolves there.
-		seedStdRoles(h, 'poplach')
-		const principalId = seedUser(h.sqlite, { sub: 'sub-carol', email: 'carol@example.com' })
-		seedGrant(h.sqlite, principalId, 'admin', null, APP) // admin ONLY for iam-admin
-		seedGrant(h.sqlite, principalId, 'viewer', null, null) // cross-app viewer
+		const services = h.makeServices({ environment: 'stage' })
+		const issuerId = seedUser(h.sqlite, { sub: 'iss', email: 'iss@contember.com' })
+		const key = 'px_share-link'
+		const credId = await h.db.createCredential({
+			tokenHash: await hashToken(key),
+			issuedBy: issuerId,
+			grants: [{ action: 'report.read' }],
+		})
 
-		// The token's aud maps to 'poplach', not 'iam-admin'.
-		const services = h.makeServices({ environment: 'stage', accessApps: { 'aud-poplach': 'poplach' } })
-		const token = await h.signToken({ email: 'carol@example.com', sub: 'sub-carol' }, { audience: 'aud-poplach' })
-		const outcome = await resolveRequest(services, input({ token }))
-
-		expect(outcome.result.ok).toBe(true)
-		if (!outcome.result.ok) throw new Error('expected ok')
-		const perms = outcome.result.principal.permissions
-		expect(permits(perms, 'iam.admin')).toBe(false) // admin@iam-admin did NOT apply as poplach
-		expect(permits(perms, 'project.read')).toBe(true) // cross-app viewer applied
-		expect(permits(perms, 'project.write')).toBe(false) // and nothing editor/admin-level
+		const res = await resolveCaller(services, env(), { app: 'reports', credential: key, requestId: REQUEST })
+		expect(res.ok).toBe(true)
+		if (!res.ok) throw new Error('unreachable')
+		// Anonymous (no principal binding) → no `type`; subject is the credential id.
+		expect(res.caller.type).toBeUndefined()
+		expect(res.caller.id).toBe(credId)
+		expect(res.caller.permissions).toEqual([{ action: 'report.read', scope: null, source: 'grant' }])
 	})
 })

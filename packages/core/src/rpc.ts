@@ -120,18 +120,11 @@ export type IssueJwtResult =
 	| { ok: true; token: string; expiresAt: number; id: string }
 	| { ok: false; reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' }
 
-export interface AuthenticateInput {
-	/** Self-asserted caller app id; superseded by the aud-derived app id on valid tokens. */
-	app: string
-	/** Cf-Access-Jwt-Assertion header value. */
-	token: string | null
-	/** CF_Authorization cookie value, for get-identity (users only). */
-	cookie: string | null
-	/** The app's own origin (for get-identity). */
-	origin: string | null
-	requestId: string
-}
-
+/**
+ * A resolved caller identity + its frozen permission snapshot. Produced by `accessClaimsToResolved`
+ * from a verified access token (`token.ts`); consumed where a principal's resolved perms are needed
+ * as a plain serializable value.
+ */
 export interface ResolvedPrincipal {
 	id: string
 	type: PrincipalType
@@ -139,11 +132,6 @@ export interface ResolvedPrincipal {
 	permissions: PermissionEntry[]
 	requestId: string
 }
-
-export type AuthenticateResult =
-	/** get-identity failed → explicit grants only this request (`groupsUnavailable`). */
-	| { ok: true; principal: ResolvedPrincipal; groupsUnavailable?: true }
-	| { ok: false; reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' }
 
 export interface AuditInput {
 	app: string

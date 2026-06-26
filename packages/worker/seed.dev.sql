@@ -60,11 +60,6 @@ INSERT OR IGNORE INTO grants (id, principal_id, app, role_key, permissions, scop
   -- Cross-app super-admin style global grant (app NULL = all apps).
   ('grant-admin-all',    'local-dev-admin', NULL,    'editor', NULL,                                  NULL,           NULL,   'local-dev-admin', NULL, unixepoch() - 86000);
 
--- ── Group → role mappings (scoped example) ───────────────────────────────────
-INSERT OR IGNORE INTO group_role_mappings (id, provider, group_ref, role_key, app, scope_type, scope_value, created_at) VALUES
-  ('gm-coredevs', 'github', 'my-org/core-devs', 'editor', 'opice', 'organization', 'acme', unixepoch() - 65000),
-  ('gm-admins',   'github', 'my-org/admins',    'editor', NULL,    NULL,           NULL,   unixepoch() - 65000);
-
 -- ── Share link = anonymous credential (principal_id NULL; hash only, plaintext never stored). ─
 INSERT OR IGNORE INTO credentials (id, token_hash, label, principal_id, issued_by, expires_at, revoked_at, created_at) VALUES
   ('cred-q2', 'seed-sha256-q2-acme-not-a-real-hash', 'Share: report Q2 (ACME)', NULL, 'local-dev-admin', unixepoch() + 2592000, NULL, unixepoch() - 40000);

@@ -12,21 +12,19 @@
  * Run it yourself (the operator targets a deployed/local Worker; nothing here is committed):
  *
  *   PROPUSTKA_URL=https://propustka.example.com    # the IAM Worker's admin origin
- *   # Auth — the admin API is gated by Cloudflare Access. Pick ONE:
- *   #  • local dev: no auth. The Worker's ENVIRONMENT=local + empty ACCESS_APPS resolves a
- *   #    fixed global-admin identity for token-less requests, so a local run needs nothing.
- *   #  • remote: an Access SERVICE TOKEN with admin permission. Access validates the pair at
- *   #    the edge and forwards the JWT the admin gate reads.
- *   PROPUSTKA_ACCESS_CLIENT_ID=…       # optional; the service token's Client ID
- *   PROPUSTKA_ACCESS_CLIENT_SECRET=…   # optional; the service token's Client Secret
+ *   # Auth — the admin API is gated by propustka itself. Pick ONE:
+ *   #  • local dev: no auth. The Worker's ENVIRONMENT=local + empty PROPUSTKA_SIGNING_KEYS resolves
+ *   #    a fixed global-admin identity for credential-less requests, so a local run needs nothing.
+ *   #  • remote: a propustka-issued `px_` ADMIN key, sent as `Authorization: Bearer`.
+ *   PROPUSTKA_ADMIN_KEY=px_…           # optional; the admin/provisioning key for a remote run
  *   bun run scripts/provision-schemas.ts [--dry-run]
  *
  * --dry-run parses every declaration and prints the intended reconcile (scopes / actions /
  * roles per app) without touching the Worker.
  *
  * To declare + push a NEW app: add a `propustka.schema.ts` exporting a typed `AppSchema` and
- * its app id, register it in `DECLARATIONS` below, ensure the target Propustka knows the app
- * id (an `ACCESS_APPS` value), then run this script.
+ * its app id, register it in `DECLARATIONS` below, then run this script (its first reconcile
+ * registers the app).
  */
 
 import { reconcileSchema } from '@propustka/client'
@@ -64,8 +62,8 @@ function optional(name: string): string | undefined {
 
 const DRY_RUN = process.argv.includes('--dry-run')
 
-// The actual PUT + both-or-neither token guard + error shaping live in `reconcileSchema`
-// (@propustka/client), so any app's own deploy step reconciles exactly the way this does.
+// The actual PUT + bearer auth + error shaping live in `reconcileSchema` (@propustka/client),
+// so any app's own deploy step reconciles exactly the way this does.
 
 // ── reporting ─────────────────────────────────────────────────────────────────
 
@@ -92,14 +90,13 @@ async function main(): Promise<void> {
 	}
 
 	const url = required('PROPUSTKA_URL')
-	const accessClientId = optional('PROPUSTKA_ACCESS_CLIENT_ID')
-	const accessClientSecret = optional('PROPUSTKA_ACCESS_CLIENT_SECRET')
-	const authMode = accessClientId !== undefined ? 'Access service token' : 'no auth (local dev bypass)'
+	const adminKey = optional('PROPUSTKA_ADMIN_KEY')
+	const authMode = adminKey !== undefined ? 'px_ admin key (bearer)' : 'no auth (local dev bypass)'
 	console.log(`Reconciling ${DECLARATIONS.length} app schema(s) against ${url} (${authMode})\n`)
 
 	for (const decl of DECLARATIONS) {
-		// reconcileSchema (@propustka/client) does the idempotent PUT + both-or-neither guard.
-		await reconcileSchema({ url, app: decl.app, schema: decl.schema, accessClientId, accessClientSecret })
+		// reconcileSchema (@propustka/client) does the idempotent PUT with bearer auth.
+		await reconcileSchema({ url, app: decl.app, schema: decl.schema, ...(adminKey === undefined ? {} : { adminKey }) })
 		const scopes = decl.schema.scopes.length
 		const actions = decl.schema.actions.length
 		const roles = Object.keys(decl.schema.roles).length

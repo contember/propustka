@@ -1,28 +1,15 @@
-import type {
-	AccessAppDecl,
-	AccessRule,
-	AppAccess,
-	AppSchema,
-	IssueKeyInput,
-	KeyGrant,
-	PermissionEntry,
-	PrincipalType,
-	RoleDef,
-} from '@propustka/core'
+import type { AppSchema, IssueKeyInput, KeyGrant, PermissionEntry, PrincipalType, RoleDef } from '@propustka/core'
 import { API_KEY_PREFIX, isActionAllowed } from '@propustka/core'
-import { CfAccessError } from '../cfaccess'
 import {
 	type AuditEventRow,
 	type AuthLogRow,
 	type CredentialGrantRow,
 	type CredentialRow,
 	type GrantRow,
-	type GroupMappingRow,
 	type PrincipalRow,
 	principalStatus,
 	type RoleRow,
 } from '../db'
-import { normalizeGroupRef } from '../identity'
 import { issueKey } from '../issue'
 import { arrayField, booleanField, nullableStringField, numberField, parseJson, prop, stringField } from '../json'
 import { computePermissions } from '../resolve'
@@ -30,16 +17,13 @@ import { BUILTIN_ROLES, isKnownRole, makeRoleSource } from '../roles'
 import { generateToken, hashToken } from '../secret'
 import type { Services } from '../services'
 import { error, json, readJson } from './http'
-import { type AppAccessReadback, readAppAccess, reconcileAccess, ReconcileAccessError } from './reconcile-access'
 import type {
 	ApiKeyDto,
-	AppAccessDto,
 	AppDto,
 	AppSchemaDto,
 	AuditEventDto,
 	AuthLogDto,
 	GrantDto,
-	GroupMappingDto,
 	IssuedShareLinkResponse,
 	MeDto,
 	PolicyDto,
@@ -142,20 +126,6 @@ async function toGrantDto(row: GrantRow, roleCache: RoleKnownCache): Promise<Gra
 	}
 }
 
-async function toGroupMappingDto(row: GroupMappingRow, roleCache: RoleKnownCache): Promise<GroupMappingDto> {
-	return {
-		id: row.id,
-		provider: row.provider,
-		groupRef: row.group_ref,
-		roleKey: row.role_key,
-		scopeType: row.scope_type,
-		scopeValue: row.scope_value,
-		app: row.app,
-		createdAt: row.created_at,
-		dangling: !(await roleCache.isKnown(row.role_key, row.app)),
-	}
-}
-
 /** Map a list of grant rows to DTOs sharing one role-known cache (one query per app). */
 async function toGrantDtos(rows: GrantRow[], services: Services): Promise<GrantDto[]> {
 	const cache = new RoleKnownCache(services)
@@ -166,15 +136,15 @@ async function toGrantDtos(rows: GrantRow[], services: Services): Promise<GrantD
 	return out
 }
 
-/** The set of app ids propustka serves (the value side of ACCESS_APPS). */
-function knownApps(c: AdminContext): string[] {
-	return [...new Set(Object.values(c.services.config.accessApps))]
+/** The set of app ids propustka knows about — the live registry derived from the schema tables. */
+function knownApps(c: AdminContext): Promise<string[]> {
+	return c.services.db.listKnownApps()
 }
 
-/** Validate an admin-supplied `app`: null (all apps) or a configured ACCESS_APPS value. */
-function appField(c: AdminContext, body: unknown): { ok: true; app: string | null } | { ok: false } {
+/** Validate an admin-supplied `app`: null (all apps) or a known (registered) app. */
+async function appField(c: AdminContext, body: unknown): Promise<{ ok: true; app: string | null } | { ok: false }> {
 	const app = nullableStringField(body, 'app') ?? null
-	if (app !== null && !knownApps(c).includes(app)) {
+	if (app !== null && !(await knownApps(c)).includes(app)) {
 		return { ok: false }
 	}
 	return { ok: true, app }
@@ -311,7 +281,7 @@ async function effectivePermissionsForAdmin(c: AdminContext, row: PrincipalRow):
 		appRoles[dbRole.role_key] = dbRoleToDef(dbRole)
 	}
 	const roleSource = makeRoleSource(appRoles)
-	return computePermissions({ app, grants, groupMappings: [], isBootstrapAdmin }, roleSource)
+	return computePermissions({ app, grants, isBootstrapAdmin }, roleSource)
 }
 
 /** A `roles` row → core `RoleDef` for resolution. */
@@ -450,7 +420,7 @@ export async function createGrant(c: AdminContext): Promise<Response> {
 	if (!principalId) {
 		return error(400, 'principalId required')
 	}
-	const appResult = appField(c, body)
+	const appResult = await appField(c, body)
 	if (!appResult.ok) {
 		return error(400, 'unknown app')
 	}
@@ -515,101 +485,11 @@ export async function deleteGrant(c: AdminContext, id: string): Promise<Response
 	return json({ ok: true })
 }
 
-// ── Group → role mappings ─────────────────────────────────────────────────────
+// ── Apps (read-only; the live registry derived from the schema tables) ────────
 
-export async function listGroupMappings(c: AdminContext): Promise<Response> {
-	const rows = await c.services.db.listGroupMappings()
-	const cache = new RoleKnownCache(c.services)
-	const items: GroupMappingDto[] = []
-	for (const row of rows) {
-		items.push(await toGroupMappingDto(row, cache))
-	}
-	return json({ items } satisfies { items: GroupMappingDto[] })
-}
-
-export async function createGroupMapping(c: AdminContext): Promise<Response> {
-	const body = await readJson(c.request)
-	const provider = stringField(body, 'provider')
-	const groupRef = stringField(body, 'groupRef')
-	const roleKey = stringField(body, 'roleKey')
-	if (!provider || !groupRef || !roleKey) {
-		return error(400, 'provider, groupRef and roleKey required')
-	}
-	const appResult = appField(c, body)
-	if (!appResult.ok) {
-		return error(400, 'unknown app')
-	}
-	const app = appResult.app
-	// A mapping is role-only. Validate the role is known for the app (built-in or a row).
-	if (!isKnownRole(roleKey, await loadAppRoleMap(c, app))) {
-		return error(400, `unknown role: ${roleKey}`)
-	}
-	// Validate the admin-supplied ref is in `<org>/<team>` shape (exactly one '/',
-	// non-empty org and team after trimming), then store it NORMALIZED — lowercased +
-	// trimmed via the same `normalizeGroupRef` resolution uses, and `provider` lowercased
-	// — so the row matches exactly what `getMappingsForGroups('github', refs)` looks up at
-	// resolution. Storing verbatim would silently confer zero permissions on a
-	// case/whitespace mismatch.
-	const slash = groupRef.indexOf('/')
-	if (slash === -1 || groupRef.indexOf('/', slash + 1) !== -1) {
-		return error(400, 'groupRef must be in <org>/<team> form')
-	}
-	const org = groupRef.slice(0, slash).trim()
-	const team = groupRef.slice(slash + 1).trim()
-	if (org === '' || team === '') {
-		return error(400, 'groupRef must be in <org>/<team> form')
-	}
-	const normalizedGroupRef = normalizeGroupRef(org, team)
-	const normalizedProvider = provider.trim().toLowerCase()
-	const scope = parseScope(body)
-	if (!scope.ok) {
-		return error(400, 'scopeType and scopeValue must be both set or both omitted')
-	}
-	const mapping = await c.services.db.createGroupMapping({
-		provider: normalizedProvider,
-		groupRef: normalizedGroupRef,
-		roleKey,
-		app,
-		scopeType: scope.scopeType,
-		scopeValue: scope.scopeValue,
-	})
-	await adminAudit(c, {
-		action: 'iam.groupmapping.create',
-		resourceType: 'group_mapping',
-		resourceId: mapping.id,
-		metadata: {
-			provider: normalizedProvider,
-			groupRef: normalizedGroupRef,
-			roleKey,
-			scopeType: scope.scopeType,
-			scopeValue: scope.scopeValue,
-			app,
-		},
-	})
-	const cache = new RoleKnownCache(c.services)
-	return json(await toGroupMappingDto(mapping, cache), { status: 201 })
-}
-
-export async function deleteGroupMapping(c: AdminContext, id: string): Promise<Response> {
-	const mapping = await c.services.db.getGroupMappingById(id)
-	if (!mapping) {
-		return error(404, 'group mapping not found')
-	}
-	await c.services.db.deleteGroupMapping(id)
-	await adminAudit(c, {
-		action: 'iam.groupmapping.delete',
-		resourceType: 'group_mapping',
-		resourceId: id,
-		metadata: { provider: mapping.provider, groupRef: mapping.group_ref, roleKey: mapping.role_key },
-	})
-	return json({ ok: true })
-}
-
-// ── Apps (read-only; derived from ACCESS_APPS) ────────────────────────────────
-
-/** The app ids a grant/mapping can be scoped to — the configured ACCESS_APPS values. */
-export function listApps(c: AdminContext): Response {
-	const items: AppDto[] = knownApps(c).map((id) => ({ id }))
+/** The app ids a grant can be scoped to — the apps that have registered a vocabulary. */
+export async function listApps(c: AdminContext): Promise<Response> {
+	const items: AppDto[] = (await knownApps(c)).map((id) => ({ id }))
 	return json({ items } satisfies { items: AppDto[] })
 }
 
@@ -618,13 +498,13 @@ export function listApps(c: AdminContext): Response {
 /**
  * The roles available to grant for an app: the built-ins (cross-app, e.g. `admin`)
  * plus the app's DB roles (origin 'app' + 'custom'). The app is taken from the `?app`
- * query param (an ACCESS_APPS value); without it, only built-ins are listed. Built-ins
+ * query param (a registered app id); without it, only built-ins are listed. Built-ins
  * win on a key collision so an app cannot shadow the cross-app `admin`.
  */
 export async function listRoles(c: AdminContext): Promise<Response> {
 	const items: RoleDto[] = []
 	const appParam = c.url.searchParams.get('app')
-	const app = appParam !== null && knownApps(c).includes(appParam) ? appParam : null
+	const app = appParam !== null && (await knownApps(c)).includes(appParam) ? appParam : null
 	const builtinKeys = new Set(Object.keys(BUILTIN_ROLES))
 	if (app !== null) {
 		for (const row of await c.services.db.listRoles(app)) {
@@ -716,11 +596,11 @@ function parseAppSchema(body: unknown): { ok: true; schema: AppSchema } | { ok: 
  * Reconcile an app's declared vocabulary (idempotent): upsert its scopes/actions and
  * origin='app' roles, delete app-origin rows absent from the body, and NEVER touch
  * origin='custom' roles. Every role's patterns are validated against the body's own
- * action catalog. The `:app` path segment must be a configured ACCESS_APPS value.
+ * action catalog. The `:app` path segment is the app id this vocabulary belongs to.
  */
 export async function putAppSchema(c: AdminContext, app: string): Promise<Response> {
-	// No knownApps gate: an app's FIRST schema reconcile is how it registers its vocabulary (this
-	// endpoint is admin-gated). Its aud is added to ACCESS_APPS separately, for runtime JWT validation.
+	// No knownApps gate: an app's FIRST schema reconcile is how it REGISTERS itself (this endpoint is
+	// admin-gated). After this, `db.listKnownApps()` surfaces the app id across the schema tables.
 	const body = await readJson(c.request)
 	const parsed = parseAppSchema(body)
 	if (!parsed.ok) {
@@ -770,133 +650,10 @@ async function readAppSchemaDto(c: AdminContext, app: string): Promise<AppSchema
 
 /** Return the app's scopes, actions, and origin='app' roles (the reconciled vocabulary). */
 export async function getAppSchema(c: AdminContext, app: string): Promise<Response> {
-	if (!knownApps(c).includes(app)) {
+	if (!(await knownApps(c)).includes(app)) {
 		return error(404, 'unknown app')
 	}
 	return json(await readAppSchemaDto(c, app))
-}
-
-// ── Access edge rules (reconciled into Cloudflare as reusable policies) ─────────
-
-/** Validate one declared Access rule. */
-function parseAccessRule(raw: unknown): { ok: true; rule: AccessRule } | { ok: false; message: string } {
-	const kind = stringField(raw, 'kind')
-	if (kind === undefined) {
-		return { ok: false, message: 'each rule needs a string `kind`' }
-	}
-	if (kind === 'service-auth') {
-		return { ok: true, rule: { kind: 'service-auth' } }
-	}
-	if (kind === 'public') {
-		return { ok: true, rule: { kind: 'public' } }
-	}
-	if (kind === 'human') {
-		// The human AUDIENCE is owned centrally by propustka (HUMAN_EMAIL_DOMAINS / HUMAN_EMAILS), not
-		// by the app — a human rule declares only THAT a path is human-gated. Any per-app emailDomains
-		// / emails are ignored (accepted for back-compat, never applied).
-		return { ok: true, rule: { kind: 'human' } }
-	}
-	return { ok: false, message: `unknown rule kind: ${kind}` }
-}
-
-/**
- * Validate an `AppAccess` body: a non-empty `apps` array, each with a unique `key`, a `name`,
- * non-empty `destinations`, and a non-empty `rules` list of valid rules. Keys must be unique
- * because they distinguish the per-CF-app managed policy names.
- */
-function parseAppAccess(body: unknown): { ok: true; access: AppAccess } | { ok: false; message: string } {
-	const appsRaw = prop(body, 'apps')
-	if (!Array.isArray(appsRaw) || appsRaw.length === 0) {
-		return { ok: false, message: 'apps must be a non-empty array' }
-	}
-	const apps: AccessAppDecl[] = []
-	const seenKeys = new Set<string>()
-	for (const appRaw of appsRaw) {
-		const key = stringField(appRaw, 'key')
-		const name = stringField(appRaw, 'name')
-		if (!key || !name) {
-			return { ok: false, message: 'each app needs a non-empty string `key` and `name`' }
-		}
-		if (seenKeys.has(key)) {
-			return { ok: false, message: `duplicate app key: ${key}` }
-		}
-		seenKeys.add(key)
-		const destinations = arrayField(appRaw, 'destinations')
-		if (destinations === undefined || destinations.length === 0) {
-			return { ok: false, message: `app '${key}' needs a non-empty destinations array` }
-		}
-		const rulesRaw = prop(appRaw, 'rules')
-		if (!Array.isArray(rulesRaw) || rulesRaw.length === 0) {
-			return { ok: false, message: `app '${key}' needs a non-empty rules array` }
-		}
-		const rules: AccessRule[] = []
-		for (const ruleRaw of rulesRaw) {
-			const parsed = parseAccessRule(ruleRaw)
-			if (!parsed.ok) {
-				return { ok: false, message: `app '${key}': ${parsed.message}` }
-			}
-			rules.push(parsed.rule)
-		}
-		const sessionDuration = stringField(appRaw, 'sessionDuration')
-		apps.push({ key, name, destinations, ...(sessionDuration !== undefined ? { sessionDuration } : {}), rules })
-	}
-	return { ok: true, access: { apps } }
-}
-
-/** Map the live readback to the admin DTO. */
-function toAppAccessDto(readback: AppAccessReadback): AppAccessDto {
-	return {
-		app: readback.app,
-		policies: readback.policies.map((p) => ({ key: p.key, kind: p.kind, name: p.name, decision: p.decision, appCount: p.appCount })),
-	}
-}
-
-/**
- * Reconcile an app's declared Access edge rules into Cloudflare (idempotent). Creates/updates the
- * managed reusable policies (`px:<app>:…`) and repoints the CF apps' policy arrays; never touches
- * non-managed policies. Returns the live readback. An app's FIRST access reconcile registers it and
- * creates its CF Access app — no prior ACCESS_APPS entry required (this endpoint is admin-gated).
- */
-export async function putAppAccess(c: AdminContext, app: string): Promise<Response> {
-	const body = await readJson(c.request)
-	const parsed = parseAppAccess(body)
-	if (!parsed.ok) {
-		return error(400, parsed.message)
-	}
-	let readback: AppAccessReadback
-	try {
-		readback = await reconcileAccess(c.services.cfAccess, app, parsed.access, c.services.config.human)
-	} catch (err) {
-		if (err instanceof CfAccessError) {
-			return error(502, err.message)
-		}
-		const message = err instanceof ReconcileAccessError ? err.message : 'access reconcile failed'
-		return error(500, message)
-	}
-	await adminAudit(c, {
-		action: 'iam.app.access.reconcile',
-		resourceType: 'app',
-		resourceId: app,
-		metadata: {
-			cfApps: parsed.access.apps.map((a) => a.name),
-			rules: parsed.access.apps.flatMap((a) => a.rules.map((r) => `${a.key}:${r.kind}`)),
-		},
-	})
-	return json(toAppAccessDto(readback))
-}
-
-/** Read the reusable Access policies propustka manages for an app (live CF state). */
-export async function getAppAccess(c: AdminContext, app: string): Promise<Response> {
-	if (!knownApps(c).includes(app)) {
-		return error(404, 'unknown app')
-	}
-	try {
-		const readback = await readAppAccess(c.services.cfAccess, app)
-		return json(toAppAccessDto(readback))
-	} catch (err) {
-		const message = err instanceof CfAccessError ? err.message : 'failed to read access rules'
-		return error(502, message)
-	}
 }
 
 // ── Policies (origin='custom' roles) ──────────────────────────────────────────
@@ -914,7 +671,7 @@ function toPolicyDto(row: RoleRow): PolicyDto {
 
 /** List an app's custom policies (origin='custom' role rows). */
 export async function listPolicies(c: AdminContext, app: string): Promise<Response> {
-	if (!knownApps(c).includes(app)) {
+	if (!(await knownApps(c)).includes(app)) {
 		return error(404, 'unknown app')
 	}
 	const rows = await c.services.db.listRolesByOrigin(app, 'custom')
@@ -959,7 +716,7 @@ async function parsePolicyBody(
 
 /** Create a custom policy (origin='custom' role). Rejects a key that already exists. */
 export async function createPolicy(c: AdminContext, app: string): Promise<Response> {
-	if (!knownApps(c).includes(app)) {
+	if (!(await knownApps(c)).includes(app)) {
 		return error(404, 'unknown app')
 	}
 	const body = await readJson(c.request)
@@ -994,7 +751,7 @@ export async function createPolicy(c: AdminContext, app: string): Promise<Respon
 
 /** Update a custom policy. Rejects if the key is missing or is an origin='app' role. */
 export async function updatePolicy(c: AdminContext, app: string, key: string): Promise<Response> {
-	if (!knownApps(c).includes(app)) {
+	if (!(await knownApps(c)).includes(app)) {
 		return error(404, 'unknown app')
 	}
 	const existing = await c.services.db.getRole(app, key)
@@ -1025,7 +782,7 @@ export async function updatePolicy(c: AdminContext, app: string, key: string): P
 
 /** Delete a custom policy. Refuses to delete an origin='app' (reconciled) role. */
 export async function deletePolicy(c: AdminContext, app: string, key: string): Promise<Response> {
-	if (!knownApps(c).includes(app)) {
+	if (!(await knownApps(c)).includes(app)) {
 		return error(404, 'unknown app')
 	}
 	const existing = await c.services.db.getRole(app, key)
@@ -1081,7 +838,7 @@ export async function provisionApiKey(c: AdminContext): Promise<Response> {
 	if (!label || type !== 'service') {
 		return error(400, 'label and type=service required')
 	}
-	const appResult = appField(c, body)
+	const appResult = await appField(c, body)
 	if (!appResult.ok) {
 		return error(400, 'unknown app')
 	}

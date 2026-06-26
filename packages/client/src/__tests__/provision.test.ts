@@ -52,12 +52,18 @@ describe('reconcileSchema', () => {
 		expect(req.body).toEqual(SCHEMA)
 	})
 
-	test('forwards the admin auth headers when provided', async () => {
+	test('forwards the admin key as an Authorization: Bearer header when provided', async () => {
 		const spy = stubFetch(200)
-		await reconcileSchema({ url: 'https://propustka.example.com', app: 'opice', schema: SCHEMA, accessClientId: 'cid', accessClientSecret: 'sec' })
+		await reconcileSchema({ url: 'https://propustka.example.com', app: 'opice', schema: SCHEMA, adminKey: 'px_admin-key' })
 		const req = captured(spy)
-		expect(req.headers.get('CF-Access-Client-Id')).toBe('cid')
-		expect(req.headers.get('CF-Access-Client-Secret')).toBe('sec')
+		expect(req.headers.get('Authorization')).toBe('Bearer px_admin-key')
+	})
+
+	test('no admin key → no Authorization header (local-dev bypass path)', async () => {
+		const spy = stubFetch(200)
+		await reconcileSchema({ url: 'https://propustka.example.com', app: 'opice', schema: SCHEMA })
+		const req = captured(spy)
+		expect(req.headers.get('Authorization')).toBeNull()
 	})
 
 	test('a non-2xx response throws ReconcileSchemaError carrying status + message', async () => {
@@ -68,11 +74,5 @@ describe('reconcileSchema', () => {
 			expect(err.status).toBe(502)
 			expect(err.message).toContain('admin said no')
 		}
-	})
-
-	test('a half-set credential throws BEFORE any request', async () => {
-		const spy = stubFetch(200)
-		await expect(reconcileSchema({ url: 'https://propustka.example.com', app: 'opice', schema: SCHEMA, accessClientId: 'cid' })).rejects.toThrow()
-		expect(spy.mock.calls).toHaveLength(0)
 	})
 })

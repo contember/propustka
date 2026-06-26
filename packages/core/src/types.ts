@@ -115,40 +115,6 @@ export interface AppGates {
 	rules: GateRule[]
 }
 
-// ── Access edge rules (LEGACY — Cloudflare Access front door) ───────────────────
-//
-// DEPRECATED. Superseded by `AppGates` above. Retained only until the worker's CF-Access edge
-// reconcile surface (`reconcile-access.ts`, `PUT /admin/apps/:app/access`, `cfaccess.ts`,
-// `propustka.access.ts`) is deleted, then these go too. New apps declare `AppGates`, not this.
-
-/** One Access edge rule. The array order on an app is its Cloudflare precedence order. */
-export type AccessRule =
-	/** Machines: a `non_identity` policy including "any valid service token". */
-	| { kind: 'service-auth' }
-	/** Humans: an `allow` policy. Supply at least one of `emailDomains` / `emails`. */
-	| { kind: 'human'; emailDomains?: string[]; emails?: string[] }
-	/** Anonymous: a `bypass` policy including everyone (for public carve-out paths). */
-	| { kind: 'public' }
-
-/** One Cloudflare Access application this propustka app fronts, with its edge rules. */
-export interface AccessAppDecl {
-	/** Stable key, unique within the declaration. Drives the managed policy name + CF-app match. */
-	key: string
-	/** The Cloudflare Access application name (matched/created by name). */
-	name: string
-	/** self_hosted destinations — host or host/path, e.g. `opice.contember.com` / `opice.contember.com/s`. */
-	destinations: string[]
-	/** CF session duration (e.g. `24h`); the worker applies a default when omitted. */
-	sessionDuration?: string
-	/** The edge rules to converge onto this CF app, in precedence order (first = highest). */
-	rules: AccessRule[]
-}
-
-/** An app's full Access-edge declaration, reconciled into Cloudflare by Propustka. */
-export interface AppAccess {
-	apps: AccessAppDecl[]
-}
-
 /**
  * App-aware role lookup. The worker layers a built-in cross-app source (admin) over a
  * per-app DB source. `app` is the calling app id; null = cross-app/built-in only.

@@ -4,7 +4,6 @@ import { useMe } from '../lib/useMe'
 
 type Page =
 	| 'principals'
-	| 'group-mappings'
 	| 'api-keys'
 	| 'share-links'
 	| 'audit'
@@ -30,7 +29,6 @@ interface NavItem {
 
 const NAV: NavItem[] = [
 	{ to: 'principals', label: 'Principals', match: '/principals' },
-	{ to: 'group-mappings', label: 'Group mappings', match: '/group-mappings' },
 	{ to: 'api-keys', label: 'API keys', match: '/api-keys' },
 	{ to: 'share-links', label: 'Share links', match: '/share-links' },
 	{

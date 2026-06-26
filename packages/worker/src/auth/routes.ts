@@ -1,14 +1,13 @@
 /**
- * The propustka-native auth HTTP surface (public — NOT behind the admin Access gate):
+ * The propustka-native auth HTTP surface (public — no admin gate; these live on propustka's OWN host):
  *
  *   GET  /.well-known/jwks.json  — the public signing keys (so anything can verify a token)
- *   GET  /auth/login?redirect=…  — start Google OIDC (PKCE), 302 to Google
- *   GET  /auth/callback          — finish OIDC, create the SSO session, set the cookie, 302 back
+ *   GET  /auth/login?redirect=…  — start OIDC (PKCE), 302 to the provider
+ *   GET  /auth/callback          — finish OIDC, admit the email, create the SSO session, set the cookie, 302 back
  *   GET|POST /auth/logout        — revoke the session + clear the cookie
  *
- * NOTE (migration): while propustka's own hostname is still fronted by Cloudflare Access, these
- * paths need an Access BYPASS carve-out (a `public` rule in propustka.access.ts) so the browser
- * and the app-side SDK reach them without an Access login. Once Access is gone they're plain public.
+ * There is no Cloudflare Access in front of propustka anymore, so these are plain public routes —
+ * the admin gate (`/admin/*`) applies only to the admin surface, never here.
  */
 
 import { SESSION_COOKIE } from '@propustka/core'

@@ -2,8 +2,9 @@ name: Deploy
 
 # Deploys propustka (the IAM Worker + admin SPA) to Cloudflare. Mirrors the opice
 # deploy model: push main → stage, push deploy/prod → prod, plus manual dispatch.
-# Secrets/vars are scoped per GitHub Environment (stage/prod). One-time account setup
-# (Access applications, the ACCESS_APPS/TEAM values, the CF_API_TOKEN) lives outside CI.
+# Secrets/vars are scoped per GitHub Environment (stage/prod). propustka is fully
+# native-auth now (no Cloudflare Access) — the runtime secrets are the token signing
+# keys + the OIDC client secret, pushed after deploy.
 
 on:
   push:
@@ -74,26 +75,32 @@ jobs:
         run: bun run build
 
       # oblaka provisions the Worker + D1, writes the real ids + non-secret vars
-      # (ACCESS_APPS, TEAM, IAM_BOOTSTRAP_ADMINS, ENVIRONMENT) into wrangler.jsonc.
-      # CF_API_TOKEN / CF_ACCOUNT_ID are validated here (oblaka throws if absent) but
-      # deliberately NOT written to wrangler.jsonc — they are Worker secrets, pushed
-      # after deploy (the step below).
+      # (HUMAN_*, OIDC_*, IAM_BOOTSTRAP_ADMINS, ENVIRONMENT) into wrangler.jsonc.
+      # PROPUSTKA_SIGNING_KEYS / PROPUSTKA_OIDC_CLIENT_SECRET are validated here (oblaka
+      # throws if absent) but deliberately NOT written to wrangler.jsonc — they are Worker
+      # secrets, pushed after deploy (the step below).
       - name: Provision D1 + write wrangler.jsonc (oblaka --remote)
         working-directory: packages/worker
         env:
-          PROPUSTKA_ACCESS_APPS: ${{ vars.PROPUSTKA_ACCESS_APPS }}
-          PROPUSTKA_TEAM: ${{ vars.PROPUSTKA_TEAM }}
-          # Central human Access audience (JSON arrays) — who may pass Access as a human, for every
-          # app propustka fronts. Domains required; emails optional.
+          # Central human-admission allowlist (JSON arrays) — who may log in as a human, for every
+          # app. A `*` entry = admit-all. Domains required; emails optional.
           PROPUSTKA_HUMAN_EMAIL_DOMAINS: ${{ vars.PROPUSTKA_HUMAN_EMAIL_DOMAINS }}
           PROPUSTKA_HUMAN_EMAILS: ${{ vars.PROPUSTKA_HUMAN_EMAILS }}
-          # Per-target admin Custom Domain (GitHub Environment var). Unset → *.workers.dev.
+          # Per-target admin Custom Domain (GitHub Environment var) — also propustka's own token `iss`
+          # + OIDC redirect base. Unset → *.workers.dev.
           PROPUSTKA_HOSTNAME: ${{ vars.PROPUSTKA_HOSTNAME }}
           # Normally empty ('[]'); set to the first admin's email for the bootstrap
           # deploy only, then clear it and re-run. See the repo variable.
           PROPUSTKA_BOOTSTRAP_ADMINS: ${{ vars.PROPUSTKA_BOOTSTRAP_ADMINS }}
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # propustka-native OIDC SSO upstream (any provider via discovery).
+          PROPUSTKA_OIDC_ISSUER: ${{ vars.PROPUSTKA_OIDC_ISSUER }}
+          PROPUSTKA_OIDC_CLIENT_ID: ${{ vars.PROPUSTKA_OIDC_CLIENT_ID }}
+          PROPUSTKA_OIDC_SCOPES: ${{ vars.PROPUSTKA_OIDC_SCOPES }}
+          PROPUSTKA_OIDC_REQUIRE_VERIFIED_EMAIL: ${{ vars.PROPUSTKA_OIDC_REQUIRE_VERIFIED_EMAIL }}
+          PROPUSTKA_SESSION_COOKIE_DOMAIN: ${{ vars.PROPUSTKA_SESSION_COOKIE_DOMAIN }}
+          # Validated-present here (oblaka throws if absent) but pushed as Worker secrets below.
+          PROPUSTKA_SIGNING_KEYS: ${{ secrets.PROPUSTKA_SIGNING_KEYS }}
+          PROPUSTKA_OIDC_CLIENT_SECRET: ${{ secrets.PROPUSTKA_OIDC_CLIENT_SECRET }}
         run: |
           bunx oblaka oblaka.ts \
             --env=${{ steps.target.outputs.env }} \
@@ -110,17 +117,18 @@ jobs:
         working-directory: packages/worker
         run: bunx wrangler deploy
 
-      # CF_API_TOKEN / CF_ACCOUNT_ID power Access service-token provisioning at RUNTIME.
-      # oblaka can't express secrets, so push them as Worker secrets AFTER the script
-      # exists. Idempotent; persists across deploys.
-      - name: Set Worker secrets (Access API)
+      # The native-auth runtime secrets: the ES256 token signing keys + the OIDC client
+      # secret. oblaka can't express secrets, so push them as Worker secrets AFTER deploy.
+      # Idempotent; persists across deploys. The wrangler secret names are the Worker
+      # binding names (env.ts): PROPUSTKA_SIGNING_KEYS + OIDC_CLIENT_SECRET.
+      - name: Set Worker secrets (native auth)
         working-directory: packages/worker
         env:
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PROPUSTKA_SIGNING_KEYS: ${{ secrets.PROPUSTKA_SIGNING_KEYS }}
+          PROPUSTKA_OIDC_CLIENT_SECRET: ${{ secrets.PROPUSTKA_OIDC_CLIENT_SECRET }}
         run: |
-          printf '%s' "$CF_API_TOKEN" | bunx wrangler secret put CF_API_TOKEN
-          printf '%s' "$CF_ACCOUNT_ID" | bunx wrangler secret put CF_ACCOUNT_ID
+          printf '%s' "$PROPUSTKA_SIGNING_KEYS" | bunx wrangler secret put PROPUSTKA_SIGNING_KEYS
+          printf '%s' "$PROPUSTKA_OIDC_CLIENT_SECRET" | bunx wrangler secret put OIDC_CLIENT_SECRET
 
       - name: Summary
         run: |

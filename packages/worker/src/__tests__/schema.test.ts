@@ -27,7 +27,6 @@ test('creates every table the worker reads/writes (and retires projects)', () =>
 			'app_actions',
 			'roles',
 			'grants',
-			'group_role_mappings',
 			'audit_events',
 			'auth_log',
 			'credentials',
@@ -41,6 +40,8 @@ test('creates every table the worker reads/writes (and retires projects)', () =>
 	// `capability_tokens` is folded into `credentials` (0006).
 	expect(names).not.toContain('capability_tokens')
 	expect(names).not.toContain('capability_grants')
+	// `group_role_mappings` is dropped (0007) — no IdP groups in native auth.
+	expect(names).not.toContain('group_role_mappings')
 })
 
 test('roles.permissions rejects non-JSON via the json_valid CHECK', () => {
@@ -127,29 +128,6 @@ test('the same GLOBAL role for DIFFERENT apps is allowed; the same app twice is 
 	// A NULL-app (all-apps) grant collides with another NULL-app one (COALESCE folds NULL→'*').
 	db.run("INSERT INTO grants (id, principal_id, role_key, app) VALUES ('g4', 'p1', 'viewer', NULL)")
 	expect(() => db.run("INSERT INTO grants (id, principal_id, role_key, app) VALUES ('g5', 'p1', 'viewer', NULL)")).toThrow()
-})
-
-test('group_role_mappings: same role for DIFFERENT scope values allowed, same scope twice rejected', () => {
-	const db = freshDb()
-	db.run(
-		"INSERT INTO group_role_mappings (id, provider, group_ref, role_key, app, scope_type, scope_value) VALUES ('m1', 'github', 'org/core', 'editor', 'opice', 'organization', 'acme')",
-	)
-	expect(() =>
-		db.run(
-			"INSERT INTO group_role_mappings (id, provider, group_ref, role_key, app, scope_type, scope_value) VALUES ('m2', 'github', 'org/core', 'editor', 'opice', 'organization', 'globex')",
-		)
-	).not.toThrow()
-	expect(() =>
-		db.run(
-			"INSERT INTO group_role_mappings (id, provider, group_ref, role_key, app, scope_type, scope_value) VALUES ('m3', 'github', 'org/core', 'editor', 'opice', 'organization', 'acme')",
-		)
-	).toThrow()
-	// Mapping scope is also both-or-neither.
-	expect(() =>
-		db.run(
-			"INSERT INTO group_role_mappings (id, provider, group_ref, role_key, scope_type, scope_value) VALUES ('m4', 'github', 'org/core', 'editor', 'team', NULL)",
-		)
-	).toThrow()
 })
 
 test('at most one user principal per email (invite target uniqueness)', () => {

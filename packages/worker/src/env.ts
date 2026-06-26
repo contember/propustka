@@ -1,7 +1,8 @@
 /**
  * The IAM Worker's CF bindings + vars/secrets. Single source of truth — every
  * other file imports from here, never re-declares the shape. JSON-typed vars
- * (`ACCESS_APPS`, `IAM_BOOTSTRAP_ADMINS`) are parsed once in `buildServices`.
+ * (`HUMAN_EMAIL_DOMAINS`, `HUMAN_EMAILS`, `IAM_BOOTSTRAP_ADMINS`) are parsed once
+ * in `buildServices`.
  */
 export interface Env {
 	/** D1 holding both policy tables and append-only audit tables (one database). */
@@ -9,31 +10,15 @@ export interface Env {
 	/** Admin SPA static assets (served at the Worker root for non-`/admin/*` paths). */
 	ASSETS: Fetcher
 	/**
-	 * JSON object `{ "<aud-tag>": "<app-id>" }` — the JWT audience set AND the
-	 * verified app-identity map. `jose` validates the token `aud` against
-	 * `Object.keys(ACCESS_APPS)`; the matched value is the verified app id.
-	 */
-	ACCESS_APPS: string
-	/** Access team domain (e.g. `https://acme.cloudflareaccess.com`) — the JWKS issuer. */
-	TEAM: string
-	/**
-	 * JSON array of email domains that may pass Cloudflare Access as a HUMAN, for EVERY app propustka
-	 * fronts (e.g. `["mangoweb.cz","contember.com"]`). propustka owns this centrally — apps declare
-	 * only which paths are human-gated vs public, never the audience. Consumed by `reconcileAccess`.
+	 * JSON array of email domains admitted as a HUMAN at login (e.g. `["mangoweb.cz","contember.com"]`).
+	 * A `*` entry means admit anyone. propustka owns this centrally — the login-admission allowlist for
+	 * self-provisioning a new identity. Consumed by `/auth/callback`.
 	 */
 	HUMAN_EMAIL_DOMAINS: string
-	/** JSON array of specific emails that may pass Access as a HUMAN, in ADDITION to the domains. */
+	/** JSON array of specific emails admitted as a HUMAN, in ADDITION to the domains (a `*` = admit-all). */
 	HUMAN_EMAILS: string
-	/** JSON array of bootstrap-admin emails (normally empty). Resolution-time only. */
+	/** JSON array of bootstrap-admin emails (normally empty). Always admitted; resolution-time only. */
 	IAM_BOOTSTRAP_ADMINS: string
-	/**
-	 * Cloudflare API token used for Access provisioning (admin-only; never exposed to app callers).
-	 * Needs BOTH *Access: Service Tokens — Edit* (API-key / service-token provisioning) AND
-	 * *Access: Apps and Policies — Edit* (the `PUT /admin/apps/:app/access` reusable-policy reconcile).
-	 */
-	CF_API_TOKEN: string
-	/** Cloudflare account id, for the Access API. */
-	CF_ACCOUNT_ID: string
 	/** `local` / `stage` / `prod`. */
 	ENVIRONMENT: string
 
@@ -48,7 +33,8 @@ export interface Env {
 	/**
 	 * **Secret.** JSON array of ES256 (EC P-256) PRIVATE JWKs. Index 0 is the active signer; all are
 	 * published in the JWKS so a rotation key verifies before it signs. Empty locally → an ephemeral
-	 * key is generated per isolate (dev only). Never placed in `vars` — provisioned like CF_API_TOKEN.
+	 * key is generated per isolate (dev only). Never placed in `vars` — provisioned as a Worker secret
+	 * (`wrangler secret put` remote / `.dev.vars` local).
 	 */
 	PROPUSTKA_SIGNING_KEYS: string
 	/**

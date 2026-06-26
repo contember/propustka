@@ -1,29 +1,25 @@
 #!/usr/bin/env bun
 /**
- * Mint a per-app PROVISIONING KEY — a Cloudflare Access service token + a propustka service principal
- * carrying a grant — via the admin endpoint `POST /admin/api-keys`. The target app uses the returned
- * clientId/clientSecret as its CI `PROPUSTKA_ACCESS_CLIENT_ID/SECRET` to self-reconcile its schema +
- * Access rules at deploy time. This replaces hand-creating Zero Trust service tokens in the dashboard.
+ * Mint a per-app PROVISIONING KEY — a propustka-NATIVE service principal (carrying a grant) plus an
+ * opaque `px_` key — via the admin endpoint `POST /admin/api-keys`. The target app stores the returned
+ * `apiKey` as its CI `PROPUSTKA_ADMIN_KEY` and uses it (as `Authorization: Bearer`) to self-reconcile
+ * its schema at deploy time. No Cloudflare Access, no Zero Trust service token.
  *
  * For now the key is granted the built-in cross-app `admin` role — the SAME privilege contember prod
  * uses today. Least-privilege per-app reconcile authz (a key scoped to only its own app) is a tracked
  * follow-up that needs propustka to declare its own platform schema + relax the admin gate.
  *
  *   PROPUSTKA_URL=https://propustka.example.com         # the IAM Worker's admin origin
- *   # Auth — the admin API is gated by Cloudflare Access. Pick ONE:
- *   #  • an ADMIN Access service token (operator/CI):
- *   PROPUSTKA_ACCESS_CLIENT_ID=…
- *   PROPUSTKA_ACCESS_CLIENT_SECRET=…
+ *   # Auth — the admin API is gated by propustka itself. Pick ONE:
+ *   #  • an existing ADMIN `px_` key (operator/CI):
+ *   PROPUSTKA_ADMIN_KEY=px_…
  *   #  • first bootstrap (no admin key yet): provision the key in the admin UI instead (human login).
  *   bun run scripts/provision-key.ts --app <appId> [--label <label>] [--dry-run]
  */
 
 interface ProvisionApiKeyResponse {
 	principalId: string
-	clientId: string
-	clientSecret: string
-	tokenId?: string
-	policyInclusion?: string
+	apiKey: string
 }
 
 function arg(name: string): string | undefined {
@@ -59,23 +55,17 @@ async function main(): Promise<void> {
 	}
 
 	const url = required('PROPUSTKA_URL').replace(/\/+$/, '')
-	const clientId = optional('PROPUSTKA_ACCESS_CLIENT_ID')
-	const clientSecret = optional('PROPUSTKA_ACCESS_CLIENT_SECRET')
-	// Both-or-neither: a half-set service token would silently 401 at the Access edge.
-	if ((clientId === undefined) !== (clientSecret === undefined)) {
-		throw new Error('Set BOTH PROPUSTKA_ACCESS_CLIENT_ID and PROPUSTKA_ACCESS_CLIENT_SECRET, or neither (UI bootstrap).')
-	}
+	const adminKey = optional('PROPUSTKA_ADMIN_KEY')
 
 	const headers: Record<string, string> = { 'content-type': 'application/json' }
-	if (clientId !== undefined && clientSecret !== undefined) {
-		headers['CF-Access-Client-Id'] = clientId
-		headers['CF-Access-Client-Secret'] = clientSecret
+	if (adminKey !== undefined) {
+		headers.authorization = `Bearer ${adminKey}`
 	}
 	// propustka's admin CSRF guard rejects state-changing requests whose Origin/Referer doesn't match
 	// its own origin (a browser sends Origin for free; an operator script must set it explicitly).
 	headers.Origin = new URL(url).origin
 
-	// app: null → a cross-app key; the built-in `admin` role resolves for every verified app.
+	// app: null → a cross-app key; the built-in `admin` role resolves for every app.
 	const response = await fetch(`${url}/admin/api-keys`, {
 		method: 'POST',
 		headers,
@@ -91,9 +81,8 @@ async function main(): Promise<void> {
 
 	const result = payload as ProvisionApiKeyResponse
 	console.log(`✓ Provisioning key minted for '${app}' (principal ${result.principalId}).\n`)
-	console.log("Store these as the app's CI secrets — shown ONCE:")
-	console.log(`  PROPUSTKA_ACCESS_CLIENT_ID=${result.clientId}`)
-	console.log(`  PROPUSTKA_ACCESS_CLIENT_SECRET=${result.clientSecret}`)
+	console.log("Store this as the app's CI secret — shown ONCE:")
+	console.log(`  PROPUSTKA_ADMIN_KEY=${result.apiKey}`)
 }
 
 main().catch((error: unknown) => {

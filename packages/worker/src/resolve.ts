@@ -1,25 +1,20 @@
 import type { PermissionEntry, PermissionSource, RoleDef, RoleSource, Scope } from '@propustka/core'
-import type { Db, GrantRow, GroupMappingRow, PrincipalRow, RoleRow } from './db'
-import type { IdentityClient } from './identity'
+import type { Db, GrantRow, PrincipalRow, RoleRow } from './db'
 import { parseJson } from './json'
 import { makeRoleSource } from './roles'
-
-const GITHUB_PROVIDER = 'github'
 
 // ── Pure resolution (no I/O) — testable with in-memory rows ───────────────────
 
 /**
- * The three permission sources already fetched as rows, plus the bootstrap
- * decision. `computePermissions` is pure over this, so the union/dedup logic is
- * unit-testable without D1 or get-identity.
+ * The explicit grants already fetched as rows, plus the bootstrap decision.
+ * `computePermissions` is pure over this, so the union/dedup logic is
+ * unit-testable without D1.
  */
 export interface ResolutionInputs {
-	/** The calling app (aud-derived) — passed to `RoleSource.getRole`; null = cross-app. */
+	/** The calling app — passed to `RoleSource.getRole`; null = cross-app. */
 	app: string | null
 	/** Active, non-expired explicit grants for this principal. */
 	grants: GrantRow[]
-	/** Group mappings matched against the user's group refs (empty for services). */
-	groupMappings: { mapping: GroupMappingRow; groupRef: string }[]
 	/** True when the user's email is in IAM_BOOTSTRAP_ADMINS (false for services). */
 	isBootstrapAdmin: boolean
 }
@@ -95,12 +90,7 @@ export function computePermissions(inputs: ResolutionInputs, roles: RoleSource):
 		}
 	}
 
-	// 2. Group-derived roles (users only — services pass an empty list). Role-only.
-	for (const { mapping, groupRef } of inputs.groupMappings) {
-		expandRole(mapping.role_key, rowScope(mapping.scope_type, mapping.scope_value), `group:${groupRef}`)
-	}
-
-	// 3. Bootstrap admins (users only) — the built-in global `admin` role, source
+	// 2. Bootstrap admins (users only) — the built-in global `admin` role, source
 	// 'bootstrap'. `admin` is a cross-app built-in, so it resolves even at app=null.
 	if (inputs.isBootstrapAdmin) {
 		expandRole('admin', null, 'bootstrap')
@@ -209,12 +199,7 @@ export async function resolveUserPrincipal(db: UserPrincipalStore, sub: string, 
 	}
 }
 
-// ── Full resolution wiring (grants ∪ groups ∪ bootstrap) ──────────────────────
-
-export interface ResolvedPermissions {
-	permissions: PermissionEntry[]
-	groupsUnavailable: boolean
-}
+// ── Full resolution wiring (grants ∪ bootstrap) ───────────────────────────────
 
 /**
  * Load the calling app's DB roles into a `RoleSource` (built-ins layered over them).
@@ -243,45 +228,32 @@ function toRoleDef(row: RoleRow): RoleDef {
 }
 
 /**
- * Fetch the sources for a user and compute their permissions. Group resolution uses
- * get-identity; an outage degrades to explicit grants only with `groupsUnavailable:
- * true` (still fail-closed on the *permission* decision). The calling app's roles are
- * loaded once and passed to the pure `computePermissions`.
+ * Fetch a user's explicit grants and compute their permissions (grants ∪ bootstrap). The calling
+ * app's roles are loaded once and passed to the pure `computePermissions`. Users authenticate via
+ * propustka's own OIDC session — there are no IdP groups in the permission decision.
  */
 export async function resolveUserPermissions(args: {
 	db: Db
-	identity: IdentityClient
 	principal: PrincipalRow
-	cookie: string | null
-	origin: string | null
 	bootstrapAdmins: ReadonlySet<string>
-	/** Verified calling app (aud-derived); grants/mappings are filtered to it (or NULL = cross-app). */
+	/** Calling app; grants are filtered to it (or NULL = cross-app). */
 	app: string | null
-}): Promise<ResolvedPermissions> {
-	const { db, identity, principal, cookie, origin, bootstrapAdmins, app } = args
+}): Promise<PermissionEntry[]> {
+	const { db, principal, bootstrapAdmins, app } = args
 
 	const grants = await db.getActiveGrantsForApp(principal.id, app)
-
-	const groupResult = await identity.getGroups(principal.id, cookie, origin)
-	let groupMappings: { mapping: GroupMappingRow; groupRef: string }[] = []
-	if (!groupResult.unavailable && groupResult.groups.length > 0) {
-		const mappings = await db.getMappingsForGroups(GITHUB_PROVIDER, groupResult.groups, app)
-		groupMappings = mappings.map((mapping) => ({ mapping, groupRef: mapping.group_ref }))
-	}
-
 	const isBootstrapAdmin = principal.email !== null && bootstrapAdmins.has(principal.email)
 
 	const roles = await loadRoleSource(db, app)
-	const permissions = computePermissions({ app, grants, groupMappings, isBootstrapAdmin }, roles)
-	return { permissions, groupsUnavailable: groupResult.unavailable }
+	return computePermissions({ app, grants, isBootstrapAdmin }, roles)
 }
 
 /**
- * Service principals: explicit grants only — no groups, no bootstrap — scoped to the
- * calling app (NULL = cross-app).
+ * Service principals: explicit grants only — no bootstrap — scoped to the calling app
+ * (NULL = cross-app).
  */
 export async function resolveServicePermissions(db: Db, principal: PrincipalRow, app: string | null): Promise<PermissionEntry[]> {
 	const grants = await db.getActiveGrantsForApp(principal.id, app)
 	const roles = await loadRoleSource(db, app)
-	return computePermissions({ app, grants, groupMappings: [], isBootstrapAdmin: false }, roles)
+	return computePermissions({ app, grants, isBootstrapAdmin: false }, roles)
 }

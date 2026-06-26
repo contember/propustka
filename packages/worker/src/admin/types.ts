@@ -4,18 +4,7 @@
 // typed, no codegen). Reuses @propustka/core types where they fit. Keep these clean
 // and complete — they ARE the admin API contract.
 
-import type {
-	AccessAppDecl,
-	AccessRule,
-	AppAccess,
-	AppActionDef,
-	AppSchema,
-	AppScopeDef,
-	PermissionEntry,
-	PermissionSource,
-	PrincipalType,
-	RoleDef,
-} from '@propustka/core'
+import type { AppActionDef, AppSchema, AppScopeDef, PermissionEntry, PermissionSource, PrincipalType, RoleDef } from '@propustka/core'
 
 // ── Common wrappers ───────────────────────────────────────────────────────────
 
@@ -94,40 +83,14 @@ export interface CreateGrantRequest {
 	scopeType?: string | null
 	/** Opaque, app-owned scope value; null / omitted = global. */
 	scopeValue?: string | null
-	/** App id (an ACCESS_APPS value); null / omitted = all apps (cross-app). */
+	/** App id (a registered app id); null / omitted = all apps (cross-app). */
 	app?: string | null
 	expiresAt?: number | null
 }
 
-// ── Group → role mappings ─────────────────────────────────────────────────────
+// ── Apps (read-only; the live registry derived from the schema tables) ────────
 
-export interface GroupMappingDto {
-	id: string
-	provider: string
-	groupRef: string
-	roleKey: string
-	scopeType: string | null
-	scopeValue: string | null
-	/** App id this mapping applies to; null = all apps. */
-	app: string | null
-	createdAt: number
-	/** True when `roleKey` no longer resolves to a known role for the app. */
-	dangling: boolean
-}
-
-export interface CreateGroupMappingRequest {
-	provider: string
-	groupRef: string
-	roleKey: string
-	scopeType?: string | null
-	scopeValue?: string | null
-	/** App id (an ACCESS_APPS value); null / omitted = all apps. */
-	app?: string | null
-}
-
-// ── Apps (read-only; derived from ACCESS_APPS) ────────────────────────────────
-
-/** The set of app ids propustka serves — the choices for a grant/mapping's `app`. */
+/** The set of app ids propustka knows about — the choices for a grant's `app`. */
 export interface AppDto {
 	id: string
 }
@@ -156,31 +119,6 @@ export interface AppSchemaDto {
 	actions: AppActionDef[]
 	/** role_key -> def, origin='app' only (reconciled from code). */
 	roles: Record<string, RoleDef>
-}
-
-// ── Access edge rules (reconciled into Cloudflare as reusable policies) ─────────
-
-/** Reconcile an app's Access edge rules. The request body IS the core `AppAccess`. */
-export type PutAppAccessRequest = AppAccess
-
-/** One managed reusable policy in the live readback (parsed from its `px:<app>:<key>:<kind>` name). */
-export interface AccessPolicyDto {
-	/** The CF-app key this policy belongs to. */
-	key: string
-	/** The rule kind — 'service-auth' | 'human' | 'public'. */
-	kind: string
-	/** The managed policy name. */
-	name: string
-	/** The Cloudflare decision — 'allow' | 'bypass' | 'non_identity'. */
-	decision: string
-	/** How many CF apps reference it (1 in steady state; 0 = orphan). */
-	appCount: number
-}
-
-/** GET/PUT access response — the reusable policies propustka manages for this app (live CF state). */
-export interface AppAccessDto {
-	app: string
-	policies: AccessPolicyDto[]
 }
 
 // ── Policies (origin='custom' roles, admin-composed) ──────────────────────────
@@ -230,7 +168,7 @@ export interface ProvisionApiKeyRequest {
 	scopeType?: string | null
 	/** Opaque, app-owned scope value; null / omitted = global. */
 	scopeValue?: string | null
-	/** App id (an ACCESS_APPS value); null / omitted = all apps. */
+	/** App id (a registered app id); null / omitted = all apps. */
 	app?: string | null
 	expiresAt?: number | null
 }
@@ -317,4 +255,4 @@ export interface MeDto {
 	permissions: PermissionEntry[]
 }
 
-export type { AccessAppDecl, AccessRule, AppAccess, AppActionDef, AppSchema, AppScopeDef, PermissionEntry, PermissionSource, PrincipalType, RoleDef }
+export type { AppActionDef, AppSchema, AppScopeDef, PermissionEntry, PermissionSource, PrincipalType, RoleDef }

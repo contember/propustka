@@ -7,10 +7,10 @@ import type { RoleDef, RoleSource } from '@propustka/core'
  * cross-app / bootstrap path), so it can't sit in a per-app DB table. Everything else
  * is loaded from `roles` for the calling app and layered under the built-ins.
  *
- * `grants.role_key` / `group_role_mappings.role_key` are plain TEXT (no FK — a grant
- * may set app=NULL while a roles row always has a concrete app). Validate the key at
- * write time against the built-ins OR the app's `roles` rows; a key that resolves to
- * nothing at read time confers zero permissions (fail-closed) and shows as dangling.
+ * `grants.role_key` is plain TEXT (no FK — a grant may set app=NULL while a roles row
+ * always has a concrete app). Validate the key at write time against the built-ins OR
+ * the app's `roles` rows; a key that resolves to nothing at read time confers zero
+ * permissions (fail-closed) and shows as dangling.
  */
 export const BUILTIN_ROLES: Record<string, RoleDef> = {
 	admin: { name: 'Admin', permissions: ['*'] },

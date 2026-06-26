@@ -42,8 +42,8 @@ DECLARES it in code in [`propustka.schema.ts`](./propustka.schema.ts) as a typed
 source of truth for what the app checks.
 
 A provisioning step reconciles that declaration into Propustka via the idempotent admin
-endpoint `PUT /admin/apps/:app/schema` — the authz-schema mirror of the Access-as-code
-pattern. Run [`scripts/provision-schemas.ts`](../../scripts/provision-schemas.ts):
+endpoint `PUT /admin/apps/:app/schema`. The first reconcile is what REGISTERS the app with
+Propustka. Run [`scripts/provision-schemas.ts`](../../scripts/provision-schemas.ts):
 
 ```bash
 # from this dir — dry-run prints the intended reconcile, pushes nothing
@@ -52,15 +52,15 @@ bun run provision-schema -- --dry-run
 # push against a running Worker (local: ENVIRONMENT=local dev bypass → no auth needed)
 PROPUSTKA_URL=http://127.0.0.1:18190 bun run provision-schema
 
-# remote: the admin API is behind Cloudflare Access — supply an Access service token
+# remote: the admin API is gated by Propustka itself — supply a propustka-issued `px_` admin key
 PROPUSTKA_URL=https://propustka.example.com \
-PROPUSTKA_ACCESS_CLIENT_ID=…  PROPUSTKA_ACCESS_CLIENT_SECRET=… \
+PROPUSTKA_ADMIN_KEY=px_… \
 bun run provision-schema
 ```
 
 Reconcile is idempotent: it upserts the app's scopes/actions/`origin='app'` roles, deletes
 app-origin rows you removed, and never touches admin-composed `origin='custom'` policies. The
-target Propustka must already KNOW the app id (`example-app` — an `ACCESS_APPS` value).
+first reconcile registers the app id (`example-app`); after that it self-mirrors on every push.
 
 To add a NEW app: give it a `propustka.schema.ts` exporting a typed `AppSchema` + its app id,
 register it in `DECLARATIONS` in `scripts/provision-schemas.ts`, then run the script.

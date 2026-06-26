@@ -150,17 +150,13 @@ function freshDb(): Database {
 	return db
 }
 
-function makeEnv(db: Database, overrides: Partial<Pick<Env, 'ACCESS_APPS' | 'ENVIRONMENT'>> = {}): Env {
+function makeEnv(db: Database, overrides: Partial<Pick<Env, 'ENVIRONMENT'>> = {}): Env {
 	return {
 		DB: new SqliteD1(db),
 		ASSETS: assetsStub,
-		ACCESS_APPS: overrides.ACCESS_APPS ?? '{}',
-		TEAM: 'https://test.cloudflareaccess.com',
 		HUMAN_EMAIL_DOMAINS: '["contember.com"]',
 		HUMAN_EMAILS: '[]',
 		IAM_BOOTSTRAP_ADMINS: '[]',
-		CF_API_TOKEN: 'dummy-token',
-		CF_ACCOUNT_ID: 'dummy-account',
 		ENVIRONMENT: overrides.ENVIRONMENT ?? 'local',
 		ISSUER: 'http://localhost:18191',
 		PROPUSTKA_SIGNING_KEYS: '',

@@ -3,7 +3,7 @@ import { handleAdmin } from '../admin/router'
 import type { AppSchemaDto, GrantDto, PolicyDto, RoleDto } from '../admin/types'
 import type { Env } from '../env'
 import type { Services } from '../services'
-import { createHarness, DEFAULT_AUD, type Harness, seedGrant, seedUser } from './helpers/harness'
+import { createHarness, type Harness, seedAppAction, seedGrant, seedUser } from './helpers/harness'
 
 const ADMIN_ENV: Pick<Env, 'PROPUSTKA_SIGNING_KEYS' | 'ENVIRONMENT'> = { PROPUSTKA_SIGNING_KEYS: '', ENVIRONMENT: 'stage' }
 
@@ -27,10 +27,10 @@ class FakeExecutionContext implements ExecutionContext {
 	passThroughOnException(): void {}
 }
 
-// Two configured apps: the admin app (iam-admin) and a target app (opice) whose
-// vocabulary we reconcile. Both must be ACCESS_APPS values for `knownApps` to accept them.
+// The target app ('opice') registers itself by reconciling its schema (`PUT …/opice/schema`), which
+// is how it lands in the DB-derived `knownApps` registry — no static config list anymore.
 function adminServices(h: Harness): Services {
-	return h.makeServices({ environment: 'stage', accessApps: { [DEFAULT_AUD]: 'iam-admin', 'aud-opice': 'opice' } })
+	return h.makeServices({ environment: 'stage' })
 }
 
 // Seed a global admin user and open an SSO session so every request clears the gate.
@@ -231,6 +231,12 @@ describe('grant create — role XOR inline, catalog validation, scope both-or-ne
 		return seedUser(h.sqlite, { sub: 'sub-target', email: 'target@example.com' })
 	}
 
+	// Register 'opice' in the DB-derived app registry (so `appField`/`knownApps` accept it) without a
+	// full schema reconcile — for the tests below that grant against 'opice' but don't PUT its schema.
+	function registerOpice(h: Harness): void {
+		seedAppAction(h.sqlite, 'opice', 'report.read')
+	}
+
 	test('a role grant against an app role succeeds and reflects the role', async () => {
 		const h = createHarness()
 		const token = await asAdmin(h)
@@ -251,6 +257,7 @@ describe('grant create — role XOR inline, catalog validation, scope both-or-ne
 	test('the built-in admin role is grantable for any app', async () => {
 		const h = createHarness()
 		const token = await asAdmin(h)
+		registerOpice(h)
 		const principalId = await targetPrincipal(h)
 		const res = await run(h, req('/admin/grants', 'POST', token, { principalId, app: 'opice', roleKey: 'admin' }))
 		expect(res.status).toBe(201)
@@ -259,6 +266,7 @@ describe('grant create — role XOR inline, catalog validation, scope both-or-ne
 	test('an unknown role is rejected (400)', async () => {
 		const h = createHarness()
 		const token = await asAdmin(h)
+		registerOpice(h)
 		const principalId = await targetPrincipal(h)
 		const res = await run(h, req('/admin/grants', 'POST', token, { principalId, app: 'opice', roleKey: 'ghost' }))
 		expect(res.status).toBe(400)
@@ -301,6 +309,7 @@ describe('grant create — role XOR inline, catalog validation, scope both-or-ne
 	test('supplying NEITHER roleKey nor permissions is rejected (XOR)', async () => {
 		const h = createHarness()
 		const token = await asAdmin(h)
+		registerOpice(h)
 		const principalId = await targetPrincipal(h)
 		const res = await run(h, req('/admin/grants', 'POST', token, { principalId, app: 'opice' }))
 		expect(res.status).toBe(400)
@@ -309,6 +318,7 @@ describe('grant create — role XOR inline, catalog validation, scope both-or-ne
 	test('a half-set scope (scopeType without scopeValue) is rejected (400)', async () => {
 		const h = createHarness()
 		const token = await asAdmin(h)
+		registerOpice(h)
 		const principalId = await targetPrincipal(h)
 		const res = await run(
 			h,
@@ -320,6 +330,7 @@ describe('grant create — role XOR inline, catalog validation, scope both-or-ne
 	test('a full scope coordinate is accepted and reflected', async () => {
 		const h = createHarness()
 		const token = await asAdmin(h)
+		registerOpice(h)
 		const principalId = await targetPrincipal(h)
 		const res = await run(
 			h,

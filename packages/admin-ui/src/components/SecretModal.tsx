@@ -11,7 +11,7 @@ interface SecretField {
 interface SecretModalProps {
 	title: string
 	fields: SecretField[]
-	/** Extra caveat copy (e.g. the manual Service-Auth-policy note). */
+	/** Extra caveat copy (e.g. the share-link "hand it over a trusted channel" note). */
 	note?: ReactNode
 	onClose: () => void
 }

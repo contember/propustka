@@ -60,14 +60,10 @@ export async function mintToken(services: Services, env: MintEnv, input: MintTok
 		return { result: { ok: false, reason: 'disabled' }, principalId: principal.id }
 	}
 
-	// Resolve permissions for the requesting app. Sessions are a USER credential (OIDC login); no
-	// get-identity cookie/origin in the propustka-native world, so groups don't contribute.
-	const { permissions } = await resolveUserPermissions({
+	// Resolve permissions for the requesting app. Sessions are a USER credential (OIDC login).
+	const permissions = await resolveUserPermissions({
 		db: services.db,
-		identity: services.identity,
 		principal,
-		cookie: null,
-		origin: null,
 		bootstrapAdmins: services.config.bootstrapAdmins,
 		app: input.app,
 	})
@@ -151,15 +147,12 @@ export async function resolveCredential(services: Services, cred: CredentialRow,
 
 	const resolved = principal.type === 'service'
 		? await resolveServicePermissions(services.db, principal, app)
-		: (await resolveUserPermissions({
+		: await resolveUserPermissions({
 			db: services.db,
-			identity: services.identity,
 			principal,
-			cookie: null,
-			origin: null,
 			bootstrapAdmins: services.config.bootstrapAdmins,
 			app,
-		})).permissions
+		})
 
 	// Inline grants on a bound credential are a DOWNSCOPE restriction: keep only what the principal
 	// actually holds (effective = resolve(principal) ∩ inline). No inline → the principal's full set.

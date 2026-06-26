@@ -15,7 +15,7 @@ export interface PrincipalRow {
 export interface GrantRow {
 	id: string
 	principal_id: string
-	/** App id (ACCESS_APPS value) this grant applies to; NULL = all apps (cross-app). */
+	/** Registered app id this grant applies to; NULL = all apps (cross-app). */
 	app: string | null
 	/** Named role/policy key; XOR `permissions`. Exactly one is non-null. */
 	role_key: string | null
@@ -27,20 +27,6 @@ export interface GrantRow {
 	scope_value: string | null
 	granted_by: string | null
 	expires_at: number | null
-	created_at: number
-}
-
-export interface GroupMappingRow {
-	id: string
-	provider: string
-	group_ref: string
-	role_key: string
-	/** App id this mapping applies to; NULL = all apps. */
-	app: string | null
-	/** Scope dimension; NULL = global. */
-	scope_type: string | null
-	/** Opaque, app-owned scope value; NULL = global. */
-	scope_value: string | null
 	created_at: number
 }
 
@@ -423,64 +409,21 @@ export class Db {
 		await this.d1.prepare('DELETE FROM grants WHERE principal_id = ?').bind(principalId).run()
 	}
 
-	// ── Group → role mappings ─────────────────────────────────────────────────
+	// ── App registry ──────────────────────────────────────────────────────────
 
 	/**
-	 * Mappings matching any of the given normalized group refs (users only),
-	 * scoped to the calling `app` (NULL app = cross-app). Mirrors getActiveGrantsForApp.
+	 * The set of app ids propustka knows about — the distinct `app` across the schema tables
+	 * (`app_actions ∪ app_scopes ∪ roles`). An app registers itself by reconciling its vocabulary
+	 * via `PUT /admin/apps/:app/schema`, so this is the live registry (no static config list).
 	 */
-	async getMappingsForGroups(provider: string, groupRefs: string[], app: string | null): Promise<GroupMappingRow[]> {
-		if (groupRefs.length === 0) {
-			return []
-		}
-		const placeholders = groupRefs.map(() => '?').join(', ')
+	async listKnownApps(): Promise<string[]> {
 		const { results } = await this.d1
-			.prepare(`SELECT * FROM group_role_mappings
-				WHERE provider = ? AND group_ref IN (${placeholders}) AND (app IS NULL OR app = ?)`)
-			.bind(provider, ...groupRefs, app)
-			.all<GroupMappingRow>()
-		return results
-	}
-
-	async listGroupMappings(): Promise<GroupMappingRow[]> {
-		const { results } = await this.d1
-			.prepare('SELECT * FROM group_role_mappings ORDER BY created_at DESC')
-			.all<GroupMappingRow>()
-		return results
-	}
-
-	async createGroupMapping(input: {
-		provider: string
-		groupRef: string
-		roleKey: string
-		app?: string | null
-		scopeType?: string | null
-		scopeValue?: string | null
-	}): Promise<GroupMappingRow> {
-		const id = uuidv7()
-		return firstRow<GroupMappingRow>(
-			this.d1
-				.prepare(`INSERT INTO group_role_mappings (id, provider, group_ref, role_key, app, scope_type, scope_value)
-					VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`)
-				.bind(
-					id,
-					input.provider,
-					input.groupRef,
-					input.roleKey,
-					input.app ?? null,
-					input.scopeType ?? null,
-					input.scopeValue ?? null,
-				),
-		)
-	}
-
-	async getGroupMappingById(id: string): Promise<GroupMappingRow | null> {
-		return this.d1.prepare('SELECT * FROM group_role_mappings WHERE id = ?').bind(id).first<GroupMappingRow>()
-	}
-
-	async deleteGroupMapping(id: string): Promise<boolean> {
-		const result = await this.d1.prepare('DELETE FROM group_role_mappings WHERE id = ?').bind(id).run()
-		return (result.meta.changes ?? 0) > 0
+			.prepare(`SELECT app FROM app_actions
+				UNION SELECT app FROM app_scopes
+				UNION SELECT app FROM roles
+				ORDER BY app`)
+			.all<{ app: string }>()
+		return results.map((r) => r.app)
 	}
 
 	// ── App-declared vocabulary (roles, scopes, actions) ──────────────────────

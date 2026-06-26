@@ -8,14 +8,11 @@ import type { Services } from '../services'
 import type { AdminContext } from './handlers'
 import {
 	createGrant,
-	createGroupMapping,
 	createPolicy,
 	createShareLink,
 	deleteGrant,
-	deleteGroupMapping,
 	deletePolicy,
 	deletePrincipal,
-	getAppAccess,
 	getAppSchema,
 	getPrincipal,
 	handleMe,
@@ -24,14 +21,12 @@ import {
 	listApps,
 	listAudit,
 	listAuthLog,
-	listGroupMappings,
 	listPolicies,
 	listPrincipals,
 	listRoles,
 	listShareLinks,
 	patchPrincipal,
 	provisionApiKey,
-	putAppAccess,
 	putAppSchema,
 	revokeApiKey,
 	revokeShareLink,
@@ -182,12 +177,9 @@ async function resolveAdmin(
 	if (principalStatus(principal) === 'disabled') {
 		return { ok: false, status: 403, reason: 'disabled' }
 	}
-	const { permissions } = await resolveUserPermissions({
+	const permissions = await resolveUserPermissions({
 		db: services.db,
-		identity: services.identity,
 		principal,
-		cookie: null,
-		origin: null,
 		bootstrapAdmins: services.config.bootstrapAdmins,
 		app: IAM_APP,
 	})
@@ -271,21 +263,12 @@ async function dispatch(c: AdminContext): Promise<Response> {
 			}
 			return method === 'DELETE' ? deleteGrant(c, idOrSub) : methodNotAllowed()
 
-		case 'group-mappings':
-			if (idOrSub === undefined) {
-				if (method === 'GET') return listGroupMappings(c)
-				if (method === 'POST') return createGroupMapping(c)
-				return methodNotAllowed()
-			}
-			return method === 'DELETE' ? deleteGroupMapping(c, idOrSub) : methodNotAllowed()
-
 		case 'roles':
 			return method === 'GET' ? listRoles(c) : methodNotAllowed()
 
 		case 'apps':
-			// GET /admin/apps                          → list configured app ids
+			// GET /admin/apps                          → list registered app ids
 			// GET|PUT  /admin/apps/:app/schema         → read / reconcile vocabulary
-			// GET|PUT  /admin/apps/:app/access         → read / reconcile CF Access edge rules
 			// GET|POST /admin/apps/:app/policies       → list / create custom policies
 			// PUT|DELETE /admin/apps/:app/policies/:key → update / delete a custom policy
 			if (idOrSub === undefined) {
@@ -294,11 +277,6 @@ async function dispatch(c: AdminContext): Promise<Response> {
 			if (action === 'schema') {
 				if (method === 'GET') return getAppSchema(c, idOrSub)
 				if (method === 'PUT') return putAppSchema(c, idOrSub)
-				return methodNotAllowed()
-			}
-			if (action === 'access') {
-				if (method === 'GET') return getAppAccess(c, idOrSub)
-				if (method === 'PUT') return putAppAccess(c, idOrSub)
 				return methodNotAllowed()
 			}
 			if (action === 'policies') {

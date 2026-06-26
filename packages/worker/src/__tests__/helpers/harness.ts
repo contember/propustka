@@ -1,13 +1,8 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
-import { createLocalJWKSet, exportJWK, generateKeyPair, type JSONWebKeySet, type JWTPayload, SignJWT } from 'jose'
-import type { CfAccess } from '../../cfaccess'
 import { Db } from '../../db'
-import { IdentityClient } from '../../identity'
-import { type AccessApps, JwtValidator } from '../../jwt'
 import { OidcClient, type OidcMetadata } from '../../oidc'
 import { hashToken } from '../../secret'
 import type { Config, Services } from '../../services'
-import { FakeCfAccess } from './fake-cfaccess'
 import { allMigrations } from './migrations'
 
 /**
@@ -15,19 +10,12 @@ import { allMigrations } from './migrations'
  *   - a real in-memory `bun:sqlite` DB with the production migration applied,
  *     wrapped in a small D1-compatible adapter so `new Db(...)` runs against it
  *     exactly as it does over D1 (mirrors the schema.test.ts pattern);
- *   - a `JwtValidator` fed a local RSA JWKS (the constructor's 3rd-arg seam) plus a
- *     `signToken` helper that mints valid Access tokens with the matching key
- *     (mirrors the jwt.test.ts pattern);
- *   - a real `IdentityClient` (group resolution returns `unavailable` with no
- *     network when cookie/origin are null — which every test here passes);
- *   - `makeServices({ environment, accessApps })` assembling a plain `Services`
- *     from these real instances.
+ *   - `signSession`, minting a real `px_session` SSO session for a seeded principal;
+ *   - `makeServices({ environment, human, bootstrapAdmins, oidc })` assembling a
+ *     plain native `Services`.
  *
- * Nothing here mocks the modules under test — jose performs the genuine
- * cryptographic verification and the SQL runs against the real schema.
+ * Nothing here mocks the modules under test — the SQL runs against the real schema.
  */
-
-// ── Access config used across the suite ───────────────────────────────────────
 
 /** Offline OIDC discovery metadata for the harness default client (no network in tests). */
 export const HARNESS_OIDC_METADATA: OidcMetadata = {
@@ -35,48 +23,6 @@ export const HARNESS_OIDC_METADATA: OidcMetadata = {
 	authorizationEndpoint: 'https://idp.test/authorize',
 	tokenEndpoint: 'https://idp.test/token',
 	jwksUri: 'https://idp.test/jwks',
-}
-
-export const TEAM = 'https://team.cloudflareaccess.com'
-const ALG = 'RS256'
-/** The default aud tag → app id map used when a test wants real Access configured. */
-export const DEFAULT_ACCESS_APPS: AccessApps = { 'aud-iam-tag': 'iam-admin' }
-/** The aud tag a signed token carries by default (a key of DEFAULT_ACCESS_APPS). */
-export const DEFAULT_AUD = 'aud-iam-tag'
-
-// ── One shared RSA key pair + local JWKS for the whole suite ──────────────────
-// The validator is given a createLocalJWKSet resolver bound to the public key, so
-// jwtVerify resolves the signing key locally (no network) while still doing the
-// real signature check; signToken signs with the matching private key.
-
-const { publicKey, privateKey } = await generateKeyPair(ALG)
-const jwk = await exportJWK(publicKey)
-jwk.kid = 'test-key-1'
-jwk.alg = ALG
-jwk.use = 'sig'
-const jwks: JSONWebKeySet = { keys: [jwk] }
-const localJwks = createLocalJWKSet(jwks)
-
-export interface SignClaims extends JWTPayload {
-	email?: string
-	sub?: string
-	common_name?: string
-}
-
-export interface SignOptions {
-	/** aud to set; defaults to DEFAULT_AUD. */
-	audience?: string | string[]
-}
-
-/** Mint a valid Access token signed with the local key the validator trusts. */
-export async function signToken(claims: SignClaims, opts: SignOptions = {}): Promise<string> {
-	return new SignJWT(claims)
-		.setProtectedHeader({ alg: ALG, kid: 'test-key-1' })
-		.setIssuer(TEAM)
-		.setIssuedAt()
-		.setAudience(opts.audience ?? DEFAULT_AUD)
-		.setExpirationTime('1h')
-		.sign(privateKey)
 }
 
 // ── D1-compatible adapter over bun:sqlite ─────────────────────────────────────
@@ -221,13 +167,12 @@ export interface Harness {
 	sqlite: Database
 	/** The production `Db` over the in-memory sqlite, via the D1 adapter. */
 	db: Db
-	signToken: typeof signToken
 	/**
 	 * Create an active SSO session for a principal and return the plaintext `px_session` cookie value
 	 * (the native admin/auth credential). Mirrors what `/auth/callback` does after a successful login.
 	 */
 	signSession(principalId: string, options?: SignSessionOptions): Promise<string>
-	/** Build a `Services` for the given environment + Access config. */
+	/** Build a native `Services` for the given environment + config. */
 	makeServices(options?: MakeServicesOptions): Services
 }
 
@@ -243,14 +188,10 @@ export interface SignSessionOptions {
 export interface MakeServicesOptions {
 	/** ENVIRONMENT value (e.g. 'local', 'stage'). Defaults to 'local'. */
 	environment?: string
-	/** ACCESS_APPS map. Defaults to {} (empty — the local-bypass precondition). */
-	accessApps?: AccessApps
 	/** IAM_BOOTSTRAP_ADMINS emails. Defaults to empty. */
 	bootstrapAdmins?: ReadonlySet<string>
 	/** Central human-admission allowlist. Defaults to `{ emailDomains: ['contember.com'], emails: [] }`. */
 	human?: { emailDomains?: readonly string[]; emails?: readonly string[] }
-	/** Cloudflare Access surface. Defaults to a fresh in-memory `FakeCfAccess`. */
-	cfAccess?: CfAccess
 	/** OIDC client. Defaults to one with injected (offline) discovery metadata; tests override for the callback flow. */
 	oidc?: OidcClient
 	/** propustka's own origin (token `iss` + OIDC redirect base). */
@@ -265,30 +206,21 @@ export function createHarness(): Harness {
 	sqlite.exec('PRAGMA foreign_keys = ON')
 	sqlite.exec(migration)
 	const db = new Db(new TestD1Database(sqlite))
-	const identity = new IdentityClient()
 
 	function makeServices(options: MakeServicesOptions = {}): Services {
-		const accessApps = options.accessApps ?? {}
 		const issuer = options.issuer ?? 'http://localhost:18191'
 		const config: Config = {
-			accessApps,
-			team: TEAM,
 			human: {
 				emailDomains: options.human?.emailDomains ?? ['contember.com'],
 				emails: options.human?.emails ?? [],
 			},
 			bootstrapAdmins: options.bootstrapAdmins ?? new Set(),
-			cfApiToken: '',
-			cfAccountId: '',
 			environment: options.environment ?? 'local',
 			issuer,
 			sessionCookieDomain: options.sessionCookieDomain ?? '',
 		}
 		return {
 			db,
-			jwt: new JwtValidator(TEAM, accessApps, localJwks),
-			identity,
-			cfAccess: options.cfAccess ?? new FakeCfAccess(),
 			oidc: options.oidc ?? new OidcClient(
 				{
 					issuer: 'https://idp.test',
@@ -316,7 +248,7 @@ export function createHarness(): Harness {
 		return token
 	}
 
-	return { sqlite, db, signToken, signSession, makeServices }
+	return { sqlite, db, signSession, makeServices }
 }
 
 // ── Seeding helpers (direct INSERTs against the real schema) ──────────────────

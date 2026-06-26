@@ -3,13 +3,12 @@
 #
 # lopata loads `.dev.vars` on top of the wrangler `vars` (`.dev.vars` overrides
 # `vars`), so the Worker boots locally without these secrets living in the
-# generated wrangler.jsonc. Access doesn't exist locally; these are dummy values,
-# never real credentials. Do NOT put real secrets here.
+# generated wrangler.jsonc. These are dummy values, never real credentials. Do NOT
+# put real secrets here.
 #
-# Remote (stage/prod) provisioning is out-of-band: `wrangler secret put CF_API_TOKEN`
-# and `wrangler secret put CF_ACCOUNT_ID`. See packages/worker/oblaka.ts.
-CF_API_TOKEN=local-cf-api-token
-CF_ACCOUNT_ID=local-cf-account-id
+# Remote (stage/prod) provisioning is out-of-band: `wrangler secret put
+# PROPUSTKA_SIGNING_KEYS` and `wrangler secret put OIDC_CLIENT_SECRET`. See
+# packages/worker/oblaka.ts.
 
 # propustka-native auth secrets. Empty PROPUSTKA_SIGNING_KEYS → an ephemeral ES256 key is
 # generated per isolate (dev only; sessions reset on restart). Real keys (stage/prod) are a JSON

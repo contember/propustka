@@ -55,8 +55,8 @@ export const exampleAppSchema: AppSchema = {
 
 /**
  * The app id this schema is reconciled under — the SAME id the app passes to
- * `new IamClient(env.IAM, 'example-app')` in `src/index.ts`, and a value the target
- * Propustka must know (an `ACCESS_APPS` value). The reconcile script reads this so the
- * declaration is the single source of truth for both the id and the vocabulary.
+ * `new PropustkaAuth(env.IAM, 'example-app', …)` in `src/index.ts`. The first schema
+ * reconcile is what REGISTERS the app with Propustka. The reconcile script reads this so
+ * the declaration is the single source of truth for both the id and the vocabulary.
  */
 export const exampleAppId = 'example-app'

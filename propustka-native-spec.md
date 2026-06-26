@@ -1,8 +1,9 @@
 # Propustka-native auth — spec
 
-How propustka stops _riding on_ Cloudflare Access and becomes the auth layer itself: its own SSO
-(any OIDC provider), its own credentials, its own per-app tokens — so apps no longer depend on CF
-Access and we no longer pay for / sync with CF Access Teams.
+How propustka stopped _riding on_ Cloudflare Access and became the auth layer itself: its own SSO
+(any OIDC provider), its own credentials, its own per-app tokens, its own in-process per-path gating
+— so apps no longer depend on CF Access and we no longer pay for / sync with CF Access Teams. The
+cutoff is **complete**: CF Access has been removed entirely (see _Migration_ below).
 
 This document is the design of record for the `feat/propustka-native-auth` work. See
 `architecture.md` for the repository layout, package graph, provisioning, and the deploy pipeline.
@@ -67,8 +68,9 @@ What we deliberately dropped:
   endpoints come from `/.well-known/openid-configuration`.
 - **TTL-bounded revocation is acceptable.** The hot path is a local verify. TTL is the one
   security knob (see below); `PROPUSTKA_MAX_TOKEN_TTL` caps it, per credential kind.
-- **Incremental migration.** The new path runs ALONGSIDE the existing Access path; apps flip one at a
-  time; the CF Access machinery is deleted last.
+- **Incremental migration (now complete).** The native path was built ALONGSIDE the Access path, then
+  CF Access was deleted in a final flag-day slice; downstream apps migrate to `PropustkaAuth` in their
+  own repos.
 
 ## The unified pipeline
 
@@ -193,25 +195,36 @@ The JWKS is fetched once per isolate over the **service binding** (`getJwks`, wh
 the Access edge — so it works while propustka's own host is still Access-gated) and cached per
 binding; a key rotation (unknown `kid`) forces one refetch. `/.well-known/jwks.json` is also served.
 
-## Rule definitions (per-path credential declaration)
+## Per-path gates (in-process, the built shape)
 
-An app declares, per path, **who** may access and — for the key/jwt case — **where** the credential
-rides and its **kind**, so the SDK middleware knows how to handle it:
+An app declares its gates as a typed **`AppGates`** in `@propustka/core` — an ordered list of rules,
+enforced **in-process** by `PropustkaAuth` (no reconcile, no worker endpoint). This is the
+propustka-native successor to the deleted CF Access edge `AccessRule` (`service-auth | human |
+public`), which gated WHO at the edge.
 
+```ts
+type GateKind =
+	| { kind: 'public' } // anyone — no credential; terminal, anonymous ctx
+	| { kind: 'service'; credential?: CredentialLocation } // a px_ key (Bearer) or a passthrough JWT
+	| { kind: 'human' } // a logged-in human (px_session / px_token)
+
+type GateRule = { path: string } & GateKind // path is an anchored glob, `*` = any run
+interface AppGates {
+	rules: GateRule[]
+}
 ```
-{ match: <path glob>,
-  credential: { in: 'cookie' | 'header' | 'query' | 'path', name?, kind: 'session' | 'key' | 'jwt' }
-             | 'public' }
-```
 
-- `kind: 'session' | 'key'` → resolve-then-cache.
-- `kind: 'jwt'` → passthrough (middleware does nothing; the app verifies locally and sees a resolved
-  request transparently).
-- `'public'` → no credential required.
+- **Precedence = array order**, first-match-wins. A matching rule whose required credential is
+  ABSENT falls through to the next matching rule; PRESENT-but-invalid fails closed (no fall-through).
+- A request matching **no** rule is **denied** (fail-closed) — there is no edge in front anymore.
+- `public` → terminal, resolves to an anonymous `AuthContext` (`principal: null`), no binding call.
+- `service` → a bearer by default (`Authorization: Bearer`) or the declared `credential` location; a
+  `px_` key is exchanged once via `mintFromKey` (cached), a passthrough JWT is verified locally.
+- `human` → a `px_session`/`px_token`; a miss carries a `loginUrl` so the caller can 302 to
+  `/auth/login`.
 
-This is the propustka-native successor to today's `AccessRule` (`service-auth | human | public`),
-which gated WHO at the CF edge. WHO-is-a-valid-human is decided centrally at login (OIDC +
-`HUMAN_EMAIL_DOMAINS` / `HUMAN_EMAILS`); per-path authorization is the app's `can()` check.
+WHO-is-a-valid-human is decided centrally at login (OIDC + the `HUMAN_EMAIL_DOMAINS` / `HUMAN_EMAILS`
+admission allowlist, `*` = admit-all); per-path authorization is then the app's own `can()` check.
 
 ## Login flow (OIDC — any provider via discovery)
 
@@ -251,22 +264,27 @@ per kind defaulting), `SESSION_COOKIE_DOMAIN`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, 
   credentials via `issueKey`. Service tokens are folded too: `issueServiceToken`/`revokeServiceToken`/
   `rotateServiceToken` are gone — `issueKey({ service })` creates a NATIVE service principal
   (`external_id` NULL, resolved by its `px_` key) + grant + bound key, and the admin api-keys page
-  provisions/rotates/revokes natively (no CF service token). The `CfAccess` client keeps only its
-  apps/reusable-policy surface (used by reconcile-access until CF removal).
-- **CF Access removal (last)**: delete `cfaccess.ts`, `scripts/provision-access*.ts`,
-  `reconcile-access`, `ACCESS_APPS`/`TEAM`; rebirth `propustka.access.ts` as the per-path credential
-  declaration above. Until then `/auth/*` + `/.well-known/jwks.json` need a `public` carve-out.
+  provisions/rotates/revokes natively (no CF service token). The `CfAccess` client is deleted.
+- **CF Access removal** ✅ DONE: deleted `cfaccess.ts`/`jwt.ts`/`identity.ts`/`cache.ts`,
+  `scripts/provision-access*.ts`, `admin/reconcile-access.ts`, `propustka.access.ts`, the
+  `ACCESS_APPS`/`TEAM`/`CF_API_TOKEN`/`CF_ACCOUNT_ID` env, the access-edge admin surface, and
+  `group_role_mappings` (migration `0007`). The forwarded-Access-JWT `authenticate()` RPC is gone —
+  the management RPCs resolve the caller natively (`resolveCaller`), `/admin/*` gates natively
+  (`px_session` / `Bearer px_`), and the per-path edge rules are reborn as the in-process `AppGates`
+  above. `/auth/*` + `/.well-known/jwks.json` live on propustka's own host (no carve-out needed).
 
 ## Affected downstream apps (known)
 
+These live in **other repos** and must migrate to `PropustkaAuth` there; this branch deliberately
+breaks their current CF-Access integration (accepted flag day).
+
 - **poplach** — ingest (`/api/*/envelope`) is already a **public** carve-out + its own `sentry_key`
-  KV lookup, independent of propustka; the Sentry-compat path is unaffected. Only the operator UI
-  (human) migrates to the OIDC session path.
-- **opice** — ingest (`/api/v1/<slug>/…`) authenticates with **CF Access service tokens**
-  (`cf-access-client-id` / `cf-access-client-secret`, DSN-packaged). The native equivalent now exists
-  (`issueKey({ service })` / native api-keys → `px_` keys); opice stays on the Access path until its
-  DSNs are reissued as `px_` keys (carried in a header) or as passthrough JWTs. The operator UI
-  migrates independently.
+  KV lookup, independent of propustka; the Sentry-compat path is unaffected (a `public` gate rule).
+  Only the operator UI (human) migrates to the OIDC session path.
+- **opice** — ingest (`/api/v1/<slug>/…`) authenticated with **CF Access service tokens**
+  (`cf-access-client-id` / `cf-access-client-secret`, DSN-packaged). Those must be reissued as native
+  `px_` keys (`issueKey({ service })` / native api-keys, carried in a header → a `service` gate rule)
+  or as passthrough JWTs. The operator UI migrates to the OIDC session path independently.
 
 ## Build order
 
@@ -278,8 +296,9 @@ per kind defaulting), `SESSION_COOKIE_DOMAIN`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, 
    surface is removed).
 3. **SDK** ✅ — `PropustkaAuth` accepts cookie / `px_` bearer / passthrough JWT; `Capability` collapsed
    into the anonymous `AuthContext`; `IamClient` exposes `issueKey`/`issueJwt`/`revokeKey`.
-4. **Rule schema + CF Access removal** — the per-path credential declaration; delete CF Access
-   machinery (later slice).
+4. **Gate schema + CF Access removal** ✅ — the in-process `AppGates` (`public`/`service`/`human`)
+   enforced by `PropustkaAuth`; native `resolveCaller` + native `/admin` gate + `/auth/callback`
+   admission; all CF Access machinery, the `authenticate()` RPC, and `group_role_mappings` deleted.
 
 ## Follow-ups (not in the foundation slices)
 

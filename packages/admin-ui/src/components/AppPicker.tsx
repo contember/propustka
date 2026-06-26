@@ -68,7 +68,7 @@ export function AppPicker({ apps, value, onChange, idPrefix = 'app' }: AppPicker
 					{apps.map((a) => <option key={a.id} value={a.id}>{a.id}</option>)}
 				</select>
 			)}
-			{apps.length === 0 && <p className="hint">No apps configured (ACCESS_APPS empty) — grants can only be cross-app.</p>}
+			{apps.length === 0 && <p className="hint">No apps registered yet — grants can only be cross-app.</p>}
 		</fieldset>
 	)
 }
