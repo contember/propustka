@@ -67,17 +67,59 @@ export interface AppSchema {
 	roles: Record<string, RoleDef>
 }
 
-// ── Access edge rules (the Cloudflare Access front door, declared as code) ──────
+// ── Per-path access gates (the propustka-native front door, enforced IN-PROCESS by the SDK) ──
 //
-// Parallel to `AppSchema`, but for the EDGE (Cloudflare Access) rather than authz. An app
-// declares which rules front its hostnames; Propustka reconciles them into Cloudflare as
-// account-level REUSABLE policies attached to the app's Access application(s) — the new CF
-// model. Three rule kinds map to the three Access decisions:
-//   - service-auth → `non_identity` / "any valid service token" (machines: service tokens)
-//   - human        → `allow` by email domain / explicit emails (operators in a browser)
-//   - public       → `bypass` / everyone (public carve-out paths)
-// Reconcile is idempotent and owns only the policies it manages (a reserved name prefix), never
-// touching admin-composed ones — mirroring the schema reconcile's origin='app' vs 'custom' rule.
+// Replaces the deleted Cloudflare-Access edge model (AppAccess/AccessAppDecl/AccessRule). There is
+// no reconcile and no worker endpoint for these: gate rules are pure SDK config, consumed only by
+// `PropustkaAuth` to decide WHICH credential KIND a path requires — the in-process successor to the
+// CF Access edge decision (CF Access is gone). Three kinds mirror the three old edge decisions:
+//   - public  → no credential (the old `bypass`/everyone carve-out)
+//   - service → a machine `px_` key or passthrough JWT (the old `non_identity`/service-token gate)
+//   - human   → a logged-in human via `px_session`/`px_token` (the old `allow`-by-audience gate)
+// WHO is an admitted human stays centrally owned by propustka (decided at `/auth/callback`, the
+// admission allowlist), exactly as the old central edge audience did — a `human` gate only asserts
+// "a resolved user principal exists". Auth-surface paths (`/auth/*`, `/.well-known/jwks.json`) live
+// on PROPUSTKA's host, not the app's, so apps never declare them.
+
+/** Where a propustka credential (a `px_` key or a passthrough JWT) rides on a request. */
+export interface CredentialLocation {
+	/** Transport carrying the credential. */
+	in: 'header' | 'query' | 'cookie'
+	/** Header / query-param / cookie name. A header value may be bare or `Bearer <token>`. */
+	name: string
+}
+
+/** What a matched path requires. The discriminant `kind` mirrors the three old edge decisions. */
+export type GateKind =
+	/** Anyone — no credential. Terminal; resolves to an ANONYMOUS AuthContext (`principal: null`). */
+	| { kind: 'public' }
+	/**
+	 * A machine `px_` key or a passthrough JWT — a bearer (default `Authorization: Bearer`) or the
+	 * declared `credential` location. ABSENT → falls through to the next matching rule; PRESENT but
+	 * invalid → fail closed (no fall-through).
+	 */
+	| { kind: 'service'; credential?: CredentialLocation }
+	/** A logged-in human (a `user` principal via the `px_session`/`px_token` cookies). */
+	| { kind: 'human' }
+
+/**
+ * One per-path gate rule. The array order on `AppGates.rules` is the PRECEDENCE: the first rule whose
+ * `path` matches AND whose required credential is present is enforced. A matching rule whose credential
+ * is ABSENT falls through to the next matching rule; a request matching NO rule is denied (fail-closed).
+ * `path` is a glob where `*` matches any run of chars (e.g. `/api/v1/*`); anchored.
+ */
+export type GateRule = { path: string } & GateKind
+
+/** An app's full per-path gate declaration, enforced by its `PropustkaAuth` middleware. */
+export interface AppGates {
+	rules: GateRule[]
+}
+
+// ── Access edge rules (LEGACY — Cloudflare Access front door) ───────────────────
+//
+// DEPRECATED. Superseded by `AppGates` above. Retained only until the worker's CF-Access edge
+// reconcile surface (`reconcile-access.ts`, `PUT /admin/apps/:app/access`, `cfaccess.ts`,
+// `propustka.access.ts`) is deleted, then these go too. New apps declare `AppGates`, not this.
 
 /** One Access edge rule. The array order on an app is its Cloudflare precedence order. */
 export type AccessRule =
@@ -88,11 +130,7 @@ export type AccessRule =
 	/** Anonymous: a `bypass` policy including everyone (for public carve-out paths). */
 	| { kind: 'public' }
 
-/**
- * One Cloudflare Access application this propustka app fronts, with its edge rules. A single
- * propustka app id may map to MORE THAN ONE CF app — e.g. a main allow-gated host plus a
- * separate bypass carve-out for its public paths (its own `destinations` + a `public` rule).
- */
+/** One Cloudflare Access application this propustka app fronts, with its edge rules. */
 export interface AccessAppDecl {
 	/** Stable key, unique within the declaration. Drives the managed policy name + CF-app match. */
 	key: string

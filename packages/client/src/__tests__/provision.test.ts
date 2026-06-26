@@ -1,19 +1,14 @@
-import type { AppAccess } from '@propustka/core'
+import type { AppSchema } from '@propustka/core'
 import { afterEach, describe, expect, spyOn, test } from 'bun:test'
-import { reconcileAccess, ReconcileAccessError } from '../provision'
+import { reconcileSchema, ReconcileSchemaError } from '../provision'
 
-// reconcileAccess goes over the global fetch (HTTP to the admin origin). We spy on fetch, capture
+// reconcileSchema goes over the global fetch (HTTP to the admin origin). We spy on fetch, capture
 // the outgoing request, and drive the response status — no network, no `as` casts.
 
-const ACCESS: AppAccess = {
-	apps: [
-		{
-			key: 'operator',
-			name: 'opice-operator',
-			destinations: ['opice.example.com'],
-			rules: [{ kind: 'service-auth' }, { kind: 'human', emailDomains: ['contember.com'] }],
-		},
-	],
+const SCHEMA: AppSchema = {
+	scopes: [{ type: 'project', label: 'Project' }],
+	actions: [{ action: 'report.read', description: 'Read reports' }],
+	roles: { viewer: { name: 'Viewer', permissions: ['report.read'] } },
 }
 
 // One captured outgoing fetch call → its url + parsed request shape.
@@ -46,38 +41,38 @@ afterEach(() => {
 	restore = undefined
 })
 
-describe('reconcileAccess', () => {
-	test('PUTs the declaration to /admin/apps/:app/access (trailing slash trimmed)', async () => {
+describe('reconcileSchema', () => {
+	test('PUTs the declaration to /admin/apps/:app/schema (trailing slash trimmed)', async () => {
 		const spy = stubFetch(200)
-		await reconcileAccess({ url: 'https://propustka.example.com/', app: 'opice', access: ACCESS })
+		await reconcileSchema({ url: 'https://propustka.example.com/', app: 'opice', schema: SCHEMA })
 		expect(spy.mock.calls).toHaveLength(1)
 		const req = captured(spy)
-		expect(req.url).toBe('https://propustka.example.com/admin/apps/opice/access')
+		expect(req.url).toBe('https://propustka.example.com/admin/apps/opice/schema')
 		expect(req.method).toBe('PUT')
-		expect(req.body).toEqual(ACCESS)
+		expect(req.body).toEqual(SCHEMA)
 	})
 
-	test('forwards the Access service-token headers when provided', async () => {
+	test('forwards the admin auth headers when provided', async () => {
 		const spy = stubFetch(200)
-		await reconcileAccess({ url: 'https://propustka.example.com', app: 'opice', access: ACCESS, accessClientId: 'cid', accessClientSecret: 'sec' })
+		await reconcileSchema({ url: 'https://propustka.example.com', app: 'opice', schema: SCHEMA, accessClientId: 'cid', accessClientSecret: 'sec' })
 		const req = captured(spy)
 		expect(req.headers.get('CF-Access-Client-Id')).toBe('cid')
 		expect(req.headers.get('CF-Access-Client-Secret')).toBe('sec')
 	})
 
-	test('a non-2xx response throws ReconcileAccessError carrying status + message', async () => {
-		stubFetch(502, { error: 'cloudflare said no' })
-		const err = await reconcileAccess({ url: 'https://propustka.example.com', app: 'opice', access: ACCESS }).catch((e: unknown) => e)
-		expect(err).toBeInstanceOf(ReconcileAccessError)
-		if (err instanceof ReconcileAccessError) {
+	test('a non-2xx response throws ReconcileSchemaError carrying status + message', async () => {
+		stubFetch(502, { error: 'admin said no' })
+		const err = await reconcileSchema({ url: 'https://propustka.example.com', app: 'opice', schema: SCHEMA }).catch((e: unknown) => e)
+		expect(err).toBeInstanceOf(ReconcileSchemaError)
+		if (err instanceof ReconcileSchemaError) {
 			expect(err.status).toBe(502)
-			expect(err.message).toContain('cloudflare said no')
+			expect(err.message).toContain('admin said no')
 		}
 	})
 
-	test('a half-set service token throws BEFORE any request', async () => {
+	test('a half-set credential throws BEFORE any request', async () => {
 		const spy = stubFetch(200)
-		await expect(reconcileAccess({ url: 'https://propustka.example.com', app: 'opice', access: ACCESS, accessClientId: 'cid' })).rejects.toThrow()
+		await expect(reconcileSchema({ url: 'https://propustka.example.com', app: 'opice', schema: SCHEMA, accessClientId: 'cid' })).rejects.toThrow()
 		expect(spy.mock.calls).toHaveLength(0)
 	})
 })

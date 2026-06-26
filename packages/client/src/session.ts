@@ -1,24 +1,31 @@
 /**
  * propustka-native session authentication — the SDK side of "propustka issues its own tokens".
  *
- * Instead of the IAM Worker resolving a Cloudflare Access JWT on EVERY request (`IamClient.
- * authenticate`), the app's middleware here verifies a short-lived per-app permission token LOCALLY
- * against propustka's published JWKS — no per-request round-trip. The token lives in the `px_token`
- * cookie; the browser's long-lived `px_session` SSO cookie is exchanged for a fresh one (`mintToken`
- * over the binding) only when the permission token is missing or near expiry (≈ once per TTL).
+ * Instead of the IAM Worker resolving a Cloudflare Access JWT on every request, the app's middleware
+ * here (a) decides, per request path, WHICH credential kind is required (the in-process per-path gate
+ * schema — `AppGates` — that replaced the deleted CF Access edge), then (b) resolves that credential,
+ * verifying a short-lived per-app permission token LOCALLY against propustka's published JWKS (no
+ * per-request round-trip). The token lives in the `px_token` cookie; the browser's long-lived
+ * `px_session` SSO cookie is exchanged for a fresh one (`mintToken` over the binding) only when the
+ * permission token is missing or near expiry (≈ once per TTL).
  *
- * Flow per request:
- *   1. valid, not-near-expiry `px_token` → verify locally, done (no binding call).
- *   2. else → `mintToken({ session })` over the binding → set a fresh `px_token`, proceed.
- *   3. no/!invalid session → unauthenticated; the caller redirects the browser to `loginUrl`.
+ * Gate matching (precedence = `gates.rules` order; first matching+satisfiable rule wins):
+ *   - `public`  → an anonymous AuthContext (`principal: null`), no binding call. Terminal.
+ *   - `service` → a `px_` key (exchanged once via `mintFromKey`, cached) or a passthrough JWT
+ *     (verified locally). ABSENT → fall through to the next matching rule; PRESENT-invalid → 401.
+ *   - `human`   → a `px_session`/`px_token`. Missing/expired → fall through, remembering a `loginUrl`
+ *     so the caller can 302 the browser to `/auth/login`.
+ * A request matching NO rule is denied (fail-closed) — there is no edge in front anymore.
  *
- * The JWKS is fetched once per isolate over the binding (which never traverses the Access edge) and
- * cached per binding; a key rotation (unknown kid) triggers one refetch.
+ * The JWKS is fetched once per isolate over the binding (which never traverses any edge) and cached
+ * per binding; a key rotation (unknown kid) triggers one refetch.
  */
 
 import {
 	type AccessTokenClaims,
 	API_KEY_PREFIX,
+	type AppGates,
+	type CredentialLocation,
 	type IamRpc,
 	type Jwks,
 	parseAccessClaims,
@@ -30,42 +37,37 @@ import { createLocalJWKSet, errors as joseErrors, jwtVerify } from 'jose'
 import { buildAuthContext } from './client'
 import type { AuthContext } from './types'
 
-/**
- * A declared place a propustka credential (a `px_` key or a passthrough JWT) may ride, beyond the
- * defaults (`Authorization: Bearer` + the `px_*` cookies). The SDK extracts the raw token from this
- * location and resolves it like a bearer. This is the SDK side of the per-path rule schema — e.g.
- * opice declaring its ingest token rides in `X-Opice-Token` for `/api/v1/*`.
- */
-export interface CredentialLocation {
-	/** Where the credential rides. */
-	in: 'header' | 'query' | 'cookie'
-	/** The header / query-param / cookie name carrying the credential. */
-	name: string
-	/** Optional path glob (`*` matches any chars, e.g. `/api/v1/*`); when set, only matching requests use it. */
-	path?: string
-}
-
 export interface SessionAuthConfig {
 	/** propustka's origin — verifies the token `iss` and is the base for the `/auth/login` redirect. */
 	issuer: string
 	/** Force the `px_token` cookie's `Secure` flag; default = derived from the request URL scheme. */
 	secure?: boolean
-	/**
-	 * Extra, app-declared places a credential may ride (a header / query param / named cookie), tried
-	 * BEFORE the default `Authorization: Bearer` + `px_*` cookies. For machine callers that carry the
-	 * credential in a custom header or query param per path.
-	 */
-	credentials?: CredentialLocation[]
+	/** The ordered per-path gate rules enforced in-process (replaced the CF Access edge). */
+	gates: AppGates
 }
 
 /**
- * The outcome of session authentication. On success, `setCookie` (when present) is the freshly
- * minted `px_token` the caller MUST attach to its response. On failure, `loginUrl` is where to
- * 302 the browser to log in. `reason` mirrors `mintToken`'s.
+ * The outcome of authentication. On success, `setCookie` (when present) is the freshly minted
+ * `px_token` the caller MUST attach to its response. On failure, `status` is the HTTP status to
+ * return, and `loginUrl` (human-gated misses only) is where to 302 the browser to log in.
  */
 export type SessionAuthResult =
 	| { ok: true; context: AuthContext; setCookie?: string }
-	| { ok: false; reason: 'no_session' | 'invalid_session' | 'invalid_key' | 'unknown_principal' | 'disabled'; loginUrl: string }
+	| {
+		ok: false
+		reason: 'no_rule' | 'no_credential' | 'invalid_key' | 'no_session' | 'invalid_session' | 'unknown_principal' | 'disabled'
+		status: 401 | 403
+		/** Present ONLY for a human-gated miss — where the caller may 302 the browser to log in. */
+		loginUrl?: string
+	}
+
+/** Why a `human` (session) attempt failed — mirrors `mintToken`'s reasons. */
+type SessionFailureReason = 'no_session' | 'invalid_session' | 'unknown_principal' | 'disabled'
+
+/** The cookie/session attempt's internal outcome, before the matcher maps it to a `SessionAuthResult`. */
+type SessionAttempt =
+	| { ok: true; context: AuthContext; setCookie?: string }
+	| { ok: false; reason: SessionFailureReason }
 
 /** How long a fetched JWKS is reused before a refetch (a rotation also forces one on demand). */
 const JWKS_TTL_SECONDS = 600
@@ -78,57 +80,66 @@ export class PropustkaAuth {
 	) {}
 
 	/**
-	 * Authenticate a request. Verifies the cached permission token locally when possible; otherwise
-	 * mints a fresh one from the SSO session. Never throws — a failure is a typed `ok:false` result.
+	 * Authenticate a request against the per-path gates. Verifies the cached permission token locally
+	 * when possible; otherwise mints a fresh one. Never throws — a failure is a typed `ok:false` result.
 	 */
 	async authenticate(request: Request): Promise<SessionAuthResult> {
 		const now = Math.floor(Date.now() / 1000)
 		const requestId = request.headers.get('cf-ray') ?? crypto.randomUUID()
+		const url = new URL(request.url)
 
-		// 0. Machine path — a credential in a declared custom location, else `Authorization: Bearer …`,
-		// takes precedence over cookies (machines don't carry a browser cookie jar). An opaque `px_`
-		// credential is exchanged once and cached; an already-signed passthrough JWT is verified locally.
-		const bearer = this.readConfiguredCredential(request) ?? readBearer(request.headers.get('Authorization'))
-		if (bearer !== null) {
-			return this.authenticateBearer(bearer, request, requestId, now)
+		const applicable = this.config.gates.rules.filter((rule) => pathMatches(rule.path, url.pathname))
+		if (applicable.length === 0) {
+			// Fail closed — there is no edge in front, so an unmatched path is denied.
+			return { ok: false, reason: 'no_rule', status: 403 }
 		}
 
-		const cookieHeader = request.headers.get('Cookie')
+		// Remembers a human rule's miss (with its precise reason) so the caller can be 302'd to login
+		// after exhausting all matching rules without satisfying one.
+		let humanMiss: { reason: SessionFailureReason; loginUrl: string } | null = null
 
-		// 1. Fast path — a valid, not-near-expiry token authorizes with NO binding call.
-		const tokenCookie = readCookie(cookieHeader, TOKEN_COOKIE)
-		if (tokenCookie) {
-			const claims = await this.verify(tokenCookie)
-			if (claims && claims.exp - now > TOKEN_REFRESH_SKEW_SECONDS) {
-				return { ok: true, context: this.context(claims, requestId) }
+		for (const rule of applicable) {
+			if (rule.kind === 'public') {
+				return { ok: true, context: this.anonymousContext(requestId, now) }
 			}
+			if (rule.kind === 'service') {
+				const raw = this.extractServiceCredential(request, url, rule.credential)
+				if (raw === null) {
+					continue // absent → fall through to the next matching rule
+				}
+				return this.authenticateBearer(raw, requestId, now) // present → terminal (ok | 401/403)
+			}
+			// human
+			const attempt = await this.authenticateSession(request, requestId, now)
+			if (attempt.ok) {
+				return attempt
+			}
+			humanMiss = { reason: attempt.reason, loginUrl: this.loginUrl(request) }
 		}
 
-		// 2. Refresh path — exchange the SSO session for a fresh per-app token (≈ once per TTL).
-		const session = readCookie(cookieHeader, SESSION_COOKIE)
-		const minted = await this.binding.mintToken({ app: this.appId, session, requestId })
-		if (!minted.ok) {
-			return { ok: false, reason: minted.reason, loginUrl: this.loginUrl(request) }
+		if (humanMiss !== null) {
+			return { ok: false, reason: humanMiss.reason, status: 401, loginUrl: humanMiss.loginUrl }
 		}
-		const claims = await this.verify(minted.token)
-		if (!claims) {
-			// We just minted it — a verification miss means a config/clock problem; force re-login.
-			return { ok: false, reason: 'invalid_session', loginUrl: this.loginUrl(request) }
+		// Every matching rule was a `service` rule with no credential present.
+		return { ok: false, reason: 'no_credential', status: 401 }
+	}
+
+	/** The raw `service`-rule credential: the declared location, else `Authorization: Bearer`. Null if absent. */
+	private extractServiceCredential(request: Request, url: URL, location: CredentialLocation | undefined): string | null {
+		if (location !== undefined) {
+			const raw = extractCredential(request, url, location)
+			return raw === null || raw === '' ? null : raw
 		}
-		return {
-			ok: true,
-			context: this.context(claims, requestId),
-			setCookie: tokenCookieHeader(minted.token, minted.expiresAt - now, this.secure(request)),
-		}
+		return readBearer(request.headers.get('Authorization'))
 	}
 
 	/**
-	 * Authenticate a `Authorization: Bearer` credential. A `px_` opaque key is exchanged via
-	 * `mintFromKey` (cached per isolate so the hot path is a local verify, no RPC); anything else is
-	 * treated as an already-signed passthrough access token and verified locally. No Set-Cookie — the
-	 * machine carries the credential itself.
+	 * Authenticate a `service`-rule bearer. A `px_` opaque key is exchanged via `mintFromKey` (cached
+	 * per isolate so the hot path is a local verify, no RPC); anything else is treated as an
+	 * already-signed passthrough access token and verified locally. No Set-Cookie — the machine carries
+	 * the credential itself. A present-but-invalid credential fails closed (no fall-through).
 	 */
-	private async authenticateBearer(bearer: string, request: Request, requestId: string, now: number): Promise<SessionAuthResult> {
+	private async authenticateBearer(bearer: string, requestId: string, now: number): Promise<SessionAuthResult> {
 		if (bearer.startsWith(API_KEY_PREFIX)) {
 			const cache = keyCacheFor(this.binding)
 			const cached = cache.get(bearer)
@@ -140,11 +151,11 @@ export class PropustkaAuth {
 			}
 			const minted = await this.binding.mintFromKey({ app: this.appId, key: bearer, requestId })
 			if (!minted.ok) {
-				return { ok: false, reason: minted.reason, loginUrl: this.loginUrl(request) }
+				return { ok: false, reason: minted.reason, status: minted.reason === 'invalid_key' ? 401 : 403 }
 			}
 			const claims = await this.verify(minted.token)
 			if (!claims) {
-				return { ok: false, reason: 'invalid_key', loginUrl: this.loginUrl(request) }
+				return { ok: false, reason: 'invalid_key', status: 401 }
 			}
 			cache.set(bearer, { token: minted.token, expiresAt: minted.expiresAt })
 			return { ok: true, context: this.context(claims, requestId) }
@@ -153,28 +164,50 @@ export class PropustkaAuth {
 		// A passthrough JWT — verify locally, no binding call.
 		const claims = await this.verify(bearer)
 		if (!claims) {
-			return { ok: false, reason: 'invalid_key', loginUrl: this.loginUrl(request) }
+			return { ok: false, reason: 'invalid_key', status: 401 }
 		}
 		return { ok: true, context: this.context(claims, requestId) }
 	}
 
-	/** The raw credential from the first matching declared location, or null if none applies/carries one. */
-	private readConfiguredCredential(request: Request): string | null {
-		const sources = this.config.credentials
-		if (sources === undefined || sources.length === 0) {
-			return null
-		}
-		const url = new URL(request.url)
-		for (const source of sources) {
-			if (source.path !== undefined && !pathMatches(source.path, url.pathname)) {
-				continue
+	/**
+	 * Resolve a human via the `px_token` fast path, falling back to a `mintToken` exchange of the
+	 * `px_session` SSO cookie. Returns an internal attempt the matcher maps to a `SessionAuthResult`
+	 * (so it can attach a `loginUrl` only when the whole gate set is exhausted).
+	 */
+	private async authenticateSession(request: Request, requestId: string, now: number): Promise<SessionAttempt> {
+		const cookieHeader = request.headers.get('Cookie')
+
+		// Fast path — a valid, not-near-expiry token authorizes with NO binding call.
+		const tokenCookie = readCookie(cookieHeader, TOKEN_COOKIE)
+		if (tokenCookie) {
+			const claims = await this.verify(tokenCookie)
+			if (claims && claims.exp - now > TOKEN_REFRESH_SKEW_SECONDS) {
+				return { ok: true, context: this.context(claims, requestId) }
 			}
-			const raw = extractCredential(request, url, source)
-			if (raw !== null && raw !== '') {
-				return raw
-			}
 		}
-		return null
+
+		// Refresh path — exchange the SSO session for a fresh per-app token (≈ once per TTL).
+		const session = readCookie(cookieHeader, SESSION_COOKIE)
+		const minted = await this.binding.mintToken({ app: this.appId, session, requestId })
+		if (!minted.ok) {
+			return { ok: false, reason: minted.reason }
+		}
+		const claims = await this.verify(minted.token)
+		if (!claims) {
+			// We just minted it — a verification miss means a config/clock problem; force re-login.
+			return { ok: false, reason: 'invalid_session' }
+		}
+		return {
+			ok: true,
+			context: this.context(claims, requestId),
+			setCookie: tokenCookieHeader(minted.token, minted.expiresAt - now, this.secure(request)),
+		}
+	}
+
+	/** An anonymous AuthContext (a `public` path) — no principal, empty perms, no binding call. */
+	private anonymousContext(requestId: string, now: number): AuthContext {
+		const claims: AccessTokenClaims = { iss: this.config.issuer, aud: this.appId, sub: 'anonymous', iat: now, exp: now, perms: [], label: null }
+		return buildAuthContext(this.binding, this.appId, claims, requestId)
 	}
 
 	/** Where to send the browser to log in, returning to the current URL afterwards. */

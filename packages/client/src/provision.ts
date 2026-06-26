@@ -13,7 +13,7 @@
 // Idempotent: the endpoint upserts scopes/actions/origin='app' roles and deletes app-origin rows
 // absent from the body; origin='custom' policies are never touched. Re-running is safe.
 
-import type { AppAccess, AppSchema } from '@propustka/core'
+import type { AppSchema } from '@propustka/core'
 
 export interface ReconcileSchemaOptions {
 	/** The IAM Worker's admin origin, e.g. `https://propustka.example.com` (trailing slash ok). */
@@ -77,64 +77,5 @@ export async function reconcileSchema(options: ReconcileSchemaOptions): Promise<
 		const payload: unknown = await response.json().catch(() => null)
 		const detail = errorMessage(payload) ?? response.statusText
 		throw new ReconcileSchemaError(`PUT /admin/apps/${app}/schema failed (${response.status}): ${detail}`, response.status)
-	}
-}
-
-// ── Access edge rules (the Cloudflare Access front door) ───────────────────────
-//
-// The edge counterpart of `reconcileSchema`. An app declares an `AppAccess` (its CF Access
-// applications + the service-auth / human / public rules fronting them); this PUTs it to the
-// idempotent admin endpoint `PUT /admin/apps/:app/access`, and Propustka reconciles Cloudflare's
-// account-level REUSABLE policies to match. Like the schema reconcile this is a DEPLOY/OPERATOR
-// helper (HTTP to the admin origin, gated by Access), never a request-handling one.
-
-export interface ReconcileAccessOptions {
-	/** The IAM Worker's admin origin, e.g. `https://propustka.example.com` (trailing slash ok). */
-	url: string
-	/** The app id — must be a configured `ACCESS_APPS` value on the target Propustka. */
-	app: string
-	/** The app's declared Access edge rules. */
-	access: AppAccess
-	/** Access SERVICE TOKEN for a remote (operator) run — both or neither (see `reconcileSchema`). */
-	accessClientId?: string
-	accessClientSecret?: string
-}
-
-/** Thrown when the admin endpoint rejects the access reconcile; `status` is the HTTP status. */
-export class ReconcileAccessError extends Error {
-	constructor(message: string, readonly status: number) {
-		super(message)
-		this.name = 'ReconcileAccessError'
-	}
-}
-
-/**
- * Reconcile one app's declared `AppAccess` into Cloudflare via Propustka (idempotent). Resolves on
- * success; throws `ReconcileAccessError` on a non-2xx response, or `Error` on a half-set service token.
- */
-export async function reconcileAccess(options: ReconcileAccessOptions): Promise<void> {
-	const { url, app, access, accessClientId, accessClientSecret } = options
-
-	// Both-or-neither: a half-set service token would silently 401 at the Access edge.
-	if ((accessClientId === undefined) !== (accessClientSecret === undefined)) {
-		throw new Error('reconcileAccess: set BOTH accessClientId and accessClientSecret, or neither (local dev bypass)')
-	}
-
-	const headers: Record<string, string> = { 'content-type': 'application/json' }
-	if (accessClientId !== undefined && accessClientSecret !== undefined) {
-		headers['CF-Access-Client-Id'] = accessClientId
-		headers['CF-Access-Client-Secret'] = accessClientSecret
-	}
-
-	const base = url.replace(/\/+$/, '')
-	const response = await fetch(`${base}/admin/apps/${encodeURIComponent(app)}/access`, {
-		method: 'PUT',
-		headers,
-		body: JSON.stringify(access),
-	})
-	if (!response.ok) {
-		const payload: unknown = await response.json().catch(() => null)
-		const detail = errorMessage(payload) ?? response.statusText
-		throw new ReconcileAccessError(`PUT /admin/apps/${app}/access failed (${response.status}): ${detail}`, response.status)
 	}
 }

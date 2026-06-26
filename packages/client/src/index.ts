@@ -7,19 +7,17 @@ export { IamClient } from './client'
 export { FakeIamClient } from './fake'
 export type { FakeIamConfig, FakePersona } from './fake'
 export { applyScope } from './scope'
-// propustka-native session auth: verify a per-app permission token LOCALLY (no per-request RPC),
-// minting a fresh one from the SSO session when needed. The middleware an app puts in front of its
-// request handler instead of the Cloudflare-Access-fronted `IamClient.authenticate` path.
+// propustka-native session auth: the middleware an app puts in front of its request handler. It
+// enforces the per-path gate schema (`AppGates`) in-process, then verifies a per-app permission
+// token LOCALLY (no per-request RPC), minting a fresh one from the SSO session when needed.
 export { PropustkaAuth } from './session'
-export type { CredentialLocation, SessionAuthConfig, SessionAuthResult } from './session'
-// Deploy-time helpers: reconcile an app's declared AppSchema (authz vocabulary) and AppAccess
-// (Cloudflare Access edge rules) into Propustka (HTTP admin calls, NOT over the service binding).
-// Import from a deploy/provisioning step, never request handling.
-export { reconcileAccess, ReconcileAccessError, reconcileSchema, ReconcileSchemaError } from './provision'
-export type { ReconcileAccessOptions, ReconcileSchemaOptions } from './provision'
+export type { SessionAuthConfig, SessionAuthResult } from './session'
+// Deploy-time helper: reconcile an app's declared AppSchema (authz vocabulary) into Propustka (an
+// HTTP admin call, NOT over the service binding). Import from a deploy/provisioning step.
+export { reconcileSchema, ReconcileSchemaError } from './provision'
+export type { ReconcileSchemaOptions } from './provision'
 export type {
 	AuthContext,
-	AuthFailure,
 	IssuedJwt,
 	IssuedKey,
 	IssueFailure,
@@ -35,16 +33,17 @@ export type {
 // Re-export from core so apps need only depend on the SDK: DomainEvent (one event shape),
 // IamRpc (the binding contract — apps type their `env.IAM` as IamRpc without importing core),
 // Scope (the `{ type, value }` coordinate apps pass to `can()`), the AppSchema vocabulary types
-// apps use to DECLARE their `propustka.schema.ts` for `reconcileSchema()`, and the AppAccess edge
-// types apps DECLARE in their `propustka.access.ts` for `reconcileAccess()`.
+// apps DECLARE in `propustka.schema.ts` for `reconcileSchema()`, and the per-path gate types
+// (`AppGates` & co.) apps DECLARE and pass to `PropustkaAuth`.
 export type {
-	AccessAppDecl,
-	AccessRule,
-	AppAccess,
 	AppActionDef,
+	AppGates,
 	AppSchema,
 	AppScopeDef,
+	CredentialLocation,
 	DomainEvent,
+	GateKind,
+	GateRule,
 	IamRpc,
 	PrincipalListItem,
 	RoleDef,

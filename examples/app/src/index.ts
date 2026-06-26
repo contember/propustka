@@ -1,28 +1,28 @@
 import { PropustkaAuth } from '@propustka/client'
+import { exampleGates } from '../propustka.gates'
 import type { Env } from './env'
 
-// Minimal example app on the propustka-NATIVE auth path: instead of sitting behind Cloudflare
-// Access and resolving a CF JWT over RPC on every request, it runs `PropustkaAuth` as middleware.
-//
-// PropustkaAuth verifies the per-app permission token LOCALLY against propustka's JWKS (no
-// per-request round-trip); when there's no valid token it mints one from the browser's SSO session
-// (a single `mintToken` over the binding, ≈ once per token TTL), and when there's no session at all
-// it hands back a login URL to bounce the browser to propustka's Google login.
-//
-// (The legacy `IamClient.authenticate(request)` path — for apps still fronted by Cloudflare Access —
-// still exists; an app picks whichever front door it's migrated to.)
+// Minimal example app on the propustka-NATIVE auth path. `PropustkaAuth` is the whole front door:
+// it enforces the per-path gates (`propustka.gates.ts`) in-process — there is no Cloudflare Access
+// edge — then resolves the matched credential, verifying the per-app permission token LOCALLY
+// against propustka's JWKS (no per-request round-trip). A human with no session is handed a login
+// URL to bounce to propustka's OIDC login; a `public` path needs no credential at all.
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		const auth = new PropustkaAuth(env.IAM, 'example-app', { issuer: env.PROPUSTKA_ISSUER })
+		const auth = new PropustkaAuth(env.IAM, 'example-app', { issuer: env.PROPUSTKA_ISSUER, gates: exampleGates })
 
 		const result = await auth.authenticate(request)
 		if (!result.ok) {
-			// No valid session → send the browser to log in, returning here afterwards.
-			return Response.redirect(result.loginUrl, 302)
+			// A human-gated miss carries a login URL (bounce the browser); anything else is a flat status.
+			if (result.loginUrl !== undefined) {
+				return Response.redirect(result.loginUrl, 302)
+			}
+			return new Response(result.reason, { status: result.status })
 		}
 
-		// Authorization is identical to the RPC path — `can()` / `scopedTo()` over the resolved
-		// permissions, here read straight from the locally-verified token's claims.
+		// Authorization is identical everywhere — `can()` / `scopedTo()` over the resolved permissions,
+		// here read straight from the locally-verified token's claims. A `public` request is anonymous
+		// (`principal: null`, empty perms), so `can()` is always false there.
 		const body = {
 			authenticated: true,
 			principal: result.context.principal,

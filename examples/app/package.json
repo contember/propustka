@@ -6,7 +6,6 @@
 		"dev": "bunx lopata dev --env local --port 18190 --listen 127.0.0.1",
 		"oblaka": "bunx oblaka oblaka.ts",
 		"provision-schema": "bun run ../../scripts/provision-schemas.ts",
-		"provision-access": "bun run ../../scripts/provision-access-rules.ts",
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
