@@ -40,6 +40,25 @@ function request(cookie?: string): Request {
 	return new Request('https://app.example.com/page', { headers })
 }
 
+function bearerRequest(token: string): Request {
+	return new Request('https://app.example.com/api', { headers: { Authorization: `Bearer ${token}` } })
+}
+
+/** Sign an ANONYMOUS access token (no ptype) — what `issueJwt` / a standalone key produces. */
+async function signAnon(key: KeyLike, ttlSeconds: number): Promise<string> {
+	const now = Math.floor(Date.now() / 1000)
+	const claims = buildAccessClaims({
+		iss: ISSUER,
+		app: APP,
+		subject: 'cred-1',
+		label: 'ci',
+		permissions: perms,
+		issuedAt: now,
+		expiresAt: now + ttlSeconds,
+	})
+	return new SignJWT({ ...claims }).setProtectedHeader({ alg: 'ES256', kid: 'k1' }).sign(key)
+}
+
 describe('PropustkaAuth — fast path (cached token)', () => {
 	test('a valid px_token authorizes locally with NO binding call', async () => {
 		const binding = new IamRpcStub({ jwks: JWKS })
@@ -52,7 +71,7 @@ describe('PropustkaAuth — fast path (cached token)', () => {
 		}
 		expect(result.context.can('demo.read')).toBe(true)
 		expect(result.context.can('demo.write')).toBe(false)
-		expect(result.context.principal.id).toBe('user-1')
+		expect(result.context.principal?.id).toBe('user-1')
 		// The whole point: no mint round-trip on the hot path, no fresh cookie.
 		expect(binding.mintTokenInputs).toHaveLength(0)
 		expect(result.setCookie).toBeUndefined()
@@ -114,5 +133,53 @@ describe('PropustkaAuth — unauthenticated', () => {
 		const result = await auth(binding).authenticate(request('px_session=zombie'))
 		expect(result.ok).toBe(false)
 		expect(result.ok === false && result.reason).toBe('disabled')
+	})
+})
+
+describe('PropustkaAuth — bearer (machine)', () => {
+	test('a passthrough JWT verifies locally, anonymous principal, NO binding call', async () => {
+		const binding = new IamRpcStub({ jwks: JWKS })
+		const token = await signAnon(privateKey, 3600)
+		const result = await auth(binding).authenticate(bearerRequest(token))
+		expect(result.ok).toBe(true)
+		if (!result.ok) {
+			throw new Error('expected ok')
+		}
+		expect(result.context.principal).toBeNull()
+		expect(result.context.can('demo.read')).toBe(true)
+		expect(binding.mintFromKeyInputs).toHaveLength(0)
+		expect(binding.mintTokenInputs).toHaveLength(0)
+		expect(result.setCookie).toBeUndefined()
+	})
+
+	test('a px_ key is exchanged via mintFromKey, then cached (second request: no RPC)', async () => {
+		const token = await signToken(privateKey, 300)
+		const binding = new IamRpcStub({ jwks: JWKS, mintFromKey: { ok: true, token, expiresAt: Math.floor(Date.now() / 1000) + 300 } })
+		const a = auth(binding)
+
+		const r1 = await a.authenticate(bearerRequest('px_ci-key'))
+		expect(r1.ok).toBe(true)
+		expect(binding.mintFromKeyInputs).toHaveLength(1)
+		expect(binding.mintFromKeyInputs[0]?.key).toBe('px_ci-key')
+
+		// Same key again → authorizes off the cached token, no second mint.
+		const r2 = await a.authenticate(bearerRequest('px_ci-key'))
+		expect(r2.ok).toBe(true)
+		expect(binding.mintFromKeyInputs).toHaveLength(1)
+	})
+
+	test('an unknown px_ key → ok:false invalid_key', async () => {
+		const binding = new IamRpcStub({ jwks: JWKS }) // mintFromKey defaults to invalid_key
+		const result = await auth(binding).authenticate(bearerRequest('px_nope'))
+		expect(result.ok).toBe(false)
+		expect(result.ok === false && result.reason).toBe('invalid_key')
+	})
+
+	test('a garbage passthrough JWT → ok:false, NO binding call', async () => {
+		const binding = new IamRpcStub({ jwks: JWKS })
+		const result = await auth(binding).authenticate(bearerRequest('eyJnot.a.jwt'))
+		expect(result.ok).toBe(false)
+		expect(binding.mintFromKeyInputs).toHaveLength(0)
+		expect(binding.mintTokenInputs).toHaveLength(0)
 	})
 })

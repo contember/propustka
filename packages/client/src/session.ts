@@ -17,8 +17,8 @@
  */
 
 import {
-	accessClaimsToResolved,
 	type AccessTokenClaims,
+	API_KEY_PREFIX,
 	type IamRpc,
 	type Jwks,
 	parseAccessClaims,
@@ -44,7 +44,7 @@ export interface SessionAuthConfig {
  */
 export type SessionAuthResult =
 	| { ok: true; context: AuthContext; setCookie?: string }
-	| { ok: false; reason: 'no_session' | 'invalid_session' | 'unknown_principal' | 'disabled'; loginUrl: string }
+	| { ok: false; reason: 'no_session' | 'invalid_session' | 'invalid_key' | 'unknown_principal' | 'disabled'; loginUrl: string }
 
 /** How long a fetched JWKS is reused before a refetch (a rotation also forces one on demand). */
 const JWKS_TTL_SECONDS = 600
@@ -63,6 +63,15 @@ export class PropustkaAuth {
 	async authenticate(request: Request): Promise<SessionAuthResult> {
 		const now = Math.floor(Date.now() / 1000)
 		const requestId = request.headers.get('cf-ray') ?? crypto.randomUUID()
+
+		// 0. Machine path — `Authorization: Bearer …` takes precedence over cookies (machines don't
+		// carry a browser cookie jar). An opaque `px_` credential is exchanged once and cached; an
+		// already-signed access token (a passthrough JWT) is verified locally with no binding call.
+		const bearer = readBearer(request.headers.get('Authorization'))
+		if (bearer !== null) {
+			return this.authenticateBearer(bearer, request, requestId, now)
+		}
+
 		const cookieHeader = request.headers.get('Cookie')
 
 		// 1. Fast path — a valid, not-near-expiry token authorizes with NO binding call.
@@ -70,10 +79,7 @@ export class PropustkaAuth {
 		if (tokenCookie) {
 			const claims = await this.verify(tokenCookie)
 			if (claims && claims.exp - now > TOKEN_REFRESH_SKEW_SECONDS) {
-				const context = this.context(claims, requestId)
-				if (context) {
-					return { ok: true, context }
-				}
+				return { ok: true, context: this.context(claims, requestId) }
 			}
 		}
 
@@ -84,16 +90,51 @@ export class PropustkaAuth {
 			return { ok: false, reason: minted.reason, loginUrl: this.loginUrl(request) }
 		}
 		const claims = await this.verify(minted.token)
-		const context = claims && this.context(claims, requestId)
-		if (!context) {
+		if (!claims) {
 			// We just minted it — a verification miss means a config/clock problem; force re-login.
 			return { ok: false, reason: 'invalid_session', loginUrl: this.loginUrl(request) }
 		}
 		return {
 			ok: true,
-			context,
+			context: this.context(claims, requestId),
 			setCookie: tokenCookieHeader(minted.token, minted.expiresAt - now, this.secure(request)),
 		}
+	}
+
+	/**
+	 * Authenticate a `Authorization: Bearer` credential. A `px_` opaque key is exchanged via
+	 * `mintFromKey` (cached per isolate so the hot path is a local verify, no RPC); anything else is
+	 * treated as an already-signed passthrough access token and verified locally. No Set-Cookie — the
+	 * machine carries the credential itself.
+	 */
+	private async authenticateBearer(bearer: string, request: Request, requestId: string, now: number): Promise<SessionAuthResult> {
+		if (bearer.startsWith(API_KEY_PREFIX)) {
+			const cache = keyCacheFor(this.binding)
+			const cached = cache.get(bearer)
+			if (cached && cached.expiresAt - now > TOKEN_REFRESH_SKEW_SECONDS) {
+				const claims = await this.verify(cached.token)
+				if (claims) {
+					return { ok: true, context: this.context(claims, requestId) }
+				}
+			}
+			const minted = await this.binding.mintFromKey({ app: this.appId, key: bearer, requestId })
+			if (!minted.ok) {
+				return { ok: false, reason: minted.reason, loginUrl: this.loginUrl(request) }
+			}
+			const claims = await this.verify(minted.token)
+			if (!claims) {
+				return { ok: false, reason: 'invalid_key', loginUrl: this.loginUrl(request) }
+			}
+			cache.set(bearer, { token: minted.token, expiresAt: minted.expiresAt })
+			return { ok: true, context: this.context(claims, requestId) }
+		}
+
+		// A passthrough JWT — verify locally, no binding call.
+		const claims = await this.verify(bearer)
+		if (!claims) {
+			return { ok: false, reason: 'invalid_key', loginUrl: this.loginUrl(request) }
+		}
+		return { ok: true, context: this.context(claims, requestId) }
 	}
 
 	/** Where to send the browser to log in, returning to the current URL afterwards. */
@@ -101,10 +142,9 @@ export class PropustkaAuth {
 		return `${trimSlash(this.config.issuer)}/auth/login?redirect=${encodeURIComponent(request.url)}`
 	}
 
-	/** Build an AuthContext from verified claims; null for an anonymous token (no principal). */
-	private context(claims: AccessTokenClaims, requestId: string): AuthContext | null {
-		const resolved = accessClaimsToResolved(claims, requestId)
-		return resolved ? buildAuthContext(this.binding, this.appId, resolved) : null
+	/** Build an AuthContext from verified claims (principal-bound or anonymous). */
+	private context(claims: AccessTokenClaims, requestId: string): AuthContext {
+		return buildAuthContext(this.binding, this.appId, claims, requestId)
 	}
 
 	/** Verify a token against the published JWKS and narrow it to access claims; null on any miss. */
@@ -153,6 +193,31 @@ const NO_KEY = Symbol('no-matching-key')
 
 /** JWKS verifier cached per binding (so it persists across the per-request SDK instances). */
 const jwksCache = new WeakMap<object, { verifier: ReturnType<typeof createLocalJWKSet>; expiresAt: number }>()
+
+/**
+ * Per-binding cache of the access token minted from a `px_` credential, keyed by the credential. Lets
+ * a machine that presents the same key on every request authorize by local verify (≈ one `mintFromKey`
+ * per TTL) — the isolate-memory analogue of the browser's `px_token` cookie.
+ */
+const keyTokenCache = new WeakMap<object, Map<string, { token: string; expiresAt: number }>>()
+
+function keyCacheFor(binding: object): Map<string, { token: string; expiresAt: number }> {
+	let cache = keyTokenCache.get(binding)
+	if (!cache) {
+		cache = new Map()
+		keyTokenCache.set(binding, cache)
+	}
+	return cache
+}
+
+/** Read the token out of an `Authorization: Bearer <token>` header. Null when absent/non-bearer. */
+function readBearer(header: string | null): string | null {
+	if (header === null) {
+		return null
+	}
+	const match = /^Bearer\s+(.+)$/i.exec(header.trim())
+	return match ? (match[1]?.trim() ?? null) : null
+}
 
 /** Build the host-only `px_token` cookie carrying a freshly minted permission token. */
 function tokenCookieHeader(token: string, maxAge: number, secure: boolean): string {

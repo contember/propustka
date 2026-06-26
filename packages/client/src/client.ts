@@ -1,4 +1,4 @@
-import type { DomainEvent, IamRpc, ResolvedPrincipal, Scope } from '@propustka/core'
+import type { AccessTokenClaims, DomainEvent, IamRpc, PermissionEntry, Scope } from '@propustka/core'
 import { permits, scopedValues } from '@propustka/core'
 import { readCredentials } from './request'
 import type {
@@ -26,40 +26,45 @@ import type {
 // ── AuthContext (real) ─────────────────────────────────────────────────────────
 
 /**
- * The real, principal-backed `AuthContext`. `can`/`scopedTo` are pure functions over the
- * permissions array the IAM Worker already resolved (no per-check round-trip); only `audit`
- * calls the binding.
+ * The real `AuthContext`. `can`/`scopedTo` are pure functions over the resolved permission array (no
+ * per-check round-trip); only `audit` calls the binding. Backs BOTH a principal-bound caller (cookie
+ * session / API key) and an ANONYMOUS one (passthrough JWT / standalone share link) — the latter has
+ * `principal = null`; `audit` then attributes to the credential label + token id, principal null.
  */
 class RealAuthContext implements AuthContext {
 	readonly ok = true
-	readonly principal: PrincipalIdentity
 
 	constructor(
 		private readonly binding: IamRpc,
 		private readonly appId: string,
-		private readonly resolved: ResolvedPrincipal,
-	) {
-		this.principal = { id: resolved.id, type: resolved.type, label: resolved.label }
-	}
+		private readonly permissions: PermissionEntry[],
+		private readonly requestId: string,
+		readonly principal: PrincipalIdentity | null,
+		/** Audit actor label — the principal's label, or the credential/jwt label. */
+		private readonly auditLabel: string,
+		/** The credential/token id, for the audit linkage of an anonymous caller (null when bound). */
+		private readonly anonymousTokenId: string | null,
+	) {}
 
 	can(action: string, scope?: Scope): boolean {
 		// `permits` already encodes the scope-less rule: with no scope, ONLY global
 		// (scope === null) entries satisfy.
-		return permits(this.resolved.permissions, action, scope)
+		return permits(this.permissions, action, scope)
 	}
 
 	scopedTo(action: string, dimension: string): string[] | null {
 		// `dimension` picks the scope type — scopes are flat & independent, so a value
 		// list is always relative to one dimension.
-		return scopedValues(this.resolved.permissions, action, dimension)
+		return scopedValues(this.permissions, action, dimension)
 	}
 
 	audit(event: DomainEvent): Promise<void> {
 		return this.binding.audit({
 			app: this.appId,
-			requestId: this.resolved.requestId,
-			principalId: this.resolved.id,
-			principalLabel: this.resolved.label,
+			requestId: this.requestId,
+			principalId: this.principal?.id ?? null,
+			principalLabel: this.auditLabel,
+			...(this.anonymousTokenId === null ? {} : { capabilityTokenId: this.anonymousTokenId }),
 			action: event.action,
 			resourceType: event.resourceType,
 			resourceId: event.resourceId,
@@ -114,13 +119,17 @@ class RealCapability implements Capability {
 }
 
 /**
- * Build an `AuthContext` from an already-resolved principal — the seam the propustka-native session
- * path uses. There, the SDK has verified a permission token LOCALLY and parsed its claims into a
- * `ResolvedPrincipal`; this wraps that in the same `permits`-backed context the RPC path returns, so
- * `can()`/`scopedTo()`/`audit()` behave identically whichever way the caller was authenticated.
+ * Build an `AuthContext` from a verified access token's claims — the seam every propustka-native auth
+ * path uses (cookie session, API-key bearer, passthrough JWT). The SDK has verified the token LOCALLY;
+ * this wraps its claims in the same `permits`-backed context the RPC path returns, so `can()` /
+ * `scopedTo()` / `audit()` behave identically. A token with no `ptype` is anonymous (`principal: null`).
  */
-export function buildAuthContext(binding: IamRpc, appId: string, resolved: ResolvedPrincipal): AuthContext {
-	return new RealAuthContext(binding, appId, resolved)
+export function buildAuthContext(binding: IamRpc, appId: string, claims: AccessTokenClaims, requestId: string): AuthContext {
+	const principal: PrincipalIdentity | null = claims.ptype === undefined
+		? null
+		: { id: claims.sub, type: claims.ptype, label: claims.label ?? claims.sub }
+	const auditLabel = claims.label ?? (principal === null ? `credential:${claims.sub}` : claims.sub)
+	return new RealAuthContext(binding, appId, claims.perms, requestId, principal, auditLabel, principal === null ? claims.sub : null)
 }
 
 // ── IamClient ──────────────────────────────────────────────────────────────────
@@ -146,7 +155,8 @@ export class IamClient {
 		const { token, cookie, origin, requestId } = readCredentials(req)
 		const result = await this.binding.authenticate({ app: this.appId, token, cookie, origin, requestId })
 		if (result.ok) {
-			return new RealAuthContext(this.binding, this.appId, result.principal)
+			const p = result.principal
+			return new RealAuthContext(this.binding, this.appId, p.permissions, p.requestId, { id: p.id, type: p.type, label: p.label }, p.label, null)
 		}
 		return { ok: false, reason: result.reason, status: authFailureStatus(result.reason) }
 	}

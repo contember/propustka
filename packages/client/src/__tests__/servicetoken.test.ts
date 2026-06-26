@@ -83,7 +83,7 @@ describe('FakeIamClient service tokens', () => {
 		const auth = await fake.authenticate(withClientId(issued.clientId))
 		expect(auth.ok).toBe(true)
 		if (!auth.ok) return
-		expect(auth.principal.type).toBe('service')
+		expect(auth.principal?.type).toBe('service')
 		expect(auth.can('report.write', { type: 'project', value: 'foo' })).toBe(true)
 		expect(auth.can('report.write', { type: 'project', value: 'bar' })).toBe(false)
 		expect(auth.can('report.read', { type: 'project', value: 'foo' })).toBe(false)

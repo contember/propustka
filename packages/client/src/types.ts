@@ -34,10 +34,12 @@ export interface PrincipalIdentity {
 export interface AuthContext {
 	readonly ok: true
 	/**
-	 * The resolved caller identity (id / type / label). For stamping domain rows and
-	 * display — NOT a permission surface (authorization stays `can` / `scopedTo`).
+	 * The resolved caller identity (id / type / label), or `null` for an ANONYMOUS credential — a
+	 * passthrough JWT or a standalone (no-principal) share-link/API key. For stamping domain rows and
+	 * display — NOT a permission surface (authorization stays `can` / `scopedTo`, which work the same
+	 * either way). Stamp `created_by` with `principal?.id ?? null`.
 	 */
-	readonly principal: PrincipalIdentity
+	readonly principal: PrincipalIdentity | null
 	/**
 	 * Point check: may this principal do `action` (optionally within `scope`, an opaque
 	 * `{ type, value }` coordinate)? Scope-less → satisfied by GLOBAL permissions only; a

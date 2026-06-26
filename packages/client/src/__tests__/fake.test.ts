@@ -82,7 +82,7 @@ describe('FakeIamClient persona mode', () => {
 	test('cookie selects the admin persona (global, can manage)', async () => {
 		const auth = await client.authenticate(reqWithCookie('admin@x.test'))
 		if (!auth.ok) throw new Error('unreachable')
-		expect(auth.principal.id).toBe('p-admin')
+		expect(auth.principal?.id).toBe('p-admin')
 		expect(auth.can('member.manage')).toBe(true)
 		expect(auth.can('project.read', { type: 'project', value: 'anything' })).toBe(true)
 		expect(auth.scopedTo('project.read', 'project')).toBeNull()
@@ -109,13 +109,13 @@ describe('FakeIamClient persona mode', () => {
 		const req = new Request('https://app.example.com/', { headers: { 'X-Dev-Principal': 'scoped@x.test' } })
 		const auth = await client.authenticate(req)
 		if (!auth.ok) throw new Error('unreachable')
-		expect(auth.principal.id).toBe('p-scoped')
+		expect(auth.principal?.id).toBe('p-scoped')
 	})
 
 	test('no selector → default persona', async () => {
 		const auth = await client.authenticate(new Request('https://app.example.com/'))
 		if (!auth.ok) throw new Error('unreachable')
-		expect(auth.principal.id).toBe('p-appwide')
+		expect(auth.principal?.id).toBe('p-appwide')
 	})
 
 	test('unknown persona → unknown_principal (403)', async () => {
@@ -146,7 +146,7 @@ describe('FakeIamClient persona mode', () => {
 		})
 		const ok = await dynamic.authenticate(new Request('https://app.example.com/', { headers: { 'X-Who': 'proj-42' } }))
 		if (!ok.ok) throw new Error('unreachable')
-		expect(ok.principal.id).toBe('proj-42')
+		expect(ok.principal?.id).toBe('proj-42')
 		expect(ok.scopedTo('project.read', 'project')).toEqual(['proj-42'])
 		expect(ok.can('project.read', { type: 'project', value: 'proj-42' })).toBe(true)
 		expect(ok.can('project.read', { type: 'project', value: 'other' })).toBe(false)
