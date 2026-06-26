@@ -6,10 +6,11 @@ import { FakeCfAccess } from './helpers/fake-cfaccess'
 import { createHarness, DEFAULT_AUD, type Harness, seedGrant, seedUser } from './helpers/harness'
 
 // End-to-end admin tests for PUT/GET /admin/apps/:app/access — the Cloudflare Access edge-rules
-// reconcile. Driven through `handleAdmin` with a real signed admin token + an injected in-memory
+// reconcile. Driven through `handleAdmin` with a real native admin session + an injected in-memory
 // `FakeCfAccess` (no network), exactly like admin-schema.test.ts.
 
 const ORIGIN = 'https://iam.example.com'
+const ADMIN_ENV = { PROPUSTKA_SIGNING_KEYS: '', ENVIRONMENT: 'stage' }
 
 class FakeExecutionContext implements ExecutionContext {
 	readonly props: unknown = undefined
@@ -28,11 +29,11 @@ function adminServices(h: Harness, cf: FakeCfAccess): Services {
 async function asAdmin(h: Harness): Promise<string> {
 	const id = seedUser(h.sqlite, { sub: 'sub-admin', email: 'admin@example.com' })
 	seedGrant(h.sqlite, id, 'admin', null)
-	return h.signToken({ email: 'admin@example.com', sub: 'sub-admin' })
+	return h.signSession(id)
 }
 
-function req(path: string, method: string, token: string, body?: unknown, origin: string = ORIGIN): Request {
-	const headers = new Headers({ 'Cf-Access-Jwt-Assertion': token })
+function req(path: string, method: string, session: string, body?: unknown, origin: string = ORIGIN): Request {
+	const headers = new Headers({ Cookie: `px_session=${session}` })
 	if (method !== 'GET') {
 		headers.set('Origin', origin)
 		headers.set('Content-Type', 'application/json')
@@ -41,7 +42,7 @@ function req(path: string, method: string, token: string, body?: unknown, origin
 }
 
 async function run(h: Harness, cf: FakeCfAccess, request: Request): Promise<Response> {
-	return handleAdmin(request, adminServices(h, cf), new FakeExecutionContext())
+	return handleAdmin(request, adminServices(h, cf), ADMIN_ENV, new FakeExecutionContext())
 }
 
 const ACCESS = {

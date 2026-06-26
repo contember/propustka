@@ -9,10 +9,10 @@ export type MeState =
 	| { status: 'error'; message: string }
 
 /**
- * Fetch the current admin (`GET /admin/me`) once for the app shell. A 403 means the
- * caller is authenticated by Access but is not an IAM admin — the nav-level gate. This is
- * UX only; the server re-checks every `/admin/*` call. (401 / Access bounces are handled
- * inside `api()` via a hard reload.)
+ * Fetch the current admin (`GET /admin/me`) once for the app shell. A 403 means the caller
+ * is authenticated (a valid `px_session`) but is not an IAM admin — the nav-level gate. This
+ * is UX only; the server re-checks every `/admin/*` call. (A 401 — no/expired session — is
+ * handled inside `api()` by bouncing to the native `/auth/login`.)
  */
 export function useMe(): MeState {
 	const [state, setState] = useState<MeState>({ status: 'loading' })

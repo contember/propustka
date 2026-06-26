@@ -1,7 +1,15 @@
-import type { AccessAppDecl, AccessRule, AppAccess, AppSchema, IssueKeyInput, KeyGrant, PermissionEntry, RoleDef } from '@propustka/core'
+import type {
+	AccessAppDecl,
+	AccessRule,
+	AppAccess,
+	AppSchema,
+	IssueKeyInput,
+	KeyGrant,
+	PermissionEntry,
+	PrincipalType,
+	RoleDef,
+} from '@propustka/core'
 import { API_KEY_PREFIX, isActionAllowed } from '@propustka/core'
-import type { ResolveOutcome } from '../auth'
-import { resolveRequest } from '../auth'
 import { CfAccessError } from '../cfaccess'
 import {
 	type AuditEventRow,
@@ -52,13 +60,12 @@ export interface AdminContext {
 	services: Services
 	request: Request
 	url: URL
-	admin: { id: string; label: string; permissions: PermissionEntry[] }
-	/** Verified app id from the admin's own forwarded token (aud-derived). */
+	/** The resolved admin caller (already gated on `iam.admin`). `label` is null for a label-less key. */
+	admin: { id: string; type: PrincipalType; label: string | null; permissions: PermissionEntry[] }
+	/** propustka's own app id — the audience the admin was resolved against; used for audit labeling. */
 	app: string
-	/** The full resolve outcome, reused so handlers can forward the admin's credentials. */
-	outcome: ResolveOutcome
-	/** The original RPC-shaped authenticate input (forwarded for issueKey / share-link issue). */
-	authInput: { token: string | null; cookie: string | null; origin: string | null; requestId: string }
+	/** Correlation id for this admin request (cf-ray or a generated uuid). */
+	requestId: string
 	ctx: ExecutionContext
 }
 
@@ -226,9 +233,9 @@ function adminAudit(
 	event: { action: string; resourceType: string; resourceId?: string | null; diff?: unknown; metadata?: unknown },
 ): Promise<void> {
 	return c.services.db.writeAuditEvent({
-		requestId: c.authInput.requestId,
+		requestId: c.requestId,
 		principalId: c.admin.id,
-		principalLabel: c.admin.label,
+		principalLabel: c.admin.label ?? c.admin.id,
 		app: c.app,
 		action: event.action,
 		resourceType: event.resourceType,
@@ -243,10 +250,9 @@ function adminAudit(
 export function handleMe(c: AdminContext): Response {
 	const me: MeDto = {
 		id: c.admin.id,
-		type: c.outcome.result.ok && c.outcome.result.principal.type === 'service' ? 'service' : 'user',
-		label: c.admin.label,
+		type: c.admin.type,
+		label: c.admin.label ?? c.admin.id,
 		permissions: c.admin.permissions,
-		groupsUnavailable: c.outcome.groupsUnavailable,
 	}
 	return json(me)
 }
@@ -1219,7 +1225,7 @@ export async function createShareLink(c: AdminContext): Promise<Response> {
 	const issueInput: IssueKeyInput = {
 		app: c.app,
 		credential: null,
-		requestId: c.authInput.requestId,
+		requestId: c.requestId,
 		permissions: grants,
 		...(label !== undefined ? { label } : {}),
 		...(expiresAt !== undefined ? { expiresAt } : {}),
@@ -1342,6 +1348,3 @@ export async function listAuthLog(c: AdminContext): Promise<Response> {
 	const nextCursor = items.length === limit && last ? String(last.id) : null
 	return json({ items, nextCursor } satisfies { items: AuthLogDto[]; nextCursor: string | null })
 }
-
-// Re-export for the router so resolveRequest is reachable through one import site.
-export { resolveRequest }

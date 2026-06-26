@@ -122,11 +122,6 @@ export default function RootLayout() {
 							<>
 								<span className="me-label">{me.me.label}</span>
 								<span className="me-type muted">{me.me.type}</span>
-								{me.me.groupsUnavailable && (
-									<span className="me-warn" title="IdP group resolution was unavailable this request — group-based permissions may be missing.">
-										groups unavailable
-									</span>
-								)}
 							</>
 						)}
 				</div>

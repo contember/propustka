@@ -1,10 +1,9 @@
 // Typed fetch helper for the admin JSON API.
 //
 // Same-origin (`/admin/...`), `credentials: 'include'`, JSON in/out. Non-2xx maps to a
-// typed `ApiError`. Session-expiry handling: if a response looks like a Cloudflare Access
-// login redirect (opaque, non-JSON/HTML, cross-origin 302) or a 401, we trigger a full
-// `location.reload()` so Access can re-challenge — a SPA fetch can't follow the
-// cross-origin Access login page.
+// typed `ApiError`. Session-expiry handling: a 401 (no/expired `px_session`) bounces the
+// browser to propustka's own native login (`/auth/login`), which re-authenticates via OIDC
+// and returns here — no Cloudflare Access in the loop anymore.
 
 /** A typed non-2xx API failure surfaced to pages / error boundaries. */
 export class ApiError extends Error {
@@ -19,21 +18,12 @@ export class ApiError extends Error {
 
 const BASE = '/admin'
 
-/** Hard reload so Cloudflare Access re-challenges the (now expired) session. */
-function reloadForAccess(): never {
-	location.reload()
-	// `location.reload()` doesn't actually return; throw to satisfy the type system and
-	// stop any further processing while the navigation kicks in.
-	throw new ApiError(401, 'Session expired — reloading to re-authenticate.')
-}
-
-function looksLikeAccessRedirect(res: Response): boolean {
-	// Opaque (cross-origin redirect that we couldn't read) — the classic Access bounce.
-	if (res.type === 'opaque' || res.type === 'opaqueredirect') return true
-	// A 200/30x that returns HTML instead of JSON is the Access login page.
-	const contentType = res.headers.get('content-type') ?? ''
-	if (res.ok && !contentType.includes('application/json')) return true
-	return false
+/** Bounce to propustka's native login (same origin) so the user re-authenticates, then returns here. */
+function redirectToLogin(): never {
+	location.assign(`/auth/login?redirect=${encodeURIComponent(location.href)}`)
+	// `location.assign` doesn't actually return; throw to satisfy the type system and stop any
+	// further processing while the navigation kicks in.
+	throw new ApiError(401, 'Session expired — redirecting to sign in.')
 }
 
 async function readError(res: Response): Promise<ApiError> {
@@ -85,8 +75,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 		throw new ApiError(0, message)
 	}
 
-	// 401 or an Access login bounce → hard reload to re-challenge.
-	if (res.status === 401 || looksLikeAccessRedirect(res)) reloadForAccess()
+	// 401 (no/expired session) → bounce to the native login to re-authenticate.
+	if (res.status === 401) redirectToLogin()
 
 	if (!res.ok) throw await readError(res)
 

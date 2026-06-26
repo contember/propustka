@@ -1,17 +1,24 @@
 import { describe, expect, test } from 'bun:test'
 import { handleAdmin } from '../admin/router'
+import type { Env } from '../env'
 import type { Services } from '../services'
-import { createHarness, DEFAULT_AUD, type Harness, seedGrant, seedRole, seedUser } from './helpers/harness'
+import { createHarness, type Harness, seedGrant, seedRole, seedUser } from './helpers/harness'
 
 // FINDING TEST-2: the admin gate wiring in handleAdmin. Every /admin/* request must
 // pass a scope-less can('iam.admin') check — satisfied ONLY by a GLOBAL `admin`
 // grant (or bootstrap), NEVER by a project-scoped one. This drives handleAdmin end
-// to end with real signed tokens in the Cf-Access-Jwt-Assertion header (real
-// JwtValidator + real Db over bun:sqlite) and asserts the HTTP status, covering the
-// core security property plus the missing/invalid/disabled mapping and the SEC-2
-// same-origin CSRF guard on state-changing requests.
+// to end with a real propustka-native SSO session (`px_session` cookie → real Db over
+// bun:sqlite) and asserts the HTTP status, covering the core security property plus the
+// missing/invalid/disabled mapping and the SEC-2 same-origin CSRF guard.
 
 const ORIGIN = 'https://iam.example.com'
+
+// The admin app id every native session is resolved against (see admin/router.ts).
+const IAM_APP = 'propustka'
+
+// env slice handleAdmin needs. ENVIRONMENT='stage' keeps the local-dev bypass off, so the
+// session/credential paths are exercised for real.
+const ADMIN_ENV: Pick<Env, 'PROPUSTKA_SIGNING_KEYS' | 'ENVIRONMENT'> = { PROPUSTKA_SIGNING_KEYS: '', ENVIRONMENT: 'stage' }
 
 // A minimal ExecutionContext. `handleAdmin` only ever calls ctx.waitUntil /
 // passThroughOnException (via handlers); we record waitUntil promises but never
@@ -29,15 +36,16 @@ class FakeExecutionContext implements ExecutionContext {
 
 interface RequestOptions {
 	method?: string
-	token?: string | null
+	/** Plaintext `px_session` cookie value (a native SSO session). */
+	session?: string | null
 	/** Origin header to send (defaults to same-origin ORIGIN for state-changing methods). */
 	origin?: string | null
 }
 
 function adminRequest(path: string, opts: RequestOptions = {}): Request {
 	const headers = new Headers()
-	if (opts.token) {
-		headers.set('Cf-Access-Jwt-Assertion', opts.token)
+	if (opts.session) {
+		headers.set('Cookie', `px_session=${opts.session}`)
 	}
 	const method = opts.method ?? 'GET'
 	const stateChanging = method === 'POST' || method === 'PATCH' || method === 'DELETE'
@@ -50,14 +58,13 @@ function adminRequest(path: string, opts: RequestOptions = {}): Request {
 	return new Request(`${ORIGIN}${path}`, { method, headers })
 }
 
-// Services configured with real Access (non-empty ACCESS_APPS) so signed tokens
-// verify and the local-dev bypass precondition is off.
+// Services in 'stage' so the local-dev bypass precondition is off (the session path runs for real).
 function adminServices(h: Harness): Services {
-	return h.makeServices({ environment: 'stage', accessApps: { [DEFAULT_AUD]: 'iam-admin' } })
+	return h.makeServices({ environment: 'stage' })
 }
 
 async function run(h: Harness, request: Request): Promise<Response> {
-	return handleAdmin(request, adminServices(h), new FakeExecutionContext())
+	return handleAdmin(request, adminServices(h), ADMIN_ENV, new FakeExecutionContext())
 }
 
 describe('handleAdmin — admin gate (scope-less iam.admin)', () => {
@@ -66,8 +73,8 @@ describe('handleAdmin — admin gate (scope-less iam.admin)', () => {
 		const id = seedUser(h.sqlite, { sub: 'sub-admin', email: 'admin@example.com' })
 		seedGrant(h.sqlite, id, 'admin', null) // global
 
-		const token = await h.signToken({ email: 'admin@example.com', sub: 'sub-admin' })
-		const res = await run(h, adminRequest('/admin/roles', { token }))
+		const session = await h.signSession(id)
+		const res = await run(h, adminRequest('/admin/roles', { session }))
 
 		expect(res.status).toBe(200)
 	})
@@ -79,27 +86,34 @@ describe('handleAdmin — admin gate (scope-less iam.admin)', () => {
 		const id = seedUser(h.sqlite, { sub: 'sub-scoped', email: 'scoped@example.com' })
 		seedGrant(h.sqlite, id, 'admin', { type: 'team', value: 'acme' }) // scope-bound
 
-		const token = await h.signToken({ email: 'scoped@example.com', sub: 'sub-scoped' })
-		const res = await run(h, adminRequest('/admin/roles', { token }))
+		const session = await h.signSession(id)
+		const res = await run(h, adminRequest('/admin/roles', { session }))
 
 		expect(res.status).toBe(403)
 	})
 
 	test('only a viewer grant → 403', async () => {
 		const h = createHarness()
-		seedRole(h.sqlite, 'iam-admin', 'viewer', ['project.read'])
+		seedRole(h.sqlite, IAM_APP, 'viewer', ['project.read'])
 		const id = seedUser(h.sqlite, { sub: 'sub-viewer', email: 'viewer@example.com' })
-		seedGrant(h.sqlite, id, 'viewer', null, 'iam-admin')
+		seedGrant(h.sqlite, id, 'viewer', null, IAM_APP)
 
-		const token = await h.signToken({ email: 'viewer@example.com', sub: 'sub-viewer' })
-		const res = await run(h, adminRequest('/admin/roles', { token }))
+		const session = await h.signSession(id)
+		const res = await run(h, adminRequest('/admin/roles', { session }))
 
 		expect(res.status).toBe(403)
 	})
 
-	test('no token → 401 (missing_token)', async () => {
+	test('no session → 401 (missing_token)', async () => {
 		const h = createHarness()
 		const res = await run(h, adminRequest('/admin/roles'))
+
+		expect(res.status).toBe(401)
+	})
+
+	test('invalid (unknown) session → 401', async () => {
+		const h = createHarness()
+		const res = await run(h, adminRequest('/admin/roles', { session: 'sess-does-not-exist' }))
 
 		expect(res.status).toBe(401)
 	})
@@ -109,8 +123,8 @@ describe('handleAdmin — admin gate (scope-less iam.admin)', () => {
 		const id = seedUser(h.sqlite, { sub: 'sub-disabled', email: 'disabled@example.com', disabled: true })
 		seedGrant(h.sqlite, id, 'admin', null)
 
-		const token = await h.signToken({ email: 'disabled@example.com', sub: 'sub-disabled' })
-		const res = await run(h, adminRequest('/admin/roles', { token }))
+		const session = await h.signSession(id)
+		const res = await run(h, adminRequest('/admin/roles', { session }))
 
 		expect(res.status).toBe(403)
 	})
@@ -120,8 +134,8 @@ describe('handleAdmin — admin gate (scope-less iam.admin)', () => {
 		const id = seedUser(h.sqlite, { sub: 'sub-me', email: 'me@example.com' })
 		seedGrant(h.sqlite, id, 'admin', null)
 
-		const token = await h.signToken({ email: 'me@example.com', sub: 'sub-me' })
-		const res = await run(h, adminRequest('/admin/me', { token }))
+		const session = await h.signSession(id)
+		const res = await run(h, adminRequest('/admin/me', { session }))
 
 		expect(res.status).toBe(200)
 	})
@@ -129,16 +143,16 @@ describe('handleAdmin — admin gate (scope-less iam.admin)', () => {
 
 describe('handleAdmin — same-origin CSRF guard (SEC-2)', () => {
 	test('cross-origin state-changing POST → 403 BEFORE the gate (even for a global admin)', async () => {
-		// The CSRF check runs before resolveRequest, so a valid admin token does not
+		// The CSRF check runs before the caller is resolved, so a valid admin session does not
 		// rescue a cross-origin write.
 		const h = createHarness()
 		const id = seedUser(h.sqlite, { sub: 'sub-admin2', email: 'admin2@example.com' })
 		seedGrant(h.sqlite, id, 'admin', null)
 
-		const token = await h.signToken({ email: 'admin2@example.com', sub: 'sub-admin2' })
+		const session = await h.signSession(id)
 		const res = await run(
 			h,
-			adminRequest('/admin/grants', { method: 'POST', token, origin: 'https://evil.example.com' }),
+			adminRequest('/admin/grants', { method: 'POST', session, origin: 'https://evil.example.com' }),
 		)
 
 		expect(res.status).toBe(403)
@@ -151,12 +165,12 @@ describe('handleAdmin — same-origin CSRF guard (SEC-2)', () => {
 		// the gate instead (403 'admin permission required'), proving the guard let it
 		// through rather than blocking on origin.
 		const h = createHarness()
-		seedRole(h.sqlite, 'iam-admin', 'viewer', ['project.read'])
+		seedRole(h.sqlite, IAM_APP, 'viewer', ['project.read'])
 		const id = seedUser(h.sqlite, { sub: 'sub-v2', email: 'v2@example.com' })
-		seedGrant(h.sqlite, id, 'viewer', null, 'iam-admin')
+		seedGrant(h.sqlite, id, 'viewer', null, IAM_APP)
 
-		const token = await h.signToken({ email: 'v2@example.com', sub: 'sub-v2' })
-		const res = await run(h, adminRequest('/admin/grants', { method: 'POST', token, origin: ORIGIN }))
+		const session = await h.signSession(id)
+		const res = await run(h, adminRequest('/admin/grants', { method: 'POST', session, origin: ORIGIN }))
 
 		expect(res.status).toBe(403)
 		const body: unknown = await res.json()

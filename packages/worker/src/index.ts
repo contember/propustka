@@ -335,20 +335,20 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 	}
 
 	/**
-	 * HTTP surface: any `/admin/*` path → the admin JSON router (which re-checks
-	 * admin rights in-Worker); everything else → the admin SPA assets. Both are
-	 * behind Access (the admin policy) at the edge.
+	 * HTTP surface: `/auth/*` + the JWKS → the public native-auth routes; any `/admin/*` path →
+	 * the admin JSON router (which resolves the admin from a `px_session` / `px_` bearer and gates
+	 * on `iam.admin` in-Worker); everything else → the admin SPA assets.
 	 */
 	override async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url)
-		// propustka-native auth: public (no Access gate) — login/callback/logout + the JWKS.
+		// propustka-native auth: public (no gate) — login/callback/logout + the JWKS.
 		if (url.pathname === '/.well-known/jwks.json' || url.pathname === '/auth' || url.pathname.startsWith('/auth/')) {
 			const services = buildServices(this.env)
 			return handleAuth(request, services, this.env, this.ctx)
 		}
 		if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) {
 			const services = buildServices(this.env)
-			return handleAdmin(request, services, this.ctx)
+			return handleAdmin(request, services, this.env, this.ctx)
 		}
 		return this.env.ASSETS.fetch(request)
 	}

@@ -1,5 +1,9 @@
-import { permits } from '@propustka/core'
-import { principalFromOutcome, resolveRequest } from '../auth'
+import { type PermissionEntry, permits, type PrincipalType, SESSION_COOKIE } from '@propustka/core'
+import { resolveCaller } from '../auth'
+import { principalStatus } from '../db'
+import type { Env } from '../env'
+import { resolveUserPermissions } from '../resolve'
+import { hashToken } from '../secret'
 import type { Services } from '../services'
 import type { AdminContext } from './handlers'
 import {
@@ -41,22 +45,34 @@ import { error } from './http'
 // project-scoped grant).
 const ADMIN_ACTION = 'iam.admin'
 
+// propustka's own app id — the audience the admin caller is resolved against (the SSO session is
+// minted for it in auth/routes.ts). The built-in `admin` role is cross-app, so a global admin grant
+// still resolves here regardless.
+const IAM_APP = 'propustka'
+
 /**
- * Extract the forwarded Access credentials from the incoming admin request. The
- * admin SPA runs behind Access, so the same headers/cookie an app forwards are
- * present here (Cloudflare injects `Cf-Access-Jwt-Assertion`; the browser carries
- * the `CF_Authorization` cookie).
+ * The propustka-native admin credentials read off the request: a browser SSO session
+ * (`px_session` cookie) and/or an `Authorization: Bearer` machine credential (a `px_`
+ * admin/provisioning key). There is no Cloudflare Access JWT anymore.
  */
-function extractCredentials(request: Request, url: URL): {
-	token: string | null
-	cookie: string | null
-	origin: string | null
+function extractCredentials(request: Request): {
+	bearer: string | null
+	session: string | null
 	requestId: string
 } {
-	const token = request.headers.get('Cf-Access-Jwt-Assertion')
-	const cookie = parseCookie(request.headers.get('Cookie'), 'CF_Authorization')
+	const bearer = readBearer(request.headers.get('Authorization'))
+	const session = parseCookie(request.headers.get('Cookie'), SESSION_COOKIE)
 	const requestId = request.headers.get('cf-ray') ?? crypto.randomUUID()
-	return { token, cookie, origin: url.origin, requestId }
+	return { bearer, session, requestId }
+}
+
+/** Read the token out of an `Authorization: Bearer <token>` header. Null when absent/non-bearer. */
+function readBearer(header: string | null): string | null {
+	if (header === null) {
+		return null
+	}
+	const match = /^Bearer\s+(.+)$/i.exec(header.trim())
+	return match ? (match[1]?.trim() ?? null) : null
 }
 
 function parseCookie(header: string | null, name: string): string | null {
@@ -115,15 +131,83 @@ function originOf(value: string): string | null {
 	}
 }
 
+/** The resolved admin (already authenticated; the `iam.admin` gate is applied by `handleAdmin`). */
+interface ResolvedAdmin {
+	id: string
+	type: PrincipalType
+	label: string | null
+	permissions: PermissionEntry[]
+}
+
+type AdminResolution =
+	| { ok: true; admin: ResolvedAdmin }
+	| { ok: false; status: 401 | 403; reason: string }
+
 /**
- * Handle any `/admin/*` request. Beyond the Access policy at the edge, every
- * handler re-checks `can('iam.admin')` in-Worker (scope-less → global only), so a
- * misconfigured Access policy can't expose admin writes. Returns 401 when the
- * caller can't be authenticated, 403 when authenticated but not an admin.
+ * Resolve the admin caller from propustka-native credentials (no Cloudflare Access):
+ *   - an `Authorization: Bearer px_<key>` machine credential (CI / provisioning) → `resolveCaller`
+ *     (which also covers the local-dev bypass when no credential is presented);
+ *   - else the browser's `px_session` SSO cookie → session → principal → resolved permissions.
+ * Returns the caller + permissions; `handleAdmin` then enforces `iam.admin`. An ANONYMOUS credential
+ * (a passthrough JWT / share link, no principal) is rejected — admin needs an accountable principal.
  */
-export async function handleAdmin(request: Request, services: Services, ctx: ExecutionContext): Promise<Response> {
+async function resolveAdmin(
+	services: Services,
+	env: Pick<Env, 'PROPUSTKA_SIGNING_KEYS' | 'ENVIRONMENT'>,
+	creds: { bearer: string | null; session: string | null; requestId: string },
+): Promise<AdminResolution> {
+	// Bearer credential (or no credential at all → local-dev bypass) goes through `resolveCaller`.
+	if (creds.bearer !== null || creds.session === null) {
+		const res = await resolveCaller(services, env, { app: IAM_APP, credential: creds.bearer, requestId: creds.requestId })
+		if (!res.ok) {
+			const status = res.reason === 'missing_token' || res.reason === 'invalid_token' ? 401 : 403
+			return { ok: false, status, reason: res.reason }
+		}
+		if (res.caller.type === undefined) {
+			return { ok: false, status: 403, reason: 'not_allowed' }
+		}
+		return { ok: true, admin: { id: res.caller.id, type: res.caller.type, label: res.caller.label, permissions: res.caller.permissions } }
+	}
+
+	// Browser SSO session: validate the opaque `px_session`, resolve the principal's permissions for
+	// propustka's own app (groups don't apply — there is no CF identity cookie here).
+	const session = await services.db.getActiveSessionByHash(await hashToken(creds.session))
+	if (!session) {
+		return { ok: false, status: 401, reason: 'invalid_session' }
+	}
+	const principal = await services.db.getPrincipalById(session.principal_id)
+	if (!principal) {
+		return { ok: false, status: 401, reason: 'invalid_session' }
+	}
+	if (principalStatus(principal) === 'disabled') {
+		return { ok: false, status: 403, reason: 'disabled' }
+	}
+	const { permissions } = await resolveUserPermissions({
+		db: services.db,
+		identity: services.identity,
+		principal,
+		cookie: null,
+		origin: null,
+		bootstrapAdmins: services.config.bootstrapAdmins,
+		app: IAM_APP,
+	})
+	return { ok: true, admin: { id: principal.id, type: principal.type, label: principal.label, permissions } }
+}
+
+/**
+ * Handle any `/admin/*` request. The caller is resolved from propustka-native credentials
+ * (`px_session` SSO cookie or a `px_` bearer) and every handler runs only after `can('iam.admin')`
+ * passes in-Worker (scope-less → global only). Returns 401 when the caller can't be authenticated,
+ * 403 when authenticated but not an admin.
+ */
+export async function handleAdmin(
+	request: Request,
+	services: Services,
+	env: Pick<Env, 'PROPUSTKA_SIGNING_KEYS' | 'ENVIRONMENT'>,
+	ctx: ExecutionContext,
+): Promise<Response> {
 	const url = new URL(request.url)
-	const creds = extractCredentials(request, url)
+	const creds = extractCredentials(request)
 
 	// CSRF defense: reject cross-origin state-changing writes before touching the DB.
 	const crossOrigin = rejectCrossOrigin(request, url)
@@ -131,26 +215,15 @@ export async function handleAdmin(request: Request, services: Services, ctx: Exe
 		return crossOrigin
 	}
 
-	// Backstop: resolveRequest and the handlers touch D1, which can throw on a
-	// transient error. Map any unexpected throw to a 500 (never leak internals) so
-	// the admin surface degrades gracefully instead of surfacing a raw rejection.
+	// Backstop: resolution and the handlers touch D1, which can throw on a transient
+	// error. Map any unexpected throw to a 500 (never leak internals) so the admin
+	// surface degrades gracefully instead of surfacing a raw rejection.
 	try {
-		const outcome = await resolveRequest(services, {
-			app: 'iam-admin',
-			token: creds.token,
-			cookie: creds.cookie,
-			origin: creds.origin,
-			requestId: creds.requestId,
-		})
-
-		if (!outcome.result.ok) {
-			// missing/invalid token → 401; unknown_principal/disabled → 403.
-			const status = outcome.result.reason === 'missing_token' || outcome.result.reason === 'invalid_token' ? 401 : 403
-			return error(status, outcome.result.reason)
+		const resolution = await resolveAdmin(services, env, creds)
+		if (!resolution.ok) {
+			return error(resolution.status, resolution.reason)
 		}
-
-		const resolved = principalFromOutcome(outcome)
-		if (!resolved || !permits(resolved.permissions, ADMIN_ACTION)) {
+		if (!permits(resolution.admin.permissions, ADMIN_ACTION)) {
 			return error(403, 'admin permission required')
 		}
 
@@ -158,10 +231,9 @@ export async function handleAdmin(request: Request, services: Services, ctx: Exe
 			services,
 			request,
 			url,
-			admin: { id: resolved.id, label: outcome.result.principal.label, permissions: resolved.permissions },
-			app: outcome.verifiedApp ?? 'iam-admin',
-			outcome,
-			authInput: { token: creds.token, cookie: creds.cookie, origin: creds.origin, requestId: creds.requestId },
+			admin: resolution.admin,
+			app: IAM_APP,
+			requestId: creds.requestId,
 			ctx,
 		}
 

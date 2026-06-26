@@ -16,6 +16,8 @@ import { createHarness, DEFAULT_AUD, type Harness, seedAppAction, seedGrant, see
 const ORIGIN = 'https://iam.example.com'
 const ISSUER = 'https://propustka.test'
 const SIGN_ENV = { PROPUSTKA_SIGNING_KEYS: '', ENVIRONMENT: 'local' }
+// env slice handleAdmin needs; 'stage' keeps the local-dev bypass off so the session path runs.
+const ADMIN_ENV = { PROPUSTKA_SIGNING_KEYS: '', ENVIRONMENT: 'stage' }
 
 class FakeExecutionContext implements ExecutionContext {
 	readonly props: unknown = undefined
@@ -30,11 +32,11 @@ function services(h: Harness, cf: FakeCfAccess): Services {
 async function asAdmin(h: Harness): Promise<string> {
 	const id = seedUser(h.sqlite, { sub: 'sub-admin', email: 'admin@example.com' })
 	seedGrant(h.sqlite, id, 'admin', null)
-	return h.signToken({ email: 'admin@example.com', sub: 'sub-admin' })
+	return h.signSession(id)
 }
 
-function req(path: string, method: string, token: string, body?: unknown): Request {
-	const headers = new Headers({ 'Cf-Access-Jwt-Assertion': token })
+function req(path: string, method: string, session: string, body?: unknown): Request {
+	const headers = new Headers({ Cookie: `px_session=${session}` })
 	if (method !== 'GET') {
 		headers.set('Origin', ORIGIN)
 		headers.set('Content-Type', 'application/json')
@@ -43,7 +45,7 @@ function req(path: string, method: string, token: string, body?: unknown): Reque
 }
 
 function run(h: Harness, cf: FakeCfAccess, request: Request): Promise<Response> {
-	return handleAdmin(request, services(h, cf), new FakeExecutionContext())
+	return handleAdmin(request, services(h, cf), ADMIN_ENV, new FakeExecutionContext())
 }
 
 /** Resolve a `px_` key into an access token via mintFromKey, returning the verified claims (or null). */

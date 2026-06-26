@@ -5,6 +5,7 @@ import { Db } from '../../db'
 import { IdentityClient } from '../../identity'
 import { type AccessApps, JwtValidator } from '../../jwt'
 import { OidcClient, type OidcMetadata } from '../../oidc'
+import { hashToken } from '../../secret'
 import type { Config, Services } from '../../services'
 import { FakeCfAccess } from './fake-cfaccess'
 import { allMigrations } from './migrations'
@@ -221,8 +222,22 @@ export interface Harness {
 	/** The production `Db` over the in-memory sqlite, via the D1 adapter. */
 	db: Db
 	signToken: typeof signToken
+	/**
+	 * Create an active SSO session for a principal and return the plaintext `px_session` cookie value
+	 * (the native admin/auth credential). Mirrors what `/auth/callback` does after a successful login.
+	 */
+	signSession(principalId: string, options?: SignSessionOptions): Promise<string>
 	/** Build a `Services` for the given environment + Access config. */
 	makeServices(options?: MakeServicesOptions): Services
+}
+
+export interface SignSessionOptions {
+	/** IdP `sub` recorded on the session row. */
+	idpSub?: string
+	/** Verified email recorded on the session row. */
+	email?: string
+	/** Absolute expiry (unix seconds); defaults to 1h out. */
+	expiresAt?: number
 }
 
 export interface MakeServicesOptions {
@@ -232,6 +247,8 @@ export interface MakeServicesOptions {
 	accessApps?: AccessApps
 	/** IAM_BOOTSTRAP_ADMINS emails. Defaults to empty. */
 	bootstrapAdmins?: ReadonlySet<string>
+	/** Central human-admission allowlist. Defaults to `{ emailDomains: ['contember.com'], emails: [] }`. */
+	human?: { emailDomains?: readonly string[]; emails?: readonly string[] }
 	/** Cloudflare Access surface. Defaults to a fresh in-memory `FakeCfAccess`. */
 	cfAccess?: CfAccess
 	/** OIDC client. Defaults to one with injected (offline) discovery metadata; tests override for the callback flow. */
@@ -256,7 +273,10 @@ export function createHarness(): Harness {
 		const config: Config = {
 			accessApps,
 			team: TEAM,
-			human: { emailDomains: ['contember.com'], emails: [] },
+			human: {
+				emailDomains: options.human?.emailDomains ?? ['contember.com'],
+				emails: options.human?.emails ?? [],
+			},
 			bootstrapAdmins: options.bootstrapAdmins ?? new Set(),
 			cfApiToken: '',
 			cfAccountId: '',
@@ -284,7 +304,19 @@ export function createHarness(): Harness {
 		}
 	}
 
-	return { sqlite, db, signToken, makeServices }
+	async function signSession(principalId: string, options: SignSessionOptions = {}): Promise<string> {
+		const token = nextId('sess')
+		await db.createSession({
+			tokenHash: await hashToken(token),
+			principalId,
+			idpSub: options.idpSub ?? `idp-${principalId}`,
+			email: options.email ?? 'admin@example.com',
+			expiresAt: options.expiresAt ?? Math.floor(Date.now() / 1000) + 3600,
+		})
+		return token
+	}
+
+	return { sqlite, db, signToken, signSession, makeServices }
 }
 
 // ── Seeding helpers (direct INSERTs against the real schema) ──────────────────

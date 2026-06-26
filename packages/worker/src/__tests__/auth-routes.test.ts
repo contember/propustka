@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test'
 import { handleAuth } from '../auth/routes'
 import { OidcClient, type OidcIdentity, type OidcMetadata } from '../oidc'
 import { hashToken } from '../secret'
-import { createHarness, seedUser } from './helpers/harness'
+import { createHarness, type Harness, seedUser } from './helpers/harness'
 
 const AUTH_ENV = { PROPUSTKA_SIGNING_KEYS: '', ENVIRONMENT: 'local' }
 const ISSUER = 'http://localhost:18191'
@@ -151,6 +151,71 @@ describe('login → callback (end to end with a fake IdP)', () => {
 			ctx(),
 		)
 		expect(res.status).toBe(401)
+	})
+})
+
+describe('login admission (/auth/callback allowlist)', () => {
+	// Drive a full login → callback for the given services + identity, returning the callback response.
+	async function login(services: ReturnType<Harness['makeServices']>, identity: OidcIdentity): Promise<Response> {
+		const withOidc = { ...services, oidc: new FakeOidc(identity) }
+		const loginRes = await handleAuth(new Request(`${ISSUER}/auth/login`), withOidc, AUTH_ENV, ctx())
+		const state = new URL(loginRes.headers.get('location') ?? '').searchParams.get('state')
+		const flightCookie = setCookieValue(loginRes, 'px_oidc')
+		return handleAuth(
+			new Request(`${ISSUER}/auth/callback?code=abc&state=${state}`, { headers: { Cookie: `px_oidc=${flightCookie}` } }),
+			withOidc,
+			AUTH_ENV,
+			ctx(),
+		)
+	}
+
+	test('a new identity outside the allowlist is refused (403), no principal created', async () => {
+		const h = createHarness()
+		// Default allowlist admits only @contember.com.
+		const services = h.makeServices({ issuer: ISSUER })
+		const res = await login(services, { sub: 'out-1', email: 'stranger@evil.example' })
+		expect(res.status).toBe(403)
+		expect(await h.db.getUserByExternalId('out-1')).toBeNull()
+	})
+
+	test('a matching email domain admits a new identity (302 + session)', async () => {
+		const h = createHarness()
+		const services = h.makeServices({ issuer: ISSUER })
+		const res = await login(services, { sub: 'in-1', email: 'new@contember.com' })
+		expect(res.status).toBe(302)
+		expect(setCookieValue(res, SESSION_COOKIE)).toBeTruthy()
+	})
+
+	test('an exact email on the allowlist admits a new identity', async () => {
+		const h = createHarness()
+		const services = h.makeServices({ issuer: ISSUER, human: { emailDomains: [], emails: ['vip@evil.example'] } })
+		const res = await login(services, { sub: 'vip-1', email: 'vip@evil.example' })
+		expect(res.status).toBe(302)
+	})
+
+	test('a `*` wildcard admits anyone (allow-all)', async () => {
+		const h = createHarness()
+		const services = h.makeServices({ issuer: ISSUER, human: { emailDomains: ['*'], emails: [] } })
+		const res = await login(services, { sub: 'any-1', email: 'whoever@anywhere.example' })
+		expect(res.status).toBe(302)
+	})
+
+	test('a bootstrap admin is always admitted, even outside the allowlist', async () => {
+		const h = createHarness()
+		const services = h.makeServices({ issuer: ISSUER, bootstrapAdmins: new Set(['boss@evil.example']) })
+		const res = await login(services, { sub: 'boss-1', email: 'boss@evil.example' })
+		expect(res.status).toBe(302)
+	})
+
+	test('an already-invited principal is admitted despite an allowlist miss', async () => {
+		const h = createHarness()
+		// An invited row (external_id NULL) with a non-allowlisted email — claimed on first login.
+		seedUser(h.sqlite, { sub: null, email: 'invited@evil.example' })
+		const services = h.makeServices({ issuer: ISSUER })
+		const res = await login(services, { sub: 'inv-1', email: 'invited@evil.example' })
+		expect(res.status).toBe(302)
+		// The invite was claimed by the IdP sub.
+		expect((await h.db.getUserByExternalId('inv-1'))?.email).toBe('invited@evil.example')
 	})
 })
 

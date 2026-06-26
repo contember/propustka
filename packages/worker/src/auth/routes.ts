@@ -99,8 +99,19 @@ async function handleCallback(request: Request, services: Services, secure: bool
 		return authError('invalid id_token', 401)
 	}
 
-	// Resolve (or claim/lazy-create) the principal from the verified Google identity — the same
-	// 3-step flow the legacy Access path uses, keyed on the IdP `sub` and verified email.
+	// Admission: who may log in as a human. The central allowlist (`HUMAN_EMAIL_DOMAINS`/
+	// `HUMAN_EMAILS`, with a `*` entry meaning admit-all) gates SELF-PROVISIONING of a new identity.
+	// An already-known or invited principal (and a bootstrap admin) is always admitted regardless —
+	// so check existence WITHOUT lazily creating before refusing a non-allowlisted newcomer.
+	if (!admitted(identity.email, services.config)) {
+		const known = (await services.db.getUserByExternalId(identity.sub)) ?? (await services.db.getUserByEmail(identity.email))
+		if (!known) {
+			return authError('login refused (not allowed)', 403)
+		}
+	}
+
+	// Resolve (or claim/lazy-create) the principal from the verified OIDC identity — the 3-step flow
+	// keyed on the IdP `sub` and verified email.
 	const resolved = await resolveUserPrincipal(services.db, identity.sub, identity.email)
 	if (!resolved.ok) {
 		return authError(`login refused (${resolved.reason})`, 403)
@@ -150,6 +161,32 @@ async function handleLogout(request: Request, services: Services, secure: boolea
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────────
+
+/**
+ * The human-admission allowlist for self-provisioning a brand-new identity. propustka owns this
+ * centrally (the deploy vars `PROPUSTKA_HUMAN_EMAIL_DOMAINS` / `PROPUSTKA_HUMAN_EMAILS`):
+ *   - a `*` entry in EITHER list = admit anyone (allow-all);
+ *   - an exact email match in `emails`;
+ *   - the email's domain in `emailDomains` (case-insensitive);
+ *   - a bootstrap admin.
+ * Returns false otherwise — an empty allowlist with no `*` means only known/invited principals and
+ * bootstrap admins may log in (fail-closed). Matching uses ONLY the IdP-verified email.
+ */
+function admitted(email: string, config: Config): boolean {
+	const { emailDomains, emails } = config.human
+	if (emailDomains.includes('*') || emails.includes('*')) {
+		return true
+	}
+	if (emails.includes(email)) {
+		return true
+	}
+	const at = email.lastIndexOf('@')
+	const domain = at === -1 ? '' : email.slice(at + 1).toLowerCase()
+	if (domain !== '' && emailDomains.some((d) => d.toLowerCase() === domain)) {
+		return true
+	}
+	return config.bootstrapAdmins.has(email)
+}
 
 /** Build the long-lived SSO session `Set-Cookie` (parent-domain when configured). */
 function sessionCookie(value: string, config: Config, secure: boolean): string {

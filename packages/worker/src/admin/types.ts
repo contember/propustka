@@ -315,8 +315,6 @@ export interface MeDto {
 	type: PrincipalType
 	label: string
 	permissions: PermissionEntry[]
-	/** Whether group resolution was available this request. */
-	groupsUnavailable: boolean
 }
 
 export type { AccessAppDecl, AccessRule, AppAccess, AppActionDef, AppSchema, AppScopeDef, PermissionEntry, PermissionSource, PrincipalType, RoleDef }

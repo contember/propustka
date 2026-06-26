@@ -1,8 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 import { handleAdmin } from '../admin/router'
 import type { AppSchemaDto, GrantDto, PolicyDto, RoleDto } from '../admin/types'
+import type { Env } from '../env'
 import type { Services } from '../services'
 import { createHarness, DEFAULT_AUD, type Harness, seedGrant, seedUser } from './helpers/harness'
+
+const ADMIN_ENV: Pick<Env, 'PROPUSTKA_SIGNING_KEYS' | 'ENVIRONMENT'> = { PROPUSTKA_SIGNING_KEYS: '', ENVIRONMENT: 'stage' }
 
 // End-to-end admin tests for the NEW surfaces introduced by the generic-scopes refactor:
 //   - PUT/GET /admin/apps/:app/schema   — idempotent vocabulary reconcile + readback;
@@ -10,7 +13,7 @@ import { createHarness, DEFAULT_AUD, type Harness, seedGrant, seedUser } from '.
 //   - action-catalog validation rejects unknown actions on schema + policy + grant;
 //   - grant create enforces role XOR inline, validates inline against the catalog, and
 //     enforces both-or-neither scope.
-// Driven through `handleAdmin` with a real signed admin token (real JwtValidator + real
+// Driven through `handleAdmin` with a real native admin session (`px_session` cookie + real
 // Db over bun:sqlite), exactly like admin-router.test.ts.
 
 const ORIGIN = 'https://iam.example.com'
@@ -30,15 +33,15 @@ function adminServices(h: Harness): Services {
 	return h.makeServices({ environment: 'stage', accessApps: { [DEFAULT_AUD]: 'iam-admin', 'aud-opice': 'opice' } })
 }
 
-// Seed a global admin user and mint its token so every request clears the gate.
+// Seed a global admin user and open an SSO session so every request clears the gate.
 async function asAdmin(h: Harness): Promise<string> {
 	const id = seedUser(h.sqlite, { sub: 'sub-admin', email: 'admin@example.com' })
 	seedGrant(h.sqlite, id, 'admin', null) // built-in admin, global, cross-app
-	return h.signToken({ email: 'admin@example.com', sub: 'sub-admin' })
+	return h.signSession(id)
 }
 
-function req(path: string, method: string, token: string, body?: unknown): Request {
-	const headers = new Headers({ 'Cf-Access-Jwt-Assertion': token })
+function req(path: string, method: string, session: string, body?: unknown): Request {
+	const headers = new Headers({ Cookie: `px_session=${session}` })
 	const stateChanging = method !== 'GET'
 	if (stateChanging) {
 		headers.set('Origin', ORIGIN)
@@ -48,7 +51,7 @@ function req(path: string, method: string, token: string, body?: unknown): Reque
 }
 
 async function run(h: Harness, request: Request): Promise<Response> {
-	return handleAdmin(request, adminServices(h), new FakeExecutionContext())
+	return handleAdmin(request, adminServices(h), ADMIN_ENV, new FakeExecutionContext())
 }
 
 const SCHEMA = {
