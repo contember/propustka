@@ -7,13 +7,13 @@ import { IamRpcStub, makeRequest } from './stub'
 
 describe('IamClient.issueServiceToken', () => {
 	test('ok → IssuedServiceToken; forwards app + credentials + grant spec', async () => {
-		const stub = new IamRpcStub({ issueService: { ok: true, principalId: 'p1', clientId: 'cid', clientSecret: 'sec', tokenId: 'tid' } })
+		const stub = new IamRpcStub({ issueService: { ok: true, principalId: 'p1', clientId: 'cid', clientSecret: 'sec', apiKey: 'px_k', tokenId: 'tid' } })
 		const client = new IamClient(stub, 'opice')
 		const res = await client.issueServiceToken(
 			makeRequest({ token: 'jwt', ray: 'ray1' }),
 			{ label: 'ingest:foo', permissions: ['report.write'], scope: { type: 'project', value: 'foo' } },
 		)
-		expect(res).toEqual({ ok: true, clientId: 'cid', clientSecret: 'sec', principalId: 'p1', tokenId: 'tid' })
+		expect(res).toEqual({ ok: true, clientId: 'cid', clientSecret: 'sec', apiKey: 'px_k', principalId: 'p1', tokenId: 'tid' })
 		expect(stub.issueServiceInputs[0]).toMatchObject({
 			app: 'opice',
 			token: 'jwt',
@@ -52,9 +52,9 @@ describe('IamClient.revokeServiceToken / rotateServiceToken', () => {
 	})
 
 	test('rotate ok → new secret', async () => {
-		const stub = new IamRpcStub({ rotateService: { ok: true, clientId: 'cid', clientSecret: 'sec2', tokenId: 'tid' } })
+		const stub = new IamRpcStub({ rotateService: { ok: true, clientId: 'cid', clientSecret: 'sec2', apiKey: 'px_k2', tokenId: 'tid' } })
 		const res = await new IamClient(stub, 'opice').rotateServiceToken(makeRequest({ token: 'jwt' }), 'p1')
-		expect(res).toEqual({ ok: true, clientId: 'cid', clientSecret: 'sec2', tokenId: 'tid' })
+		expect(res).toEqual({ ok: true, clientId: 'cid', clientSecret: 'sec2', apiKey: 'px_k2', tokenId: 'tid' })
 	})
 
 	test('rotate provisioning_failed → 502', async () => {

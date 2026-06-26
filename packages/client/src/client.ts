@@ -249,7 +249,14 @@ export class IamClient {
 			expiresAt: input.expiresAt,
 		})
 		if (result.ok) {
-			return { ok: true, clientId: result.clientId, clientSecret: result.clientSecret, principalId: result.principalId, tokenId: result.tokenId }
+			return {
+				ok: true,
+				clientId: result.clientId,
+				clientSecret: result.clientSecret,
+				apiKey: result.apiKey,
+				principalId: result.principalId,
+				tokenId: result.tokenId,
+			}
 		}
 		return { ok: false, reason: result.reason, status: issueServiceTokenStatus(result.reason) }
 	}
@@ -277,7 +284,7 @@ export class IamClient {
 		const { token, cookie, origin, requestId } = readCredentials(req)
 		const result = await this.binding.rotateServiceToken({ app: this.appId, token, cookie, origin, requestId, principalId })
 		if (result.ok) {
-			return { ok: true, clientId: result.clientId, clientSecret: result.clientSecret, tokenId: result.tokenId }
+			return { ok: true, clientId: result.clientId, clientSecret: result.clientSecret, apiKey: result.apiKey, tokenId: result.tokenId }
 		}
 		return { ok: false, reason: result.reason, status: rotateServiceTokenStatus(result.reason) }
 	}

@@ -9,9 +9,18 @@ import type {
 	Scope,
 } from '@propustka/core'
 import { permits } from '@propustka/core'
+import { API_KEY_PREFIX } from '@propustka/core'
+import { generateToken, hashToken } from './capabilities'
 import { CfAccessError, type MintedServiceToken } from './cfaccess'
 import { resolveServicePermissions } from './resolve'
 import type { Services } from './services'
+
+/** Mint a propustka-native `px_` credential bound to a service principal; returns the plaintext once. */
+async function mintNativeKey(services: Services, principalId: string, issuedBy: string, label: string, expiresAt: number | null): Promise<string> {
+	const apiKey = `${API_KEY_PREFIX}${generateToken()}`
+	await services.db.createCredential({ tokenHash: await hashToken(apiKey), label, principalId, issuedBy, expiresAt, grants: [] })
+	return apiKey
+}
 
 /** The resolved caller (issuer / revoker), as `index.ts` resolves it from the forwarded JWT. */
 interface Caller {
@@ -82,7 +91,9 @@ export async function issueServiceToken(
 			grantedBy: issuer.id,
 			expiresAt: input.expiresAt ?? null,
 		})
-		return { ok: true, principalId: principal.id, clientId: minted.clientId, clientSecret: minted.clientSecret, tokenId: minted.id }
+		// Mint the propustka-native key too (add-only), bound to the same principal.
+		const apiKey = await mintNativeKey(services, principal.id, issuer.id, input.label, input.expiresAt ?? null)
+		return { ok: true, principalId: principal.id, clientId: minted.clientId, clientSecret: minted.clientSecret, tokenId: minted.id, apiKey }
 	} catch (err) {
 		console.error(`service principal provisioning failed for request '${input.requestId}'`, err)
 		try {
@@ -169,6 +180,7 @@ export async function revokeServiceToken(
 
 	await services.db.deleteGrantsForPrincipal(principal.id)
 	await services.db.disablePrincipal(principal.id)
+	await services.db.revokeCredentialsForPrincipal(principal.id)
 	return { ok: true, revoked: true }
 }
 
@@ -201,7 +213,10 @@ export async function rotateServiceToken(
 			return { ok: false, reason: 'not_found' }
 		}
 		const rotated = await cf.rotateServiceToken(tokenId)
-		return { ok: true, clientId: rotated.clientId, clientSecret: rotated.clientSecret, tokenId: rotated.id }
+		// Rotate the native key in lockstep: revoke the old credentials, mint a fresh one.
+		await services.db.revokeCredentialsForPrincipal(principal.id)
+		const apiKey = await mintNativeKey(services, principal.id, caller.id, principal.external_id, null)
+		return { ok: true, clientId: rotated.clientId, clientSecret: rotated.clientSecret, tokenId: rotated.id, apiKey }
 	} catch (err) {
 		if (!(err instanceof CfAccessError)) {
 			throw err

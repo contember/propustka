@@ -233,8 +233,11 @@ export interface IssueServiceTokenInput {
 }
 
 export type IssueServiceTokenResult =
-	/** Plaintext `clientSecret` returned ONCE; `principalId` is the stable IAM handle for revoke/rotate. */
-	| { ok: true; principalId: string; clientId: string; clientSecret: string; tokenId: string }
+	/**
+	 * Plaintext `clientSecret` (CF Access) + `apiKey` (the propustka-native `px_` credential bound to
+	 * the same principal) returned ONCE; `principalId` is the stable IAM handle for revoke/rotate.
+	 */
+	| { ok: true; principalId: string; clientId: string; clientSecret: string; tokenId: string; apiKey: string }
 	| { ok: false; reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'provisioning_failed' }
 
 export interface RevokeServiceTokenInput {
@@ -264,8 +267,8 @@ export interface RotateServiceTokenInput {
 }
 
 export type RotateServiceTokenResult =
-	/** New plaintext `clientSecret` returned ONCE; the client_id is unchanged. */
-	| { ok: true; clientId: string; clientSecret: string; tokenId: string }
+	/** New plaintext `clientSecret` + new native `apiKey` returned ONCE; the client_id is unchanged. */
+	| { ok: true; clientId: string; clientSecret: string; tokenId: string; apiKey: string }
 	| { ok: false; reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'not_found' | 'provisioning_failed' }
 
 // ── List principals (the app's people directory) ───────────────────────────────

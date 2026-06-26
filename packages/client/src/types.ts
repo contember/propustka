@@ -159,13 +159,15 @@ export interface IssueServiceTokenRequest {
 	expiresAt?: number
 }
 
-/** Successful `issueServiceToken` — the `clientSecret` is returned ONCE. */
+/** Successful `issueServiceToken` — the `clientSecret` + native `apiKey` are returned ONCE. */
 export interface IssuedServiceToken {
 	readonly ok: true
 	/** Access service token client id (stable; carried by the machine as `CF-Access-Client-Id`). */
 	clientId: string
 	/** Plaintext secret — show once, never persist. */
 	clientSecret: string
+	/** The propustka-native API key (`px_…`) bound to the same principal — show once, never persist. */
+	apiKey: string
 	/** The IAM service principal id — the durable handle for revoke/rotate. */
 	principalId: string
 	/** The Access service token id. */
@@ -192,11 +194,12 @@ export interface RevokeServiceTokenFailure {
 	status: 401 | 403 | 404
 }
 
-/** Successful `rotateServiceToken` — new `clientSecret` ONCE; the client_id is unchanged. */
+/** Successful `rotateServiceToken` — new `clientSecret` + native `apiKey` ONCE; the client_id is unchanged. */
 export interface RotatedServiceToken {
 	readonly ok: true
 	clientId: string
 	clientSecret: string
+	apiKey: string
 	tokenId: string
 }
 

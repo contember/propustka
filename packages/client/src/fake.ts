@@ -326,7 +326,7 @@ export class FakeIamClient {
 		const principalId = `fake-service-${suffix}`
 		const permissions: PermissionEntry[] = input.permissions.map((action) => ({ action, scope: input.scope ?? null, source: 'grant' }))
 		this.serviceTokens.set(clientId, { principalId, clientSecret, label: input.label, permissions })
-		return Promise.resolve({ ok: true, clientId, clientSecret, principalId, tokenId: `fake-token-${suffix}` })
+		return Promise.resolve({ ok: true, clientId, clientSecret, apiKey: `px_fake-${suffix}`, principalId, tokenId: `fake-token-${suffix}` })
 	}
 
 	revokeServiceToken(_req: Request, principalId: string): Promise<RevokedServiceToken | RevokeServiceTokenFailure> {
@@ -352,7 +352,7 @@ export class FakeIamClient {
 		const clientSecret = `fake-secret-${suffix}`
 		// Mutate the stored entry (same reference held in the map): client_id + principal unchanged.
 		found.service.clientSecret = clientSecret
-		return Promise.resolve({ ok: true, clientId: found.clientId, clientSecret, tokenId: `fake-token-${suffix}` })
+		return Promise.resolve({ ok: true, clientId: found.clientId, clientSecret, apiKey: `px_fake-${suffix}`, tokenId: `fake-token-${suffix}` })
 	}
 
 	/** Locate a registered service token by its principal id (small N in dev — linear scan). */
