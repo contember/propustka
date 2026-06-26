@@ -32,9 +32,7 @@ describe('issueKey → mintFromKey (standalone, frozen inline grants)', () => {
 			services,
 			{
 				app: 'opice',
-				token: null,
-				cookie: null,
-				origin: null,
+				credential: null,
 				requestId: 'r1',
 				permissions: [{ action: 'report.write', scope: { type: 'project', value: 'demo' } }],
 				label: 'opice CI',
@@ -62,7 +60,7 @@ describe('issueKey → mintFromKey (standalone, frozen inline grants)', () => {
 		const h = createHarness()
 		const services = h.makeServices({ issuer: ISSUER })
 		const issuerId = seedUser(h.sqlite, { sub: 'iss2', email: 'iss2@contember.com' })
-		const issued = await issueKey(services, { app: 'a', token: null, cookie: null, origin: null, requestId: 'r' }, {
+		const issued = await issueKey(services, { app: 'a', credential: null, requestId: 'r' }, {
 			id: issuerId,
 			permissions: [perm('*')],
 		}, 'a')
@@ -76,9 +74,7 @@ describe('issueKey → mintFromKey (standalone, frozen inline grants)', () => {
 			services,
 			{
 				app: 'a',
-				token: null,
-				cookie: null,
-				origin: null,
+				credential: null,
 				requestId: 'r',
 				permissions: [{ action: 'report.delete' }],
 			},
@@ -100,9 +96,7 @@ describe('issueKey → mintFromKey (principal-bound)', () => {
 			services,
 			{
 				app: 'app-x',
-				token: null,
-				cookie: null,
-				origin: null,
+				credential: null,
 				requestId: 'r',
 				principalId: svcId,
 			},
@@ -131,9 +125,7 @@ describe('issueKey → mintFromKey (principal-bound)', () => {
 			services,
 			{
 				app: 'app-x',
-				token: null,
-				cookie: null,
-				origin: null,
+				credential: null,
 				requestId: 'r',
 				principalId: svcId,
 				permissions: [{ action: 'project.read' }], // downscope to read-only
@@ -158,9 +150,7 @@ describe('issueKey → mintFromKey (principal-bound)', () => {
 			services,
 			{
 				app: 'a',
-				token: null,
-				cookie: null,
-				origin: null,
+				credential: null,
 				requestId: 'r',
 				principalId: 'someone-else',
 			},
@@ -181,9 +171,7 @@ describe('issueKey service mode (folded service token)', () => {
 			services,
 			{
 				app: 'opice',
-				token: null,
-				cookie: null,
-				origin: null,
+				credential: null,
 				requestId: 'r1',
 				service: { label: 'opice CI', permissions: ['report.write'], scope: { type: 'project', value: 'demo' } },
 			},
@@ -211,7 +199,7 @@ describe('issueKey service mode (folded service token)', () => {
 		const issuerId = seedUser(h.sqlite, { sub: 'iss-svc2', email: 'iss2@contember.com' })
 		const issued = await issueKey(
 			services,
-			{ app: 'a', token: null, cookie: null, origin: null, requestId: 'r', service: { label: 'x', permissions: ['report.delete'] } },
+			{ app: 'a', credential: null, requestId: 'r', service: { label: 'x', permissions: ['report.delete'] } },
 			{ id: issuerId, permissions: [perm('report.read')] },
 			'a',
 		)
@@ -224,7 +212,7 @@ describe('issueKey service mode (folded service token)', () => {
 		const issuerId = seedUser(h.sqlite, { sub: 'iss-svc3', email: 'iss3@contember.com' })
 		const issued = await issueKey(
 			services,
-			{ app: 'a', token: null, cookie: null, origin: null, requestId: 'r', service: { label: 'x', permissions: [] } },
+			{ app: 'a', credential: null, requestId: 'r', service: { label: 'x', permissions: [] } },
 			{ id: issuerId, permissions: [perm('*')] },
 			'a',
 		)
@@ -271,9 +259,7 @@ describe('issueJwt (passthrough)', () => {
 		const services = h.makeServices({ issuer: ISSUER })
 		const issued = await issueJwt(services, ENV, {
 			app: 'opice',
-			token: null,
-			cookie: null,
-			origin: null,
+			credential: null,
 			requestId: 'r',
 			permissions: [{ action: 'event.ingest' }],
 			ttl: 3600,
@@ -296,9 +282,7 @@ describe('issueJwt (passthrough)', () => {
 		const now = Math.floor(Date.now() / 1000)
 		const issued = await issueJwt(services, ENV, {
 			app: 'a',
-			token: null,
-			cookie: null,
-			origin: null,
+			credential: null,
 			requestId: 'r',
 			permissions: [{ action: 'x' }],
 			ttl: 10 * 24 * 60 * 60, // 10 days — well over the 24h cap
@@ -312,9 +296,7 @@ describe('issueJwt (passthrough)', () => {
 		const services = h.makeServices({ issuer: ISSUER })
 		const issued = await issueJwt(services, ENV, {
 			app: 'a',
-			token: null,
-			cookie: null,
-			origin: null,
+			credential: null,
 			requestId: 'r',
 			permissions: [{ action: 'secret.read' }],
 		}, { id: 'i', permissions: [perm('public.read')] })

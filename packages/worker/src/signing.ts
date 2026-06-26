@@ -12,8 +12,8 @@
  * One Signer per isolate, memoised like the `JwtValidator` (jose imports the key once).
  */
 
-import { type AccessTokenClaims, type Jwks, type PublicJwk, TOKEN_ALG } from '@propustka/core'
-import { calculateJwkThumbprint, exportJWK, generateKeyPair, importJWK, type JWK, type KeyLike, SignJWT } from 'jose'
+import { type AccessTokenClaims, type Jwks, parseAccessClaims, type PublicJwk, TOKEN_ALG } from '@propustka/core'
+import { calculateJwkThumbprint, createLocalJWKSet, exportJWK, generateKeyPair, importJWK, type JWK, jwtVerify, type KeyLike, SignJWT } from 'jose'
 import type { Env } from './env'
 import { stringField } from './json'
 
@@ -70,6 +70,26 @@ export class Signer {
 		const publicJwk = await exportJWK(publicKey)
 		const kid = await calculateJwkThumbprint(publicJwk)
 		return new Signer([{ kid, key: privateKey, publicJwk: toPublicJwk(publicJwk, kid) }])
+	}
+}
+
+/**
+ * Verify a propustka-issued access token (`px_token`) against THIS signer's own public keys and
+ * narrow it to access claims; null on any failure. The server-side mirror of the SDK's local verify
+ * (`session.ts`) — propustka issued the token, so it trusts the `perms`/`ptype`/`aud` it signed. The
+ * signer already holds the current + rotation public keys, so there is no JWKS fetch or kid-miss retry.
+ */
+export async function verifyAccessToken(
+	signer: Signer,
+	token: string,
+	opts: { issuer: string; audience: string },
+): Promise<AccessTokenClaims | null> {
+	const jwks = createLocalJWKSet(signer.jwks())
+	try {
+		const { payload } = await jwtVerify(token, jwks, { issuer: opts.issuer, audience: opts.audience })
+		return parseAccessClaims(payload)
+	} catch {
+		return null
 	}
 }
 

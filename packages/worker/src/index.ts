@@ -1,7 +1,5 @@
 import type {
 	AuditInput,
-	AuthenticateInput,
-	AuthenticateResult,
 	IamRpc,
 	IssueJwtInput,
 	IssueJwtResult,
@@ -20,7 +18,7 @@ import type {
 } from '@propustka/core'
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import { handleAdmin } from './admin/router'
-import { principalFromOutcome, resolveRequest } from './auth'
+import { resolveCaller } from './auth'
 import { handleAuth } from './auth/routes'
 import type { Env } from './env'
 import { issueJwt, issueKey, revokeKey } from './issue'
@@ -38,65 +36,12 @@ const AUTH_LOG_RETENTION_SECONDS = 30 * 24 * 60 * 60 // 30 days
  * traverse the Access edge) and `fetch()` (the admin SPA + `/admin/*`, behind
  * Access). It exposes no public HTTP.
  *
- * SECURITY MODEL (hard requirement 3): on calls that forward a valid Access JWT
- * (`authenticate`, `issueKey`), the verified `aud` identifies the app and
- * supersedes the SDK-passed `app` for the auth log / context. The SDK-passed app is
- * trusted only where no token exists (`audit`, failure-path log rows) — for labeling,
- * not as a security boundary. Principal identity is always resolved server-side from
- * the forwarded credentials, never app-asserted.
+ * SECURITY MODEL: the management RPCs (`issueKey`/`issueJwt`/`revokeKey`/`listPrincipals`) resolve
+ * the CALLER server-side from a forwarded propustka-native credential (`resolveCaller` — a `px_token`
+ * verified against our own signing keys, or a `px_` key), never app-asserted. On a valid `px_token`
+ * the credential's `aud` identifies the app and supersedes the SDK-passed `app` for the audit row.
  */
 export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
-	async authenticate(input: AuthenticateInput): Promise<AuthenticateResult> {
-		const services = buildServices(this.env)
-		try {
-			const outcome = await resolveRequest(services, input)
-
-			// One auth_log row per call, fire-and-forget (never delays/fails the user op).
-			// The app column is the verified aud-derived id on success, the self-asserted
-			// id on failure paths (no valid token there).
-			const app = outcome.verifiedApp ?? input.app
-			const resolved = principalFromOutcome(outcome)
-			const reason = outcome.result.ok
-				? (outcome.logReason ?? undefined)
-				: (outcome.logReason ?? outcome.result.reason)
-			this.ctx.waitUntil(
-				services.db.writeAuthLog({
-					requestId: input.requestId,
-					app,
-					kind: 'authenticate',
-					principalId: resolved?.id ?? null,
-					decision: outcome.result.ok ? 'allow' : 'deny',
-					reason: reason ?? null,
-				}),
-			)
-
-			// Log an SDK/aud app mismatch — a misconfigured SDK constructor, not an attack.
-			if (outcome.verifiedApp && outcome.verifiedApp !== input.app) {
-				console.warn(`app mismatch: sdk='${input.app}' aud='${outcome.verifiedApp}' request='${input.requestId}'`)
-			}
-
-			return outcome.result
-		} catch (err) {
-			// resolveRequest is documented as never-throws, but a transient D1 error can still
-			// propagate. Fail closed: never surface a 500. Record a deny auth_log row (the precise
-			// 'internal_error' lives only in the free-string reason column — the AuthenticateResult
-			// reason union has no such variant and must not gain one) and return unknown_principal
-			// (maps to 403). No happy-path row was written on this path, so there's no double-write.
-			console.error(`authenticate failed for request '${input.requestId}'`, err)
-			this.ctx.waitUntil(
-				services.db.writeAuthLog({
-					requestId: input.requestId,
-					app: input.app,
-					kind: 'authenticate',
-					principalId: null,
-					decision: 'deny',
-					reason: 'internal_error',
-				}),
-			)
-			return { ok: false, reason: 'unknown_principal' }
-		}
-	}
-
 	/**
 	 * Mint a per-app permission token from the browser's SSO session (propustka-native auth). The
 	 * session is validated, the principal's permissions for the calling app resolved, and a
@@ -209,28 +154,19 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 	async listPrincipals(input: ListPrincipalsInput): Promise<ListPrincipalsResult> {
 		const services = buildServices(this.env)
 		try {
-			// Resolve the CALLER from the forwarded credentials, exactly like authenticate() —
-			// never a self-asserted principal. The app we list is the aud-VERIFIED app, so an
-			// operator can only ever enumerate the roster of an app it authenticates to.
-			const outcome = await resolveRequest(services, {
-				app: input.app,
-				token: input.token,
-				cookie: input.cookie,
-				origin: input.origin,
-				requestId: input.requestId,
-			})
-			const caller = principalFromOutcome(outcome)
-			if (!caller || !outcome.result.ok) {
-				return outcome.result.ok ? { ok: false, reason: 'unknown_principal' } : { ok: false, reason: outcome.result.reason }
+			// Resolve the CALLER from the forwarded native credential — never a self-asserted principal.
+			// The app we list is the credential's verified app, so an operator only ever enumerates the
+			// roster of an app it holds a token for.
+			const res = await resolveCaller(services, this.env, { app: input.app, credential: input.credential, requestId: input.requestId })
+			if (!res.ok) {
+				return { ok: false, reason: res.reason }
 			}
-			// Authorize: the caller must be a real MEMBER of the app — hold at least one permission
-			// on the verified app. A zero-grant lazy-created user (authenticated but ungranted) and
-			// the app-less local-dev bypass (verifiedApp === null) cannot enumerate the roster.
-			const app = outcome.verifiedApp
-			if (app === null || caller.permissions.length === 0) {
+			// Authorize: a real principal-bound MEMBER holding ≥1 permission on the app. An anonymous
+			// credential (a passthrough JWT) and a zero-grant user cannot enumerate the roster.
+			if (res.caller.type === undefined || res.caller.permissions.length === 0) {
 				return { ok: false, reason: 'not_allowed' }
 			}
-			const rows = await services.db.getPrincipalsForApp(app)
+			const rows = await services.db.getPrincipalsForApp(res.verifiedApp)
 			const principals: PrincipalListItem[] = rows.map((p) => ({
 				id: p.id,
 				type: p.type,
@@ -240,8 +176,7 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 			}))
 			return { ok: true, principals }
 		} catch (err) {
-			// Same fail-closed posture as authenticate(): never surface a 500. A read needs no
-			// auth_log row (the auth_log `kind` union has only authenticate/redeem); fail closed.
+			// Fail closed — never surface a 500. A read needs no auth_log row.
 			console.error(`listPrincipals failed for request '${input.requestId}'`, err)
 			return { ok: false, reason: 'unknown_principal' }
 		}
@@ -250,32 +185,28 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 	async revokeKey(input: RevokeKeyInput): Promise<RevokeKeyResult> {
 		const services = buildServices(this.env)
 		try {
-			// Resolve + authorize the REVOKER from the forwarded credentials, exactly like the
-			// issue path resolves the issuer — never a self-asserted principal id.
-			const outcome = await resolveRequest(services, {
-				app: input.app,
-				token: input.token,
-				cookie: input.cookie,
-				origin: input.origin,
-				requestId: input.requestId,
-			})
-			const revoker = principalFromOutcome(outcome)
-			if (!revoker || !outcome.result.ok) {
-				return outcome.result.ok ? { ok: false, reason: 'unknown_principal' } : { ok: false, reason: outcome.result.reason }
+			// Resolve + authorize the REVOKER from the forwarded native credential — like the issue path.
+			const res = await resolveCaller(services, this.env, { app: input.app, credential: input.credential, requestId: input.requestId })
+			if (!res.ok) {
+				return { ok: false, reason: res.reason }
 			}
+			if (res.caller.type === undefined) {
+				// An anonymous credential cannot revoke — there is no accountable principal.
+				return { ok: false, reason: 'not_allowed' }
+			}
+			const revoker = res.caller
 
 			const result = await revokeKey(services, input, { id: revoker.id, permissions: revoker.permissions })
 
 			// Audit only an actual state change (revoked === true); a no-op idempotent
 			// revoke or a denied/not-found attempt writes no domain event.
 			if (result.ok && result.revoked) {
-				const app = outcome.verifiedApp ?? input.app
 				this.ctx.waitUntil(
 					services.db.writeAuditEvent({
 						requestId: input.requestId,
 						principalId: revoker.id,
-						principalLabel: outcome.result.principal.label,
-						app,
+						principalLabel: revoker.label ?? revoker.id,
+						app: res.verifiedApp,
 						action: 'iam.credential.revoke',
 						resourceType: 'credential',
 						resourceId: input.id,
@@ -285,7 +216,6 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 
 			return result
 		} catch (err) {
-			// Same fail-closed posture as authenticate(): never surface a 500.
 			console.error(`revokeKey failed for request '${input.requestId}'`, err)
 			this.ctx.waitUntil(
 				services.db.writeAuthLog({
@@ -304,21 +234,17 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 	async issueKey(input: IssueKeyInput): Promise<IssueKeyResult> {
 		const services = buildServices(this.env)
 		try {
-			// Resolve the ISSUER from the forwarded credentials exactly like authenticate().
-			const outcome = await resolveRequest(services, {
-				app: input.app,
-				token: input.token,
-				cookie: input.cookie,
-				origin: input.origin,
-				requestId: input.requestId,
-			})
-			const issuer = principalFromOutcome(outcome)
-			if (!issuer || !outcome.result.ok) {
-				return outcome.result.ok ? { ok: false, reason: 'unknown_principal' } : { ok: false, reason: outcome.result.reason }
+			// Resolve the ISSUER from the forwarded native credential.
+			const res = await resolveCaller(services, this.env, { app: input.app, credential: input.credential, requestId: input.requestId })
+			if (!res.ok) {
+				return { ok: false, reason: res.reason }
 			}
-
-			// The verified aud-derived app the credential's grant is scoped to (service mode).
-			const app = outcome.verifiedApp ?? input.app
+			if (res.caller.type === undefined) {
+				// An anonymous credential cannot issue — delegation + audit require an accountable principal.
+				return { ok: false, reason: 'not_allowed' }
+			}
+			const issuer = res.caller
+			const app = res.verifiedApp
 			const { result, auditLabel } = await issueKey(services, input, { id: issuer.id, permissions: issuer.permissions }, app)
 
 			if (result.ok) {
@@ -329,7 +255,7 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 					services.db.writeAuditEvent({
 						requestId: input.requestId,
 						principalId: issuer.id,
-						principalLabel: outcome.result.principal.label,
+						principalLabel: issuer.label ?? issuer.id,
 						app,
 						action: 'iam.credential.create',
 						resourceType: 'credential',
@@ -364,28 +290,24 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 	async issueJwt(input: IssueJwtInput): Promise<IssueJwtResult> {
 		const services = buildServices(this.env)
 		try {
-			const outcome = await resolveRequest(services, {
-				app: input.app,
-				token: input.token,
-				cookie: input.cookie,
-				origin: input.origin,
-				requestId: input.requestId,
-			})
-			const issuer = principalFromOutcome(outcome)
-			if (!issuer || !outcome.result.ok) {
-				return outcome.result.ok ? { ok: false, reason: 'unknown_principal' } : { ok: false, reason: outcome.result.reason }
+			const res = await resolveCaller(services, this.env, { app: input.app, credential: input.credential, requestId: input.requestId })
+			if (!res.ok) {
+				return { ok: false, reason: res.reason }
 			}
-
+			if (res.caller.type === undefined) {
+				return { ok: false, reason: 'not_allowed' }
+			}
+			const issuer = res.caller
+			const app = res.verifiedApp
 			const { result, auditLabel } = await issueJwt(services, this.env, input, { id: issuer.id, permissions: issuer.permissions })
 
 			if (result.ok) {
 				// iam.passthrough.issue audit — issuer, label, grants, expiry; NEVER the signed token.
-				const app = outcome.verifiedApp ?? input.app
 				this.ctx.waitUntil(
 					services.db.writeAuditEvent({
 						requestId: input.requestId,
 						principalId: issuer.id,
-						principalLabel: outcome.result.principal.label,
+						principalLabel: issuer.label ?? issuer.id,
 						app,
 						action: 'iam.passthrough.issue',
 						resourceType: 'token',

@@ -6,16 +6,16 @@ import { allMigrations } from './helpers/migrations'
 
 // TEST-4: the RPC entrypoint (`Propustka` in src/index.ts) wires several spec-mandated
 // behaviors that nothing else exercises:
-//   1. every authenticate()/mintFromKey() writes EXACTLY ONE auth_log row with the
-//      right app, decision (allow/deny) and reason;
-//   2. issueKey resolves the issuer server-side and its `iam.credential.create`
-//      audit event carries the grants but NEVER the plaintext token.
+//   1. mintFromKey writes EXACTLY ONE auth_log row with the right app, decision
+//      (allow/deny) and reason;
+//   2. issueKey/revokeKey resolve the caller server-side (`resolveCaller`) and their
+//      `iam.credential.*` audit events carry the grants but NEVER the plaintext token.
 //
 // We drive the real class against a real `Db(env.DB)` backed by an in-memory bun:sqlite
 // (the schema.test.ts pattern), seeding the `local-dev-admin` principal so auth-log /
-// audit FK lookups resolve. We only ever pass `token: null`, so the JwtValidator returns
-// `missing_token` synchronously and no JWKS network call is made — and ENVIRONMENT='local'
-// + ACCESS_APPS='{}' lets the local-dev bypass resolve the global-admin issuer.
+// audit FK lookups resolve. We only ever pass `credential: null`, and ENVIRONMENT='local'
+// + PROPUSTKA_SIGNING_KEYS='' lets the native local-dev bypass resolve the global-admin
+// caller (which now carries the SDK-passed app as its verified app).
 
 // `Propustka` extends `WorkerEntrypoint` from 'cloudflare:workers', which bun's test
 // runtime cannot resolve. Stub it with a base class that just assigns ctx/env — exactly
@@ -235,47 +235,6 @@ describe('Propustka RPC entrypoint (TEST-4)', () => {
 		db = freshDb()
 	})
 
-	test('authenticate ALLOW writes one local-bypass auth_log row', async () => {
-		// ENVIRONMENT='local' + ACCESS_APPS='{}' + token null → local dev bypass fires.
-		const ctx = makeCtx()
-		const worker = new Propustka(ctx, makeEnv(db))
-
-		const result = await worker.authenticate({ app: 'app-projects', token: null, cookie: null, origin: null, requestId: 'req-allow' })
-		expect(result.ok).toBe(true)
-
-		await settle(ctx)
-
-		const rows = authLogRows(db)
-		expect(rows).toHaveLength(1)
-		const row = rows[0]
-		expect(row?.kind).toBe('authenticate')
-		expect(row?.decision).toBe('allow')
-		expect(row?.principal_id).toBe(LOCAL_DEV_ADMIN_ID)
-		expect(row?.reason).toBe('local_bypass')
-		expect(row?.app).toBe('app-projects')
-	})
-
-	test('authenticate DENY (missing_token) writes one deny auth_log row, principal null, self-asserted app', async () => {
-		// Non-empty ACCESS_APPS means the local bypass is disabled; token null → missing_token.
-		const ctx = makeCtx()
-		const worker = new Propustka(ctx, makeEnv(db, { ACCESS_APPS: '{"aud":"app"}' }))
-
-		const result = await worker.authenticate({ app: 'app-projects', token: null, cookie: null, origin: null, requestId: 'req-deny' })
-		expect(result).toEqual({ ok: false, reason: 'missing_token' })
-
-		await settle(ctx)
-
-		const rows = authLogRows(db)
-		expect(rows).toHaveLength(1)
-		const row = rows[0]
-		expect(row?.kind).toBe('authenticate')
-		expect(row?.decision).toBe('deny')
-		expect(row?.reason).toBe('missing_token')
-		expect(row?.principal_id).toBeNull()
-		// No verified token, so the app column is the self-asserted input.app.
-		expect(row?.app).toBe('app-projects')
-	})
-
 	test('mintFromKey DENY (unknown key) writes one authenticate auth_log row, credential_id null', async () => {
 		const ctx = makeCtx()
 		const worker = new Propustka(ctx, makeEnv(db))
@@ -305,9 +264,7 @@ describe('Propustka RPC entrypoint (TEST-4)', () => {
 		const permissions = [{ action: 'report.read', scope: null }]
 		const result = await worker.issueKey({
 			app: 'reports',
-			token: null,
-			cookie: null,
-			origin: null,
+			credential: null,
 			requestId: 'req-issue',
 			permissions,
 		})
@@ -345,9 +302,7 @@ describe('Propustka RPC entrypoint (TEST-4)', () => {
 		// Issue an anonymous share link under the local-bypass admin so the grant is covered.
 		const issued = await worker.issueKey({
 			app: 'reports',
-			token: null,
-			cookie: null,
-			origin: null,
+			credential: null,
 			requestId: 'req-issue',
 			permissions: [{ action: 'report.read', scope: null }],
 		})
@@ -361,9 +316,7 @@ describe('Propustka RPC entrypoint (TEST-4)', () => {
 
 		const revoked = await worker.revokeKey({
 			app: 'reports',
-			token: null,
-			cookie: null,
-			origin: null,
+			credential: null,
 			requestId: 'req-revoke',
 			id: issued.id,
 		})
@@ -376,9 +329,7 @@ describe('Propustka RPC entrypoint (TEST-4)', () => {
 		// A second revoke is idempotent.
 		const again = await worker.revokeKey({
 			app: 'reports',
-			token: null,
-			cookie: null,
-			origin: null,
+			credential: null,
 			requestId: 'req-revoke-2',
 			id: issued.id,
 		})
@@ -398,21 +349,20 @@ describe('Propustka RPC entrypoint (TEST-4)', () => {
 		const worker = new Propustka(ctx, makeEnv(db))
 		const result = await worker.revokeKey({
 			app: 'reports',
-			token: null,
-			cookie: null,
-			origin: null,
+			credential: null,
 			requestId: 'req-revoke-missing',
 			id: 'does-not-exist',
 		})
 		expect(result).toEqual({ ok: false, reason: 'not_found' })
 	})
 
-	test('listPrincipals: the app-less local-dev bypass (no verified app) is not_allowed', async () => {
+	test('listPrincipals: the local-dev bypass scopes the roster to the SDK-passed app', async () => {
 		const ctx = makeCtx()
 		const worker = new Propustka(ctx, makeEnv(db))
-		// Local bypass resolves a global-admin caller but with NO aud-verified app — there is no
-		// app to scope the roster to, so the read fails closed.
-		const result = await worker.listPrincipals({ app: 'poplach', token: null, cookie: null, origin: null, requestId: 'req-list-local' })
-		expect(result).toEqual({ ok: false, reason: 'not_allowed' })
+		// The native local-dev bypass resolves a global-admin caller whose verified app IS the
+		// SDK-passed `app` (unlike the old CF-Access bypass, which had no aud). So the read succeeds
+		// and is scoped to that app — here an empty roster (no users are seeded for 'poplach').
+		const result = await worker.listPrincipals({ app: 'poplach', credential: null, requestId: 'req-list-local' })
+		expect(result).toEqual({ ok: true, principals: [] })
 	})
 })

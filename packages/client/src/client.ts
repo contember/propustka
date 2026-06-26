@@ -3,7 +3,6 @@ import { permits, scopedValues } from '@propustka/core'
 import { readCredentials } from './request'
 import type {
 	AuthContext,
-	AuthFailure,
 	IssuedJwt,
 	IssuedKey,
 	IssueFailure,
@@ -96,29 +95,14 @@ export class IamClient {
 	) {}
 
 	/**
-	 * Resolve the caller from the forwarded Access credentials. Returns a rich `AuthContext`
-	 * on success, or a typed `AuthFailure` carrying the 401/403 status (missing/invalid → 401;
-	 * unknown_principal/disabled → 403).
-	 */
-	async authenticate(req: Request): Promise<AuthContext | AuthFailure> {
-		const { token, cookie, origin, requestId } = readCredentials(req)
-		const result = await this.binding.authenticate({ app: this.appId, token, cookie, origin, requestId })
-		if (result.ok) {
-			const p = result.principal
-			return new RealAuthContext(this.binding, this.appId, p.permissions, p.requestId, { id: p.id, type: p.type, label: p.label }, p.label, null)
-		}
-		return { ok: false, reason: result.reason, status: authFailureStatus(result.reason) }
-	}
-
-	/**
 	 * List the app's people directory — the USER principals who can access this app. Forwards the
-	 * CALLER's credentials; the IAM Worker resolves the caller and scopes the roster to the
-	 * aud-verified app (you only ever see your own app's people). For an assignee picker / actor
+	 * CALLER's credential; the IAM Worker resolves the caller and scopes the roster to the
+	 * verified app (you only ever see your own app's people). For an assignee picker / actor
 	 * label list. Authorized for any member with a permission on the app; a zero-grant user → 403.
 	 */
 	async listPrincipals(req: Request): Promise<PrincipalList | ListPrincipalsFailure> {
-		const { token, cookie, origin, requestId } = readCredentials(req)
-		const result = await this.binding.listPrincipals({ app: this.appId, token, cookie, origin, requestId })
+		const { credential, requestId } = readCredentials(req)
+		const result = await this.binding.listPrincipals({ app: this.appId, credential, requestId })
 		if (result.ok) {
 			return { ok: true, principals: result.principals }
 		}
@@ -135,12 +119,10 @@ export class IamClient {
 	 * token); `principalId` is then the new principal's durable handle.
 	 */
 	async issueKey(req: Request, input: IssueKeyRequest): Promise<IssuedKey | IssueFailure> {
-		const { token, cookie, origin, requestId } = readCredentials(req)
+		const { credential, requestId } = readCredentials(req)
 		const result = await this.binding.issueKey({
 			app: this.appId,
-			token,
-			cookie,
-			origin,
+			credential,
 			requestId,
 			service: input.service,
 			principalId: input.principalId,
@@ -161,12 +143,10 @@ export class IamClient {
 	 * round-trip. There is nothing to revoke — it is TTL-only by design.
 	 */
 	async issueJwt(req: Request, input: IssueJwtRequest): Promise<IssuedJwt | IssueFailure> {
-		const { token, cookie, origin, requestId } = readCredentials(req)
+		const { credential, requestId } = readCredentials(req)
 		const result = await this.binding.issueJwt({
 			app: this.appId,
-			token,
-			cookie,
-			origin,
+			credential,
 			requestId,
 			permissions: input.permissions,
 			label: input.label,
@@ -185,18 +165,13 @@ export class IamClient {
 	 * second revoke returns `{ ok: true, revoked: false }`. An unknown id → 404.
 	 */
 	async revokeKey(req: Request, id: string): Promise<RevokedKey | RevokeFailure> {
-		const { token, cookie, origin, requestId } = readCredentials(req)
-		const result = await this.binding.revokeKey({ app: this.appId, token, cookie, origin, requestId, id })
+		const { credential, requestId } = readCredentials(req)
+		const result = await this.binding.revokeKey({ app: this.appId, credential, requestId, id })
 		if (result.ok) {
 			return { ok: true, revoked: result.revoked }
 		}
 		return { ok: false, reason: result.reason, status: revokeFailureStatus(result.reason) }
 	}
-}
-
-/** missing/invalid token → 401 (not authenticated); unknown/disabled principal → 403. */
-function authFailureStatus(reason: AuthFailure['reason']): 401 | 403 {
-	return reason === 'missing_token' || reason === 'invalid_token' ? 401 : 403
 }
 
 /** missing/invalid → 401; unknown_principal/disabled/not_allowed → 403. */

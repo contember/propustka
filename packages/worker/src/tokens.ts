@@ -129,11 +129,11 @@ export async function mintFromKey(
 }
 
 /** The credential's effective permissions + the token subject/type/label, or a typed failure. */
-type ResolvedCredential =
+export type ResolvedCredential =
 	| { ok: true; subject: string; type?: PrincipalType; label: string | null; permissions: PermissionEntry[] }
 	| { ok: false; reason: 'unknown_principal' | 'disabled' }
 
-async function resolveCredential(services: Services, cred: CredentialRow, app: string): Promise<ResolvedCredential> {
+export async function resolveCredential(services: Services, cred: CredentialRow, app: string): Promise<ResolvedCredential> {
 	const inline = (await services.db.getCredentialGrants(cred.id)).map(credentialGrantToEntry)
 
 	if (cred.principal_id === null) {

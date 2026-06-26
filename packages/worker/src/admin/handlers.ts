@@ -1214,11 +1214,11 @@ export async function createShareLink(c: AdminContext): Promise<Response> {
 
 	// Issue an anonymous credential with the ADMIN'S OWN forwarded credentials as issuer — the
 	// delegation rule applies to admins like everyone else (admins typically hold `*`, so it passes).
+	// The issuer is the resolved admin (`c.admin`) passed directly to `issueKey`, so `credential` is
+	// unused here (the RPC entrypoint resolves it; this admin path already has the caller).
 	const issueInput: IssueKeyInput = {
 		app: c.app,
-		token: c.authInput.token,
-		cookie: c.authInput.cookie,
-		origin: c.authInput.origin,
+		credential: null,
 		requestId: c.authInput.requestId,
 		permissions: grants,
 		...(label !== undefined ? { label } : {}),

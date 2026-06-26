@@ -71,10 +71,11 @@ export interface IssueKeyServiceSpec {
 
 export interface IssueKeyInput {
 	app: string
-	/** The ISSUER's Access JWT — issuer is resolved server-side, never self-asserted. */
-	token: string | null
-	cookie: string | null
-	origin: string | null
+	/**
+	 * The propustka-native credential the ISSUER is resolved from server-side (never self-asserted):
+	 * a `px_token` access JWT (verified against propustka's signing keys) or a `px_` key. Null = absent.
+	 */
+	credential: string | null
 	requestId: string
 	/**
 	 * Create a NEW machine principal and bind the key to it (the folded `issueServiceToken`). When set,
@@ -104,10 +105,8 @@ export type IssueKeyResult =
 
 export interface IssueJwtInput {
 	app: string
-	/** The ISSUER's Access JWT — issuer is resolved server-side, never self-asserted. */
-	token: string | null
-	cookie: string | null
-	origin: string | null
+	/** The propustka-native credential the ISSUER is resolved from (px_token / px_ key); null = absent. */
+	credential: string | null
 	requestId: string
 	/** Inline grants the passthrough token carries (frozen at issue). */
 	permissions: KeyGrant[]
@@ -164,11 +163,8 @@ export interface AuditInput {
 
 export interface RevokeKeyInput {
 	app: string
-	/** The CALLER's Access JWT — the authorizer is resolved server-side, never self-asserted. */
-	token: string | null
-	/** Caller's CF_Authorization cookie (group-derived permissions count toward the revoke check). */
-	cookie: string | null
-	origin: string | null
+	/** The propustka-native credential the CALLER (authorizer) is resolved from; null = absent. */
+	credential: string | null
 	requestId: string
 	/** The credential id (the `id` returned by `issueKey`), NOT the plaintext `px_` token. */
 	id: string
@@ -190,14 +186,10 @@ export type RevokeKeyResult =
 // people); each item carries `disabled` so the consumer can grey-out/hide deactivated users.
 
 export interface ListPrincipalsInput {
-	/** Self-asserted caller app id; superseded by the aud-derived app id on the valid token. */
+	/** Self-asserted caller app id; superseded by the credential's aud on a valid `px_token`. */
 	app: string
-	/** Cf-Access-Jwt-Assertion header value. */
-	token: string | null
-	/** CF_Authorization cookie value, for get-identity. */
-	cookie: string | null
-	/** The app's own origin (for get-identity). */
-	origin: string | null
+	/** The propustka-native credential the CALLER is resolved from (px_token / px_ key); null = absent. */
+	credential: string | null
 	requestId: string
 }
 
@@ -224,7 +216,6 @@ export type ListPrincipalsResult =
  * serializable objects (RPC-friendly).
  */
 export interface IamRpc {
-	authenticate(input: AuthenticateInput): Promise<AuthenticateResult>
 	/**
 	 * Mint a short-lived, per-app permission token from the browser's SSO session — the
 	 * propustka-native auth path. The SDK middleware calls this only when its cached permission

@@ -1,7 +1,5 @@
 import type {
 	AuditInput,
-	AuthenticateInput,
-	AuthenticateResult,
 	IamRpc,
 	IssueJwtInput,
 	IssueJwtResult,
@@ -19,12 +17,11 @@ import type {
 } from '@propustka/core'
 
 /**
- * In-memory `IamRpc` stub for SDK tests — no network. Returns canned authenticate/mint/issue/
- * revoke results and records every `audit` call so tests can assert the auto-attached fields.
+ * In-memory `IamRpc` stub for SDK tests — no network. Returns canned mint/issue/revoke/list
+ * results and records every `audit` call so tests can assert the auto-attached fields.
  */
 export class IamRpcStub implements IamRpc {
 	readonly auditCalls: AuditInput[] = []
-	readonly authenticateInputs: AuthenticateInput[] = []
 	readonly revokeKeyInputs: RevokeKeyInput[] = []
 	readonly listPrincipalsInputs: ListPrincipalsInput[] = []
 	readonly mintTokenInputs: MintTokenInput[] = []
@@ -34,7 +31,6 @@ export class IamRpcStub implements IamRpc {
 
 	constructor(
 		private readonly canned: {
-			authenticate?: AuthenticateResult
 			revokeKey?: RevokeKeyResult
 			listPrincipals?: ListPrincipalsResult
 			mintToken?: MintTokenResult
@@ -69,13 +65,6 @@ export class IamRpcStub implements IamRpc {
 		return Promise.resolve(this.canned.jwks ?? { keys: [] })
 	}
 
-	authenticate(input: AuthenticateInput): Promise<AuthenticateResult> {
-		this.authenticateInputs.push(input)
-		return Promise.resolve(
-			this.canned.authenticate ?? { ok: false, reason: 'missing_token' },
-		)
-	}
-
 	listPrincipals(input: ListPrincipalsInput): Promise<ListPrincipalsResult> {
 		this.listPrincipalsInputs.push(input)
 		return Promise.resolve(
@@ -96,19 +85,23 @@ export class IamRpcStub implements IamRpc {
 	}
 }
 
-/** Build a Request carrying forwarded Access credentials + a cf-ray. */
+/**
+ * Build a Request carrying a forwarded native credential + a cf-ray. `bearer` sets an
+ * `Authorization: Bearer` header (a machine `px_` key / passthrough JWT); `cookie` sets the
+ * `px_token` access cookie. `readCredentials` prefers the bearer when both are present.
+ */
 export function makeRequest(opts: {
 	url?: string
-	token?: string
+	bearer?: string
 	cookie?: string
 	ray?: string
 } = {}): Request {
 	const headers = new Headers()
-	if (opts.token !== undefined) {
-		headers.set('Cf-Access-Jwt-Assertion', opts.token)
+	if (opts.bearer !== undefined) {
+		headers.set('Authorization', `Bearer ${opts.bearer}`)
 	}
 	if (opts.cookie !== undefined) {
-		headers.set('Cookie', `CF_Authorization=${opts.cookie}; other=ignored`)
+		headers.set('Cookie', `px_token=${opts.cookie}; other=ignored`)
 	}
 	if (opts.ray !== undefined) {
 		headers.set('cf-ray', opts.ray)

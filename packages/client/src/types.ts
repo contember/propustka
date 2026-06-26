@@ -101,13 +101,6 @@ export interface PrincipalList {
 
 // ── Failures ─────────────────────────────────────────────────────────────────
 
-/** `authenticate` failure. missing/invalid → 401; unknown_principal/disabled → 403. */
-export interface AuthFailure {
-	readonly ok: false
-	reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled'
-	status: 401 | 403
-}
-
 /** `issueKey` / `issueJwt` failure. missing/invalid → 401; unknown_principal/disabled/not_allowed → 403. */
 export interface IssueFailure {
 	readonly ok: false
@@ -133,8 +126,8 @@ export interface ListPrincipalsFailure {
 
 /**
  * App-supplied portion of `issueKey` — an opaque, stored, revocable `px_` credential (API key /
- * share link). The SDK fills `app` and the issuer's forwarded credentials (token/cookie/origin/
- * requestId) from the request, so app code can never self-assert the issuer.
+ * share link). The SDK fills `app` and the issuer's forwarded credential (the caller's `px_token` /
+ * `px_` key + requestId) from the request, so app code can never self-assert the issuer.
  */
 export interface IssueKeyRequest {
 	/**
@@ -157,7 +150,7 @@ export interface IssueKeyRequest {
 
 /**
  * App-supplied portion of `issueJwt` — a stateless passthrough access token (audit-only, TTL-bounded,
- * NOT revocable). The SDK fills `app` and the issuer's forwarded credentials from the request.
+ * NOT revocable). The SDK fills `app` and the issuer's forwarded credential from the request.
  */
 export interface IssueJwtRequest {
 	/** Inline grants the passthrough token carries (frozen at issue). */
