@@ -1,8 +1,8 @@
 import type { AccessAppDecl, AccessRule, AppAccess, AppSchema, IssueCapabilityInput, PermissionEntry, RoleDef } from '@propustka/core'
-import { isActionAllowed } from '@propustka/core'
+import { API_KEY_PREFIX, isActionAllowed } from '@propustka/core'
 import type { ResolveOutcome } from '../auth'
 import { resolveRequest } from '../auth'
-import { issueCapability } from '../capabilities'
+import { generateToken, hashToken, issueCapability } from '../capabilities'
 import { CfAccessError, type MintedServiceToken, type PolicyInclusion } from '../cfaccess'
 import {
 	type AuditEventRow,
@@ -1158,12 +1158,25 @@ export async function provisionApiKey(c: AdminContext): Promise<Response> {
 			}
 		}
 
+		// Mint the propustka-NATIVE key too (add-only): a `px_` credential bound to the same service
+		// principal, resolved directly by the propustka-native path (no Access in front). Shown once.
+		const apiKey = `${API_KEY_PREFIX}${generateToken()}`
+		await c.services.db.createCredential({
+			tokenHash: await hashToken(apiKey),
+			label,
+			principalId: principal.id,
+			issuedBy: c.admin.id,
+			expiresAt,
+			grants: [],
+		})
+
 		const response: ProvisionApiKeyResponse = {
 			principalId: principal.id,
 			clientId: minted.clientId,
 			clientSecret: minted.clientSecret,
 			tokenId: minted.id,
 			policyInclusion,
+			apiKey,
 		}
 		return json(response, { status: 201 })
 	} catch (err) {
@@ -1215,9 +1228,12 @@ export async function revokeApiKey(c: AdminContext, principalId: string): Promis
 		}
 	}
 
-	// 3. Hard-delete grants. 4. Soft-disable the principal (keep audit references).
+	// 3. Hard-delete grants. 4. Soft-disable the principal (keep audit references). Also revoke the
+	// native `px_` credentials so they stop minting immediately (disable already blocks them, but a
+	// revoke is permanent and survives a future re-enable).
 	await c.services.db.deleteGrantsForPrincipal(principalId)
 	await c.services.db.disablePrincipal(principalId)
+	await c.services.db.revokeCredentialsForPrincipal(principalId)
 	await adminAudit(c, {
 		action: 'iam.apikey.revoke',
 		resourceType: 'principal',
@@ -1249,6 +1265,16 @@ export async function rotateApiKey(c: AdminContext, principalId: string): Promis
 		const message = err instanceof CfAccessError ? err.message : 'rotation failed'
 		return error(502, message)
 	}
+	// Rotate the native `px_` key in lockstep: revoke the principal's old credentials and mint one.
+	await c.services.db.revokeCredentialsForPrincipal(principalId)
+	const apiKey = `${API_KEY_PREFIX}${generateToken()}`
+	await c.services.db.createCredential({
+		tokenHash: await hashToken(apiKey),
+		label: principal.label,
+		principalId,
+		issuedBy: c.admin.id,
+		grants: [],
+	})
 	await adminAudit(c, {
 		action: 'iam.apikey.rotate',
 		resourceType: 'principal',
@@ -1260,6 +1286,7 @@ export async function rotateApiKey(c: AdminContext, principalId: string): Promis
 		clientId: rotated.clientId,
 		clientSecret: rotated.clientSecret,
 		tokenId: rotated.id,
+		apiKey,
 	}
 	return json(response)
 }

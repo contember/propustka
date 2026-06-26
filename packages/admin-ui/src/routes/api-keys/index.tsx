@@ -44,7 +44,10 @@ export default createPage()
 			<>
 				<div className="page-head">
 					<h1>API keys</h1>
-					<p className="hint">Service principals provisioned as Cloudflare Access service tokens. Secrets are never stored or shown after creation.</p>
+					<p className="hint">
+						Service principals issued a propustka-native API key (`px_…`) AND a Cloudflare Access service token. Secrets are never stored or shown after
+						creation.
+					</p>
 				</div>
 
 				<ProvisionForm apps={data.apps} onDone={invalidate} />
@@ -160,8 +163,9 @@ function ProvisionForm({ apps, onDone }: { apps: AppDto[]; onDone: () => void })
 				<SecretModal
 					title="API key provisioned"
 					fields={[
-						{ label: 'Client ID', value: secret.clientId },
-						{ label: 'Client secret', value: secret.clientSecret, multiline: true },
+						{ label: 'API key (propustka-native)', value: secret.apiKey, multiline: true },
+						{ label: 'Client ID (Cloudflare Access)', value: secret.clientId },
+						{ label: 'Client secret (Cloudflare Access)', value: secret.clientSecret, multiline: true },
 					]}
 					note={secret.policyInclusion === 'manual'
 						? (
@@ -209,8 +213,9 @@ function RotateButton({ apiKey }: { apiKey: ApiKeyDto }) {
 				<SecretModal
 					title="Secret rotated"
 					fields={[
-						{ label: 'Client ID', value: secret.clientId },
-						{ label: 'Client secret', value: secret.clientSecret, multiline: true },
+						{ label: 'API key (propustka-native)', value: secret.apiKey, multiline: true },
+						{ label: 'Client ID (Cloudflare Access)', value: secret.clientId },
+						{ label: 'Client secret (Cloudflare Access)', value: secret.clientSecret, multiline: true },
 					]}
 					onClose={() => setSecret(null)}
 				/>

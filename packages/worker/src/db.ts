@@ -819,6 +819,15 @@ export class Db {
 		return (result.meta.changes ?? 0) > 0
 	}
 
+	/** Revoke every active credential bound to a principal (key revoke / rotate). Returns the count. */
+	async revokeCredentialsForPrincipal(principalId: string): Promise<number> {
+		const result = await this.d1
+			.prepare('UPDATE credentials SET revoked_at = unixepoch() WHERE principal_id = ? AND revoked_at IS NULL')
+			.bind(principalId)
+			.run()
+		return result.meta.changes ?? 0
+	}
+
 	// ── SSO sessions ──────────────────────────────────────────────────────────
 
 	/** Create a session. Only the hash of the opaque cookie value is stored; returns the new id. */

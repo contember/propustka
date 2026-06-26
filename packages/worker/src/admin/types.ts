@@ -250,6 +250,12 @@ export interface ProvisionApiKeyResponse {
 	clientSecret: string
 	tokenId: string
 	policyInclusion: 'automatic' | 'manual'
+	/**
+	 * The propustka-NATIVE API key (`px_…`), bound to the same service principal. Carried as a bearer
+	 * (or a declared header) directly to apps on the propustka-native path — no Cloudflare Access in
+	 * front. Shown ONCE, never stored. The CF `clientSecret` above stays for apps still behind Access.
+	 */
+	apiKey: string
 }
 
 /** Rotation result — new secret shown once; token id + principal unchanged. */
@@ -258,6 +264,8 @@ export interface RotateApiKeyResponse {
 	clientId: string
 	clientSecret: string
 	tokenId: string
+	/** The new propustka-native API key (`px_…`); the old one stops working immediately. Shown ONCE. */
+	apiKey: string
 }
 
 // ── Capability tokens ─────────────────────────────────────────────────────────

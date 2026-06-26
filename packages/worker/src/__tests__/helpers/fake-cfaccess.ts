@@ -38,21 +38,38 @@ export class FakeCfAccess implements CfAccess {
 
 	// ── service tokens (minimal) ────────────────────────────────────────────────
 
+	/** Minted service tokens, keyed by clientId — so findTokenIdByClientId/rotate/delete resolve them. */
+	private readonly serviceTokens = new Map<string, string>()
+
 	createServiceToken(name: string): Promise<MintedServiceToken> {
 		const id = this.nextId('tok')
-		return Promise.resolve({ id, clientId: `${name}.client`, clientSecret: `${id}.secret` })
+		const clientId = `${name}.client`
+		this.serviceTokens.set(clientId, id)
+		return Promise.resolve({ id, clientId, clientSecret: `${id}.secret` })
 	}
 
-	deleteServiceToken(): Promise<void> {
+	deleteServiceToken(tokenId: string): Promise<void> {
+		for (const [clientId, id] of this.serviceTokens) {
+			if (id === tokenId) {
+				this.serviceTokens.delete(clientId)
+			}
+		}
 		return Promise.resolve()
 	}
 
-	findTokenIdByClientId(): Promise<string | null> {
-		return Promise.resolve(null)
+	findTokenIdByClientId(clientId: string): Promise<string | null> {
+		return Promise.resolve(this.serviceTokens.get(clientId) ?? null)
 	}
 
 	rotateServiceToken(tokenId: string): Promise<MintedServiceToken> {
-		return Promise.resolve({ id: tokenId, clientId: `${tokenId}.client`, clientSecret: `${this.nextId('rot')}.secret` })
+		// Find the clientId bound to this token id (unchanged by rotation); mint a new secret.
+		let clientId = `${tokenId}.client`
+		for (const [cid, id] of this.serviceTokens) {
+			if (id === tokenId) {
+				clientId = cid
+			}
+		}
+		return Promise.resolve({ id: tokenId, clientId, clientSecret: `${this.nextId('rot')}.secret` })
 	}
 
 	// ── reusable policies ───────────────────────────────────────────────────────
