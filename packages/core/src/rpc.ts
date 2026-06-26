@@ -23,6 +23,82 @@ export type MintTokenResult =
 	| { ok: true; token: string; expiresAt: number }
 	| { ok: false; reason: 'no_session' | 'invalid_session' | 'unknown_principal' | 'disabled' }
 
+// ── propustka-native key auth (mint an access token from an opaque `px_` credential) ──
+//
+// The other front over the same resolve→sign core as `mintToken`: the SDK presents an opaque
+// credential (an API key as a bearer, or a share-link path token) and the Worker resolves its
+// EFFECTIVE permissions (principal-bound → live; anonymous → frozen inline grants) and signs an
+// access token the SDK then verifies locally. `app` is self-asserted but harmless — the token's
+// `aud` binds it and permissions are resolved server-side per app.
+
+export interface MintFromKeyInput {
+	/** The app requesting the token (the SDK bakes this into its constructor). */
+	app: string
+	/** The opaque `px_` credential (bearer / path token). */
+	key: string
+	requestId: string
+}
+
+export type MintFromKeyResult =
+	| { ok: true; token: string; expiresAt: number }
+	| { ok: false; reason: 'invalid_key' | 'unknown_principal' | 'disabled' }
+
+// ── Issuing credentials (issueKey) and passthrough tokens (issueJwt) ──────────────
+//
+// `issueKey` mints an opaque, stored, revocable `px_` credential; `issueJwt` signs a stateless
+// passthrough access token (audit-only, TTL-bounded, not revocable). Both are DELEGATED: the issuer
+// is resolved server-side from the forwarded credentials and may only grant what it itself holds.
+
+/** One grant on a `px_` credential / passthrough token — an action pattern + optional scope. */
+export interface KeyGrant {
+	action: string
+	/** Omitted/null = global (the issuer must hold the action globally). */
+	scope?: Scope | null
+}
+
+export interface IssueKeyInput {
+	app: string
+	/** The ISSUER's Access JWT — issuer is resolved server-side, never self-asserted. */
+	token: string | null
+	cookie: string | null
+	origin: string | null
+	requestId: string
+	/**
+	 * Bind to a principal (the credential then carries that principal's LIVE perms; inline
+	 * `permissions` downscope it). v1: only the issuer's OWN id. Omit for a standalone credential.
+	 */
+	principalId?: string
+	/** Inline grants — the frozen set (standalone) and/or a downscope restriction (bound). */
+	permissions?: KeyGrant[]
+	label?: string
+	/** Absolute credential expiry (unix seconds); NULL = no expiry. */
+	expiresAt?: number
+}
+
+export type IssueKeyResult =
+	/** Plaintext `px_` token returned ONCE; `id` is the credential's stable handle (revoke). */
+	| { ok: true; token: string; id: string }
+	| { ok: false; reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' }
+
+export interface IssueJwtInput {
+	app: string
+	/** The ISSUER's Access JWT — issuer is resolved server-side, never self-asserted. */
+	token: string | null
+	cookie: string | null
+	origin: string | null
+	requestId: string
+	/** Inline grants the passthrough token carries (frozen at issue). */
+	permissions: KeyGrant[]
+	label?: string
+	/** Requested lifetime (seconds); capped by the server. Defaults to the standard token TTL. */
+	ttl?: number
+}
+
+export type IssueJwtResult =
+	/** The signed passthrough token returned ONCE; `id` is its audit reference (no DB row to revoke). */
+	| { ok: true; token: string; expiresAt: number; id: string }
+	| { ok: false; reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' }
+
 export interface AuthenticateInput {
 	/** Self-asserted caller app id; superseded by the aud-derived app id on valid tokens. */
 	app: string
@@ -245,6 +321,25 @@ export interface IamRpc {
 	 * the cached token locally against `getJwks`.
 	 */
 	mintToken(input: MintTokenInput): Promise<MintTokenResult>
+	/**
+	 * Mint a per-app access token from an opaque `px_` credential (API key / share link) — the other
+	 * front over the same resolve→sign core as `mintToken`. Called by the SDK middleware once per TTL
+	 * when a request carries a `px_` bearer/path credential; every other request verifies the cached
+	 * token locally. Fails closed (`invalid_key`/`unknown_principal`/`disabled`).
+	 */
+	mintFromKey(input: MintFromKeyInput): Promise<MintFromKeyResult>
+	/**
+	 * Mint an opaque, stored, revocable `px_` credential (API key / share link). Delegated: the issuer
+	 * is resolved from the forwarded credentials and may only grant what it holds. Returns the
+	 * plaintext token ONCE; `id` is the durable handle for revoke.
+	 */
+	issueKey(input: IssueKeyInput): Promise<IssueKeyResult>
+	/**
+	 * Sign a stateless passthrough access token (audit-only, TTL-bounded, NOT revocable). Delegated
+	 * like `issueKey`. The caller carries the returned JWT directly; apps verify it locally with no
+	 * propustka round-trip.
+	 */
+	issueJwt(input: IssueJwtInput): Promise<IssueJwtResult>
 	/**
 	 * The public signing key set. The SDK fetches it ONCE per isolate (cached) over the binding —
 	 * which never traverses the Access edge — then verifies every permission token locally.

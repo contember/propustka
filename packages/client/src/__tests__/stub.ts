@@ -5,11 +5,17 @@ import type {
 	IamRpc,
 	IssueCapabilityInput,
 	IssueCapabilityResult,
+	IssueJwtInput,
+	IssueJwtResult,
+	IssueKeyInput,
+	IssueKeyResult,
 	IssueServiceTokenInput,
 	IssueServiceTokenResult,
 	Jwks,
 	ListPrincipalsInput,
 	ListPrincipalsResult,
+	MintFromKeyInput,
+	MintFromKeyResult,
 	MintTokenInput,
 	MintTokenResult,
 	RedeemCapabilityInput,
@@ -37,6 +43,9 @@ export class IamRpcStub implements IamRpc {
 	readonly rotateServiceInputs: RotateServiceTokenInput[] = []
 	readonly listPrincipalsInputs: ListPrincipalsInput[] = []
 	readonly mintTokenInputs: MintTokenInput[] = []
+	readonly mintFromKeyInputs: MintFromKeyInput[] = []
+	readonly issueKeyInputs: IssueKeyInput[] = []
+	readonly issueJwtInputs: IssueJwtInput[] = []
 
 	constructor(
 		private readonly canned: {
@@ -49,6 +58,9 @@ export class IamRpcStub implements IamRpc {
 			rotateService?: RotateServiceTokenResult
 			listPrincipals?: ListPrincipalsResult
 			mintToken?: MintTokenResult
+			mintFromKey?: MintFromKeyResult
+			issueKey?: IssueKeyResult
+			issueJwt?: IssueJwtResult
 			jwks?: Jwks
 		} = {},
 	) {}
@@ -56,6 +68,21 @@ export class IamRpcStub implements IamRpc {
 	mintToken(input: MintTokenInput): Promise<MintTokenResult> {
 		this.mintTokenInputs.push(input)
 		return Promise.resolve(this.canned.mintToken ?? { ok: false, reason: 'no_session' })
+	}
+
+	mintFromKey(input: MintFromKeyInput): Promise<MintFromKeyResult> {
+		this.mintFromKeyInputs.push(input)
+		return Promise.resolve(this.canned.mintFromKey ?? { ok: false, reason: 'invalid_key' })
+	}
+
+	issueKey(input: IssueKeyInput): Promise<IssueKeyResult> {
+		this.issueKeyInputs.push(input)
+		return Promise.resolve(this.canned.issueKey ?? { ok: false, reason: 'not_allowed' })
+	}
+
+	issueJwt(input: IssueJwtInput): Promise<IssueJwtResult> {
+		this.issueJwtInputs.push(input)
+		return Promise.resolve(this.canned.issueJwt ?? { ok: false, reason: 'not_allowed' })
 	}
 
 	getJwks(): Promise<Jwks> {

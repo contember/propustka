@@ -116,6 +116,27 @@ export interface CapabilityGrantRow {
 	resource: string
 }
 
+/** A unified credential row (the `credentials` table). Only the secret's hash is stored. */
+export interface CredentialRow {
+	id: string
+	token_hash: string
+	label: string | null
+	/** Bound principal (live perms), or NULL for an anonymous (frozen inline-grant) credential. */
+	principal_id: string | null
+	issued_by: string | null
+	expires_at: number | null
+	revoked_at: number | null
+	created_at: number
+}
+
+/** One inline grant on a credential (the `credential_grants` table). Matched by `permits`. */
+export interface CredentialGrantRow {
+	credential_id: string
+	action: string
+	scope_type: string | null
+	scope_value: string | null
+}
+
 /** An SSO session row (the `sessions` table). Only the cookie's hash is stored, never plaintext. */
 export interface SessionRow {
 	id: string
@@ -718,6 +739,81 @@ export class Db {
 	async revokeCapabilityToken(id: string): Promise<boolean> {
 		const result = await this.d1
 			.prepare('UPDATE capability_tokens SET revoked_at = unixepoch() WHERE id = ? AND revoked_at IS NULL')
+			.bind(id)
+			.run()
+		return (result.meta.changes ?? 0) > 0
+	}
+
+	// ── Credentials (unified opaque API keys / share links) ───────────────────
+
+	/**
+	 * Insert a credential + its inline grant rows (if any) in one batch. Only the hash is stored.
+	 * `principalId` null = an anonymous (frozen-grant) credential; non-null = principal-bound.
+	 */
+	async createCredential(input: {
+		tokenHash: string
+		label?: string | null
+		principalId?: string | null
+		issuedBy: string
+		expiresAt?: number | null
+		grants: { action: string; scopeType?: string | null; scopeValue?: string | null }[]
+	}): Promise<string> {
+		const id = uuidv7()
+		const statements: D1PreparedStatement[] = [
+			this.d1
+				.prepare(`INSERT INTO credentials (id, token_hash, label, principal_id, issued_by, expires_at)
+					VALUES (?, ?, ?, ?, ?, ?)`)
+				.bind(id, input.tokenHash, input.label ?? null, input.principalId ?? null, input.issuedBy, input.expiresAt ?? null),
+		]
+		for (const grant of input.grants) {
+			statements.push(
+				this.d1
+					.prepare('INSERT INTO credential_grants (credential_id, action, scope_type, scope_value) VALUES (?, ?, ?, ?)')
+					.bind(id, grant.action, grant.scopeType ?? null, grant.scopeValue ?? null),
+			)
+		}
+		await this.d1.batch(statements)
+		return id
+	}
+
+	/**
+	 * Look up a credential by the secret's hash, but ONLY while still valid (not revoked, not
+	 * expired). An invalid/absent credential returns null. Single-statement so the validity check
+	 * and the read can't race a concurrent revoke.
+	 */
+	async getActiveCredentialByHash(tokenHash: string): Promise<CredentialRow | null> {
+		return this.d1
+			.prepare(`SELECT * FROM credentials
+				WHERE token_hash = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > unixepoch())`)
+			.bind(tokenHash)
+			.first<CredentialRow>()
+	}
+
+	async getCredentialById(id: string): Promise<CredentialRow | null> {
+		return this.d1.prepare('SELECT * FROM credentials WHERE id = ?').bind(id).first<CredentialRow>()
+	}
+
+	async getCredentialGrants(credentialId: string): Promise<CredentialGrantRow[]> {
+		const { results } = await this.d1
+			.prepare('SELECT * FROM credential_grants WHERE credential_id = ?')
+			.bind(credentialId)
+			.all<CredentialGrantRow>()
+		return results
+	}
+
+	/** Credentials for a principal (admin list / bulk revoke on disable). */
+	async listCredentialsForPrincipal(principalId: string): Promise<CredentialRow[]> {
+		const { results } = await this.d1
+			.prepare('SELECT * FROM credentials WHERE principal_id = ? ORDER BY created_at DESC')
+			.bind(principalId)
+			.all<CredentialRow>()
+		return results
+	}
+
+	/** Revoke a credential by id (idempotent — already-revoked → false). */
+	async revokeCredential(id: string): Promise<boolean> {
+		const result = await this.d1
+			.prepare('UPDATE credentials SET revoked_at = unixepoch() WHERE id = ? AND revoked_at IS NULL')
 			.bind(id)
 			.run()
 		return (result.meta.changes ?? 0) > 0

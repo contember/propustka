@@ -5,11 +5,17 @@ import type {
 	IamRpc,
 	IssueCapabilityInput,
 	IssueCapabilityResult,
+	IssueJwtInput,
+	IssueJwtResult,
+	IssueKeyInput,
+	IssueKeyResult,
 	IssueServiceTokenInput,
 	IssueServiceTokenResult,
 	Jwks,
 	ListPrincipalsInput,
 	ListPrincipalsResult,
+	MintFromKeyInput,
+	MintFromKeyResult,
 	MintTokenInput,
 	MintTokenResult,
 	PrincipalListItem,
@@ -28,10 +34,11 @@ import { principalFromOutcome, resolveRequest } from './auth'
 import { handleAuth } from './auth/routes'
 import { issueCapability, redeemCapability, revokeCapability } from './capabilities'
 import type { Env } from './env'
+import { issueJwt, issueKey } from './issue'
 import { buildServices } from './services'
 import { issueServiceToken, revokeServiceToken, rotateServiceToken } from './servicetokens'
 import { getSigner } from './signing'
-import { mintToken } from './tokens'
+import { mintFromKey, mintToken } from './tokens'
 
 // Retention: prune `auth_log` rows older than this on the daily cron. `audit_events`
 // are kept long; only the dense, high-churn auth log is pruned.
@@ -137,6 +144,44 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 				}),
 			)
 			return { ok: false, reason: 'invalid_session' }
+		}
+	}
+
+	/**
+	 * Mint a per-app access token from an opaque `px_` credential (API key / share link) — the other
+	 * front over the same resolve→sign core as `mintToken`. Validates the credential, resolves its
+	 * effective permissions, signs a short-lived token. Never throws — fails closed to `invalid_key`.
+	 */
+	async mintFromKey(input: MintFromKeyInput): Promise<MintFromKeyResult> {
+		const services = buildServices(this.env)
+		try {
+			const { result, principalId, credentialId } = await mintFromKey(services, this.env, input)
+			this.ctx.waitUntil(
+				services.db.writeAuthLog({
+					requestId: input.requestId,
+					app: input.app,
+					kind: 'authenticate',
+					principalId,
+					capabilityTokenId: credentialId,
+					decision: result.ok ? 'allow' : 'deny',
+					reason: result.ok ? 'mint_key' : result.reason,
+				}),
+			)
+			return result
+		} catch (err) {
+			// Same fail-closed posture as mintToken(): never surface a 500.
+			console.error(`mintFromKey failed for request '${input.requestId}'`, err)
+			this.ctx.waitUntil(
+				services.db.writeAuthLog({
+					requestId: input.requestId,
+					app: input.app,
+					kind: 'authenticate',
+					principalId: null,
+					decision: 'deny',
+					reason: 'internal_error',
+				}),
+			)
+			return { ok: false, reason: 'invalid_key' }
 		}
 	}
 
@@ -336,6 +381,109 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 		} catch (err) {
 			// Same fail-closed posture as authenticate()/issueCapability(): never surface a 500.
 			console.error(`revokeCapability failed for request '${input.requestId}'`, err)
+			this.ctx.waitUntil(
+				services.db.writeAuthLog({
+					requestId: input.requestId,
+					app: input.app,
+					kind: 'authenticate',
+					principalId: null,
+					decision: 'deny',
+					reason: 'internal_error',
+				}),
+			)
+			return { ok: false, reason: 'unknown_principal' }
+		}
+	}
+
+	async issueKey(input: IssueKeyInput): Promise<IssueKeyResult> {
+		const services = buildServices(this.env)
+		try {
+			// Resolve the ISSUER from the forwarded credentials exactly like issueCapability().
+			const outcome = await resolveRequest(services, {
+				app: input.app,
+				token: input.token,
+				cookie: input.cookie,
+				origin: input.origin,
+				requestId: input.requestId,
+			})
+			const issuer = principalFromOutcome(outcome)
+			if (!issuer || !outcome.result.ok) {
+				return outcome.result.ok ? { ok: false, reason: 'unknown_principal' } : { ok: false, reason: outcome.result.reason }
+			}
+
+			const { result, auditLabel } = await issueKey(services, input, { id: issuer.id, permissions: issuer.permissions })
+
+			if (result.ok) {
+				// iam.credential.create audit — issuer, label, binding + grants; NEVER the plaintext token.
+				const app = outcome.verifiedApp ?? input.app
+				this.ctx.waitUntil(
+					services.db.writeAuditEvent({
+						requestId: input.requestId,
+						principalId: issuer.id,
+						principalLabel: outcome.result.principal.label,
+						app,
+						action: 'iam.credential.create',
+						resourceType: 'credential',
+						resourceId: result.id,
+						metadata: { label: auditLabel ?? null, principalId: input.principalId ?? null, grants: input.permissions ?? [] },
+					}),
+				)
+			}
+
+			return result
+		} catch (err) {
+			console.error(`issueKey failed for request '${input.requestId}'`, err)
+			this.ctx.waitUntil(
+				services.db.writeAuthLog({
+					requestId: input.requestId,
+					app: input.app,
+					kind: 'authenticate',
+					principalId: null,
+					decision: 'deny',
+					reason: 'internal_error',
+				}),
+			)
+			return { ok: false, reason: 'unknown_principal' }
+		}
+	}
+
+	async issueJwt(input: IssueJwtInput): Promise<IssueJwtResult> {
+		const services = buildServices(this.env)
+		try {
+			const outcome = await resolveRequest(services, {
+				app: input.app,
+				token: input.token,
+				cookie: input.cookie,
+				origin: input.origin,
+				requestId: input.requestId,
+			})
+			const issuer = principalFromOutcome(outcome)
+			if (!issuer || !outcome.result.ok) {
+				return outcome.result.ok ? { ok: false, reason: 'unknown_principal' } : { ok: false, reason: outcome.result.reason }
+			}
+
+			const { result, auditLabel } = await issueJwt(services, this.env, input, { id: issuer.id, permissions: issuer.permissions })
+
+			if (result.ok) {
+				// iam.passthrough.issue audit — issuer, label, grants, expiry; NEVER the signed token.
+				const app = outcome.verifiedApp ?? input.app
+				this.ctx.waitUntil(
+					services.db.writeAuditEvent({
+						requestId: input.requestId,
+						principalId: issuer.id,
+						principalLabel: outcome.result.principal.label,
+						app,
+						action: 'iam.passthrough.issue',
+						resourceType: 'token',
+						resourceId: result.id,
+						metadata: { label: auditLabel ?? null, grants: input.permissions, expiresAt: result.expiresAt },
+					}),
+				)
+			}
+
+			return result
+		} catch (err) {
+			console.error(`issueJwt failed for request '${input.requestId}'`, err)
 			this.ctx.waitUntil(
 				services.db.writeAuthLog({
 					requestId: input.requestId,

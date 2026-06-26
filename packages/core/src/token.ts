@@ -41,6 +41,11 @@ export const TOKEN_ALG = 'ES256'
 /** Default per-app access-token lifetime. Revocation/role changes take effect within this. */
 export const DEFAULT_TOKEN_TTL_SECONDS = 300
 /**
+ * Hard cap on a `issueJwt` passthrough token's lifetime. A passthrough JWT is NOT revocable (no
+ * stored row), so its TTL is its whole security window — bounded here (24 h) regardless of request.
+ */
+export const MAX_PASSTHROUGH_TTL_SECONDS = 24 * 60 * 60
+/**
  * The SDK refreshes an access token this many seconds BEFORE it expires, so a request never rides a
  * token that expires mid-flight. Must be < the token TTL.
  */
