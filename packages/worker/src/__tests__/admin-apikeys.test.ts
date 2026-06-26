@@ -9,9 +9,9 @@ import { mintFromKey } from '../tokens'
 import { FakeCfAccess } from './helpers/fake-cfaccess'
 import { createHarness, DEFAULT_AUD, type Harness, seedAppAction, seedGrant, seedUser } from './helpers/harness'
 
-// End-to-end tests for the admin /api-keys flow now minting a propustka-NATIVE key alongside the CF
-// service token: provision returns a `px_` key that `mintFromKey` resolves to the service principal's
-// permissions; rotate invalidates the old one; revoke kills it.
+// End-to-end tests for the admin /api-keys flow minting a propustka-NATIVE key: provision creates a
+// native service principal + grant and returns a `px_` key that `mintFromKey` resolves to the service
+// principal's permissions; rotate invalidates the old one; revoke kills it. No Cloudflare Access.
 
 const ORIGIN = 'https://iam.example.com'
 const ISSUER = 'https://propustka.test'
@@ -75,7 +75,6 @@ describe('POST /admin/api-keys — native key', () => {
 
 		const body = await provision(h, cf, token)
 		expect(body.apiKey.startsWith('px_')).toBe(true)
-		expect(body.clientSecret).toBeTruthy() // CF token still issued (add-only)
 
 		const resolved = await resolveKey(h, cf, body.apiKey)
 		expect(resolved.claims?.ptype).toBe('service')

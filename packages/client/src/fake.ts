@@ -5,33 +5,15 @@ import type {
 	AuthFailure,
 	IssuedJwt,
 	IssuedKey,
-	IssuedServiceToken,
 	IssueFailure,
 	IssueJwtRequest,
 	IssueKeyRequest,
-	IssueServiceTokenFailure,
-	IssueServiceTokenRequest,
 	ListPrincipalsFailure,
 	PrincipalIdentity,
 	PrincipalList,
 	RevokedKey,
-	RevokedServiceToken,
 	RevokeFailure,
-	RevokeServiceTokenFailure,
-	RotatedServiceToken,
-	RotateServiceTokenFailure,
 } from './types'
-
-/** A service principal minted in-memory by the fake's `issueServiceToken`, resolved on authenticate. */
-interface FakeServiceToken {
-	principalId: string
-	clientSecret: string
-	label: string
-	permissions: PermissionEntry[]
-}
-
-/** Cloudflare injects the service token's client id as this header (here it's sent directly — no edge). */
-const ACCESS_CLIENT_ID_HEADER = 'CF-Access-Client-Id'
 
 /**
  * A fixed dev persona: an identity plus a real permissions array. When `FakeIamConfig.personas`
@@ -202,10 +184,6 @@ export class FakeIamClient {
 	// Worker locally): tracks every issued credential id and the subset that has been revoked.
 	private readonly issuedIds = new Set<string>()
 	private readonly revokedIds = new Set<string>()
-	// In-memory service-token registry (keyed by clientId) so a locally minted service token
-	// authenticates to its service principal — opice local-dev ingest/read without an Access edge.
-	private readonly serviceTokens = new Map<string, FakeServiceToken>()
-	private readonly revokedServicePrincipals = new Set<string>()
 
 	constructor(config?: FakeIamConfig) {
 		this.deny = config?.deny ?? []
@@ -218,22 +196,6 @@ export class FakeIamClient {
 	}
 
 	async authenticate(req: Request): Promise<AuthContext | AuthFailure> {
-		// A machine request carrying a service-token client id resolves to the registered service
-		// principal (the local stand-in for the Access edge → service JWT → principal flow). The
-		// secret is not validated — the fake is a dev convenience, not a validator.
-		const clientId = req.headers.get(ACCESS_CLIENT_ID_HEADER)
-		if (clientId !== null) {
-			const service = this.serviceTokens.get(clientId)
-			if (!service) {
-				return { ok: false, reason: 'unknown_principal', status: 403 }
-			}
-			return new PersonaAuthContext({
-				id: service.principalId,
-				label: service.label,
-				type: 'service',
-				permissions: service.permissions,
-			})
-		}
 		// Dynamic resolver wins — the app decides the persona per request.
 		if (this.resolve) {
 			const persona = await this.resolve(req)
@@ -272,12 +234,15 @@ export class FakeIamClient {
 		return Promise.resolve({ ok: true, principals })
 	}
 
-	issueKey(_req: Request, _input: IssueKeyRequest): Promise<IssuedKey | IssueFailure> {
+	issueKey(_req: Request, input: IssueKeyRequest): Promise<IssuedKey | IssueFailure> {
 		const suffix = crypto.randomUUID()
 		const token = `px_fake-${suffix}`
 		const id = `fake-cred-${suffix}`
 		this.issuedIds.add(id)
-		return Promise.resolve({ ok: true, token, id })
+		// `service` mode mints a fresh fake service principal and binds the key to it; the bound
+		// principal id is the returned handle. A self-bind echoes the requested principal id.
+		const principalId = input.service !== undefined ? `fake-service-${suffix}` : input.principalId
+		return Promise.resolve({ ok: true, token, id, ...(principalId === undefined ? {} : { principalId }) })
 	}
 
 	issueJwt(_req: Request, _input: IssueJwtRequest): Promise<IssuedJwt | IssueFailure> {
@@ -296,51 +261,5 @@ export class FakeIamClient {
 		}
 		this.revokedIds.add(id)
 		return Promise.resolve({ ok: true, revoked: true })
-	}
-
-	issueServiceToken(_req: Request, input: IssueServiceTokenRequest): Promise<IssuedServiceToken | IssueServiceTokenFailure> {
-		const suffix = crypto.randomUUID()
-		const clientId = `fake-client-${suffix}`
-		const clientSecret = `fake-secret-${suffix}`
-		const principalId = `fake-service-${suffix}`
-		const permissions: PermissionEntry[] = input.permissions.map((action) => ({ action, scope: input.scope ?? null, source: 'grant' }))
-		this.serviceTokens.set(clientId, { principalId, clientSecret, label: input.label, permissions })
-		return Promise.resolve({ ok: true, clientId, clientSecret, apiKey: `px_fake-${suffix}`, principalId, tokenId: `fake-token-${suffix}` })
-	}
-
-	revokeServiceToken(_req: Request, principalId: string): Promise<RevokedServiceToken | RevokeServiceTokenFailure> {
-		const found = this.findServiceByPrincipal(principalId)
-		if (!found) {
-			// Already revoked reads as an idempotent no-op; never-seen reads as not_found.
-			if (this.revokedServicePrincipals.has(principalId)) {
-				return Promise.resolve({ ok: true, revoked: false })
-			}
-			return Promise.resolve({ ok: false, reason: 'not_found', status: 404 })
-		}
-		this.serviceTokens.delete(found.clientId)
-		this.revokedServicePrincipals.add(principalId)
-		return Promise.resolve({ ok: true, revoked: true })
-	}
-
-	rotateServiceToken(_req: Request, principalId: string): Promise<RotatedServiceToken | RotateServiceTokenFailure> {
-		const found = this.findServiceByPrincipal(principalId)
-		if (!found) {
-			return Promise.resolve({ ok: false, reason: 'not_found', status: 404 })
-		}
-		const suffix = crypto.randomUUID()
-		const clientSecret = `fake-secret-${suffix}`
-		// Mutate the stored entry (same reference held in the map): client_id + principal unchanged.
-		found.service.clientSecret = clientSecret
-		return Promise.resolve({ ok: true, clientId: found.clientId, clientSecret, apiKey: `px_fake-${suffix}`, tokenId: `fake-token-${suffix}` })
-	}
-
-	/** Locate a registered service token by its principal id (small N in dev — linear scan). */
-	private findServiceByPrincipal(principalId: string): { clientId: string; service: FakeServiceToken } | null {
-		for (const [clientId, service] of this.serviceTokens) {
-			if (service.principalId === principalId) {
-				return { clientId, service }
-			}
-		}
-		return null
 	}
 }

@@ -28,15 +28,20 @@ describe('issueKey → mintFromKey (standalone, frozen inline grants)', () => {
 		const issuerId = seedUser(h.sqlite, { sub: 'iss', email: 'iss@contember.com' })
 		const issuer = { id: issuerId, permissions: [perm('report.write')] } // holds it globally → may delegate scoped
 
-		const issued = await issueKey(services, {
-			app: 'opice',
-			token: null,
-			cookie: null,
-			origin: null,
-			requestId: 'r1',
-			permissions: [{ action: 'report.write', scope: { type: 'project', value: 'demo' } }],
-			label: 'opice CI',
-		}, issuer)
+		const issued = await issueKey(
+			services,
+			{
+				app: 'opice',
+				token: null,
+				cookie: null,
+				origin: null,
+				requestId: 'r1',
+				permissions: [{ action: 'report.write', scope: { type: 'project', value: 'demo' } }],
+				label: 'opice CI',
+			},
+			issuer,
+			'opice',
+		)
 		expect(issued.result.ok).toBe(true)
 		if (!issued.result.ok) throw new Error('expected ok')
 		expect(issued.result.token.startsWith('px_')).toBe(true)
@@ -60,21 +65,26 @@ describe('issueKey → mintFromKey (standalone, frozen inline grants)', () => {
 		const issued = await issueKey(services, { app: 'a', token: null, cookie: null, origin: null, requestId: 'r' }, {
 			id: issuerId,
 			permissions: [perm('*')],
-		})
+		}, 'a')
 		expect(issued.result).toEqual({ ok: false, reason: 'not_allowed' })
 	})
 
 	test('delegation: an issuer cannot mint a key beyond its own permissions', async () => {
 		const h = createHarness()
 		const services = h.makeServices({ issuer: ISSUER })
-		const issued = await issueKey(services, {
-			app: 'a',
-			token: null,
-			cookie: null,
-			origin: null,
-			requestId: 'r',
-			permissions: [{ action: 'report.delete' }],
-		}, { id: seedUser(h.sqlite, { sub: 'iss3', email: 'iss3@contember.com' }), permissions: [perm('report.read')] })
+		const issued = await issueKey(
+			services,
+			{
+				app: 'a',
+				token: null,
+				cookie: null,
+				origin: null,
+				requestId: 'r',
+				permissions: [{ action: 'report.delete' }],
+			},
+			{ id: seedUser(h.sqlite, { sub: 'iss3', email: 'iss3@contember.com' }), permissions: [perm('report.read')] },
+			'a',
+		)
 		expect(issued.result).toEqual({ ok: false, reason: 'not_allowed' })
 	})
 })
@@ -86,14 +96,19 @@ describe('issueKey → mintFromKey (principal-bound)', () => {
 		const svcId = seedService(h.sqlite, { commonName: 'svc-cn', label: 'svc' })
 		seedInlineGrant(h.sqlite, svcId, ['project.read'], null, 'app-x')
 
-		const issued = await issueKey(services, {
-			app: 'app-x',
-			token: null,
-			cookie: null,
-			origin: null,
-			requestId: 'r',
-			principalId: svcId,
-		}, { id: svcId, permissions: [perm('project.read')] })
+		const issued = await issueKey(
+			services,
+			{
+				app: 'app-x',
+				token: null,
+				cookie: null,
+				origin: null,
+				requestId: 'r',
+				principalId: svcId,
+			},
+			{ id: svcId, permissions: [perm('project.read')] },
+			'app-x',
+		)
 		expect(issued.result.ok).toBe(true)
 		if (!issued.result.ok) throw new Error('expected ok')
 
@@ -112,15 +127,20 @@ describe('issueKey → mintFromKey (principal-bound)', () => {
 		const svcId = seedService(h.sqlite, { commonName: 'svc-2' })
 		seedInlineGrant(h.sqlite, svcId, ['project.read', 'project.write'], null, 'app-x')
 
-		const issued = await issueKey(services, {
-			app: 'app-x',
-			token: null,
-			cookie: null,
-			origin: null,
-			requestId: 'r',
-			principalId: svcId,
-			permissions: [{ action: 'project.read' }], // downscope to read-only
-		}, { id: svcId, permissions: [perm('project.read'), perm('project.write')] })
+		const issued = await issueKey(
+			services,
+			{
+				app: 'app-x',
+				token: null,
+				cookie: null,
+				origin: null,
+				requestId: 'r',
+				principalId: svcId,
+				permissions: [{ action: 'project.read' }], // downscope to read-only
+			},
+			{ id: svcId, permissions: [perm('project.read'), perm('project.write')] },
+			'app-x',
+		)
 		expect(issued.result.ok).toBe(true)
 		if (!issued.result.ok) throw new Error('expected ok')
 
@@ -134,14 +154,80 @@ describe('issueKey → mintFromKey (principal-bound)', () => {
 	test('binding to ANOTHER principal is refused (v1: self only)', async () => {
 		const h = createHarness()
 		const services = h.makeServices({ issuer: ISSUER })
-		const issued = await issueKey(services, {
-			app: 'a',
-			token: null,
-			cookie: null,
-			origin: null,
-			requestId: 'r',
-			principalId: 'someone-else',
-		}, { id: seedUser(h.sqlite, { sub: 'me', email: 'me@contember.com' }), permissions: [perm('*')] })
+		const issued = await issueKey(
+			services,
+			{
+				app: 'a',
+				token: null,
+				cookie: null,
+				origin: null,
+				requestId: 'r',
+				principalId: 'someone-else',
+			},
+			{ id: seedUser(h.sqlite, { sub: 'me', email: 'me@contember.com' }), permissions: [perm('*')] },
+			'a',
+		)
+		expect(issued.result).toEqual({ ok: false, reason: 'not_allowed' })
+	})
+})
+
+describe('issueKey service mode (folded service token)', () => {
+	test('creates a fresh service principal + grant, binds the key, mintFromKey resolves its perms', async () => {
+		const h = createHarness()
+		const services = h.makeServices({ issuer: ISSUER })
+		const issuerId = seedUser(h.sqlite, { sub: 'iss-svc', email: 'iss@contember.com' })
+
+		const issued = await issueKey(
+			services,
+			{
+				app: 'opice',
+				token: null,
+				cookie: null,
+				origin: null,
+				requestId: 'r1',
+				service: { label: 'opice CI', permissions: ['report.write'], scope: { type: 'project', value: 'demo' } },
+			},
+			{ id: issuerId, permissions: [perm('report.write')] }, // holds it globally → may delegate scoped
+			'opice',
+		)
+		expect(issued.result.ok).toBe(true)
+		if (!issued.result.ok) throw new Error('expected ok')
+		expect(issued.result.token.startsWith('px_')).toBe(true)
+		expect(issued.result.principalId).toBeTruthy()
+
+		const { result } = await mintFromKey(services, ENV, { app: 'opice', key: issued.result.token, requestId: 'r2' })
+		expect(result.ok).toBe(true)
+		if (!result.ok) throw new Error('expected ok')
+		const claims = await verify(result.token, 'opice')
+		expect(claims?.ptype).toBe('service')
+		expect(claims?.sub).toBe(issued.result.principalId)
+		expect(permits(claims?.perms ?? [], 'report.write', { type: 'project', value: 'demo' })).toBe(true)
+		expect(permits(claims?.perms ?? [], 'report.write', { type: 'project', value: 'other' })).toBe(false)
+	})
+
+	test('delegation: a service grant beyond the issuer is refused', async () => {
+		const h = createHarness()
+		const services = h.makeServices({ issuer: ISSUER })
+		const issuerId = seedUser(h.sqlite, { sub: 'iss-svc2', email: 'iss2@contember.com' })
+		const issued = await issueKey(
+			services,
+			{ app: 'a', token: null, cookie: null, origin: null, requestId: 'r', service: { label: 'x', permissions: ['report.delete'] } },
+			{ id: issuerId, permissions: [perm('report.read')] },
+			'a',
+		)
+		expect(issued.result).toEqual({ ok: false, reason: 'not_allowed' })
+	})
+
+	test('a service grant with no permissions is refused', async () => {
+		const h = createHarness()
+		const services = h.makeServices({ issuer: ISSUER })
+		const issuerId = seedUser(h.sqlite, { sub: 'iss-svc3', email: 'iss3@contember.com' })
+		const issued = await issueKey(
+			services,
+			{ app: 'a', token: null, cookie: null, origin: null, requestId: 'r', service: { label: 'x', permissions: [] } },
+			{ id: issuerId, permissions: [perm('*')] },
+			'a',
+		)
 		expect(issued.result).toEqual({ ok: false, reason: 'not_allowed' })
 	})
 })

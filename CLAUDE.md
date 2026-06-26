@@ -63,16 +63,20 @@ later follow-up.
   tokens are now FULLY FOLDED into credentials (migration `0006`): `capability_tokens`/
   `capability_grants` dropped, `redeemCapability`→`mintFromKey`, `issueCapability`→`issueKey`,
   `revokeCapability`→`revokeKey`, the admin "Share links" page issues anonymous credentials, and the
-  audit linkage column is `credential_id` (kind='redeem' retired). STILL on the CF path (add-only,
-  follow-ups): `issueServiceToken` (the CF service-token half — native `px_` key minted alongside),
-  the per-path rule schema, CF removal.
+  audit linkage column is `credential_id` (kind='redeem' retired). Service tokens are now FULLY FOLDED
+  too: `issueServiceToken`/`revokeServiceToken`/`rotateServiceToken` are gone — `issueKey({ service })`
+  creates a NATIVE service principal (`external_id` NULL, resolved by its `px_` key, not a CF
+  client_id) + grant + bound key; the admin api-keys page provisions/rotates/revokes natively (no CF
+  service token, no clientId/clientSecret); the `CfAccess` client keeps only the apps/reusable-policy
+  surface. STILL on the CF path (add-only, follow-ups): the per-path rule schema, the CF Access edge
+  removal (its runtime JWT/get-identity resolution + reconcile-access stay until then).
 - New deploy vars/secrets: `PROPUSTKA_HOSTNAME` (now also the token `iss`), `PROPUSTKA_OIDC_ISSUER`,
   `PROPUSTKA_OIDC_CLIENT_ID` (+ optional `PROPUSTKA_OIDC_SCOPES`, `PROPUSTKA_OIDC_REQUIRE_VERIFIED_EMAIL`),
   and the SECRETS `PROPUSTKA_SIGNING_KEYS` (JSON array of EC P-256 private JWKs) +
   `PROPUSTKA_OIDC_CLIENT_SECRET` (`wrangler secret put` remote / `.dev.vars` local, like CF_API_TOKEN).
 - **Read `propustka-native-spec.md` before touching this** — it has the unified model (stateful key
-  vs passthrough JWT), what's built, and the follow-ups (repoint service tokens, the per-path rule
-  schema, CF Access removal, Access bypass for `/auth/*`). The current design docs are just
+  vs passthrough JWT), what's built, and the follow-ups (the per-path rule schema, CF Access removal,
+  Access bypass for `/auth/*`). The current design docs are just
   `propustka-native-spec.md` (auth model) + `architecture.md` (layout/provisioning/deploy); the
   superseded `iam-service-spec.md` / `admin-ui-spec.md` were deleted in the capability fold.
 

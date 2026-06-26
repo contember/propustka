@@ -158,7 +158,7 @@ packages/worker/
     secret.ts                # opaque-secret helpers (generateToken / hashToken) for stored credentials
     tokens.ts                # mintToken (session) + mintFromKey (px_ key) → signed access token
     issue.ts                 # issueKey / issueJwt / revokeKey (the unified credential primitive)
-    cfaccess.ts              # Cloudflare Access API client (service-token provisioning)
+    cfaccess.ts              # Cloudflare Access API client (apps + reusable policies, for reconcile-access)
     admin/
       router.ts              # /admin/* REST; admin gate (can('iam.admin'))
       handlers.ts            # principals/grants/group-mappings/api-keys/share-links/
@@ -250,7 +250,7 @@ ever needed.)
 | `ACCESS_APPS`          | var (JSON) | `{ "<aud>": "<app-id>" }` — JWT audience set + app identity |
 | `TEAM`                 | var        | Access team domain (JWKS issuer)                            |
 | `IAM_BOOTSTRAP_ADMINS` | var (JSON) | bootstrap admin emails (normally empty)                     |
-| `CF_API_TOKEN`         | **secret** | Access service-token provisioning (admin-only)              |
+| `CF_API_TOKEN`         | **secret** | Access apps + reusable-policy reconcile (admin-only)        |
 | `CF_ACCOUNT_ID`        | **secret** | account id for the Access API                               |
 | `ENVIRONMENT`          | var        | `local` / `stage` / `prod`                                  |
 

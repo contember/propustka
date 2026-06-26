@@ -1,10 +1,10 @@
-import type { CfAccess, CfApp, CfAppSpec, CfPolicy, CfPolicySpec, MintedServiceToken } from '../../cfaccess'
+import type { CfAccess, CfApp, CfAppSpec, CfPolicy, CfPolicySpec } from '../../cfaccess'
 
 /**
- * In-memory `CfAccess` for tests — no network. Mirrors the bits reconcile + provisioning use:
+ * In-memory `CfAccess` for tests — no network. Mirrors the bits Access-rules reconcile uses:
  * an account-level reusable-policy store and an app store whose `policyIds` are repointed by
  * `updateAppPolicies`. Records every app-policy write so tests can assert the attach-before-detach
- * ordering (and that an empty array is never PUT). Service-token methods are minimal but valid.
+ * ordering (and that an empty array is never PUT).
  */
 
 interface StoredPolicy {
@@ -34,42 +34,6 @@ export class FakeCfAccess implements CfAccess {
 			}
 		}
 		return count
-	}
-
-	// ── service tokens (minimal) ────────────────────────────────────────────────
-
-	/** Minted service tokens, keyed by clientId — so findTokenIdByClientId/rotate/delete resolve them. */
-	private readonly serviceTokens = new Map<string, string>()
-
-	createServiceToken(name: string): Promise<MintedServiceToken> {
-		const id = this.nextId('tok')
-		const clientId = `${name}.client`
-		this.serviceTokens.set(clientId, id)
-		return Promise.resolve({ id, clientId, clientSecret: `${id}.secret` })
-	}
-
-	deleteServiceToken(tokenId: string): Promise<void> {
-		for (const [clientId, id] of this.serviceTokens) {
-			if (id === tokenId) {
-				this.serviceTokens.delete(clientId)
-			}
-		}
-		return Promise.resolve()
-	}
-
-	findTokenIdByClientId(clientId: string): Promise<string | null> {
-		return Promise.resolve(this.serviceTokens.get(clientId) ?? null)
-	}
-
-	rotateServiceToken(tokenId: string): Promise<MintedServiceToken> {
-		// Find the clientId bound to this token id (unchanged by rotation); mint a new secret.
-		let clientId = `${tokenId}.client`
-		for (const [cid, id] of this.serviceTokens) {
-			if (id === tokenId) {
-				clientId = cid
-			}
-		}
-		return Promise.resolve({ id: tokenId, clientId, clientSecret: `${this.nextId('rot')}.secret` })
 	}
 
 	// ── reusable policies ───────────────────────────────────────────────────────

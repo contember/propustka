@@ -169,8 +169,10 @@ issueJwt({ app, <issuer creds>, permissions, label?, expiresAt? })
 - `issueKey` writes a `credentials` row (+ `credential_grants`); the transport is the caller's choice.
 - `issueJwt` signs an anonymous access token directly (no `sub`), capped by `PROPUSTKA_MAX_TOKEN_TTL`,
   and writes one audit row. There is nothing to revoke — it is TTL-only by design.
-- `issueServiceToken` becomes `issueKey({ principalId: <new service principal> })`; `issueCapability`
-  becomes `issueKey({ permissions, expiresAt })` with a URL-path transport. (See Migration.)
+- `issueServiceToken` is folded into `issueKey({ service: { label, permissions, scope? } })` — it
+  creates a NATIVE service principal (`external_id` NULL) + grant and binds the `px_` key to it;
+  `issueCapability` becomes `issueKey({ permissions, expiresAt })` with a URL-path transport. (See
+  Migration.)
 
 ## Runtime auth — three sources, two mechanisms
 
@@ -243,11 +245,14 @@ per kind defaulting), `SESSION_COOKIE_DOMAIN`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, 
   unused `auth_log` kind='redeem' is retired. `sessions` stays its own table (different birth: OIDC
   `idp_sub`/`email`) but is the human instance of the same primitive and shares the resolve→sign
   pipeline.
-- **RPC** ✅ DONE (capability fold): `mintToken` accepts a session source; `mintFromKey` is the key
-  resolution path that replaced `redeemCapability`. `issueCapability` → `issueKey`; `revokeCapability`
-  → `revokeKey`. `issueJwt` is new. The admin share-links page issues anonymous credentials via
-  `issueKey`. STILL add-only: the CF service-token half of `issueServiceToken` (existing service-token
-  clients keep working behind Access) — removed when the last machine app has flipped.
+- **RPC** ✅ DONE (capability + service-token fold): `mintToken` accepts a session source; `mintFromKey`
+  is the key resolution path that replaced `redeemCapability`. `issueCapability` → `issueKey`;
+  `revokeCapability` → `revokeKey`. `issueJwt` is new. The admin share-links page issues anonymous
+  credentials via `issueKey`. Service tokens are folded too: `issueServiceToken`/`revokeServiceToken`/
+  `rotateServiceToken` are gone — `issueKey({ service })` creates a NATIVE service principal
+  (`external_id` NULL, resolved by its `px_` key) + grant + bound key, and the admin api-keys page
+  provisions/rotates/revokes natively (no CF service token). The `CfAccess` client keeps only its
+  apps/reusable-policy surface (used by reconcile-access until CF removal).
 - **CF Access removal (last)**: delete `cfaccess.ts`, `scripts/provision-access*.ts`,
   `reconcile-access`, `ACCESS_APPS`/`TEAM`; rebirth `propustka.access.ts` as the per-path credential
   declaration above. Until then `/auth/*` + `/.well-known/jwks.json` need a `public` carve-out.
@@ -258,18 +263,19 @@ per kind defaulting), `SESSION_COOKIE_DOMAIN`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, 
   KV lookup, independent of propustka; the Sentry-compat path is unaffected. Only the operator UI
   (human) migrates to the OIDC session path.
 - **opice** — ingest (`/api/v1/<slug>/…`) authenticates with **CF Access service tokens**
-  (`cf-access-client-id` / `cf-access-client-secret`, DSN-packaged). This is the machine path with no
-  native equivalent until `issueKey`/api-keys land; opice stays on the Access path until its DSNs are
-  reissued as `px_` keys (carried in a header) or as passthrough JWTs. The operator UI migrates
-  independently.
+  (`cf-access-client-id` / `cf-access-client-secret`, DSN-packaged). The native equivalent now exists
+  (`issueKey({ service })` / native api-keys → `px_` keys); opice stays on the Access path until its
+  DSNs are reissued as `px_` keys (carried in a header) or as passthrough JWTs. The operator UI
+  migrates independently.
 
 ## Build order
 
 1. **Core** ✅ — unify the access token (`AccessTokenClaims`, build/parse, resolved mapping).
 2. **Worker** ✅ — `credentials` table + Db, `resolveCredential` (2×2), generalize `mintToken`
    (session|key, capped TTL), `issueKey` + `issueJwt`, fold `capability_tokens`/`redeemCapability`/
-   `issueCapability`/`revokeCapability` onto the primitive (migration `0006`); service-token CF half
-   stays add-only.
+   `issueCapability`/`revokeCapability` onto the primitive (migration `0006`); service tokens folded
+   into `issueKey({ service })` (native service principals; the CF service-token issuance/rotate/revoke
+   surface is removed).
 3. **SDK** ✅ — `PropustkaAuth` accepts cookie / `px_` bearer / passthrough JWT; `Capability` collapsed
    into the anonymous `AuthContext`; `IamClient` exposes `issueKey`/`issueJwt`/`revokeKey`.
 4. **Rule schema + CF Access removal** — the per-path credential declaration; delete CF Access

@@ -208,14 +208,12 @@ export interface UpdatePolicyRequest {
 	permissions: string[]
 }
 
-// ── API keys (service tokens) ─────────────────────────────────────────────────
+// ── API keys (native service credentials) ─────────────────────────────────────
 
 /** Metadata view of a service-principal API key (the secret is never returned here). */
 export interface ApiKeyDto {
 	principalId: string
 	label: string
-	/** The Access service-token Client ID (= the principal's external_id). */
-	clientId: string | null
 	status: PrincipalStatus
 	grants: GrantDto[]
 	createdAt: number
@@ -238,33 +236,19 @@ export interface ProvisionApiKeyRequest {
 }
 
 /**
- * Provisioning result. `clientSecret` is shown by Cloudflare exactly ONCE — copy it
- * now, it is not retrievable later. `policyInclusion` is `'automatic'` when the target app already
- * carries a reconciled `service-auth` policy ("any valid service token"), so the token works with
- * no dashboard step; `'manual'` when the app's Access rules haven't been reconciled and the
- * operator must add the token to its Service Auth policy by hand.
+ * Provisioning result. `apiKey` (a `px_…` credential bound to the new service principal) is shown
+ * exactly ONCE — copy it now, it is not retrievable later. Carried as a bearer (or a declared
+ * header) directly to apps on the propustka-native path (`mintFromKey`), no Cloudflare Access in
+ * front.
  */
 export interface ProvisionApiKeyResponse {
 	principalId: string
-	clientId: string
-	clientSecret: string
-	tokenId: string
-	policyInclusion: 'automatic' | 'manual'
-	/**
-	 * The propustka-NATIVE API key (`px_…`), bound to the same service principal. Carried as a bearer
-	 * (or a declared header) directly to apps on the propustka-native path — no Cloudflare Access in
-	 * front. Shown ONCE, never stored. The CF `clientSecret` above stays for apps still behind Access.
-	 */
 	apiKey: string
 }
 
-/** Rotation result — new secret shown once; token id + principal unchanged. */
+/** Rotation result — new key shown once; principal + grants unchanged, old key stops working. */
 export interface RotateApiKeyResponse {
 	principalId: string
-	clientId: string
-	clientSecret: string
-	tokenId: string
-	/** The new propustka-native API key (`px_…`); the old one stops working immediately. Shown ONCE. */
 	apiKey: string
 }
 

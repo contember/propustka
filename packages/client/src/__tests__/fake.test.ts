@@ -184,6 +184,20 @@ describe('FakeIamClient.issueKey', () => {
 		}
 		expect(issued.token.startsWith('px_fake-')).toBe(true)
 		expect(issued.id.startsWith('fake-cred-')).toBe(true)
+		// A standalone (anonymous) share link is bound to no principal.
+		expect(issued.principalId).toBeUndefined()
+	})
+
+	test('service mode → binds the key to a fresh fake service principal', async () => {
+		const issued = await new FakeIamClient().issueKey(makeRequest(), {
+			service: { label: 'ci-bot', permissions: ['report.write'], scope: { type: 'project', value: 'p1' } },
+		})
+		expect(issued.ok).toBe(true)
+		if (!issued.ok) {
+			throw new Error('unreachable')
+		}
+		expect(issued.token.startsWith('px_fake-')).toBe(true)
+		expect(issued.principalId?.startsWith('fake-service-')).toBe(true)
 	})
 })
 

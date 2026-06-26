@@ -38,7 +38,7 @@ Requires **[Bun](https://bun.sh)** (≥ 1.3).
 ```bash
 bun install
 bun run typecheck     # tsc --noEmit across all packages
-bun test              # 323 tests
+bun test              # 310 tests
 bun run lint          # biome
 bun run format        # dprint
 ```
@@ -97,8 +97,8 @@ cd packages/admin-ui && bun run dev  # vite on http://127.0.0.1:18192, proxies /
 ```
 
 **What still needs real Cloudflare Access** (cannot be exercised locally): validating a real
-Access JWT, resolving IdP group membership via `get-identity`, and service-token provisioning.
-See _Status_ below.
+Access JWT and resolving IdP group membership via `get-identity`. (API keys are now propustka-native
+`px_` credentials — provisioned and resolved without Access.) See _Status_ below.
 
 ## Using the SDK in an app
 
@@ -168,12 +168,12 @@ those users resolve to global `admin` until removed from the env var.
 
 ## Status
 
-Implemented and verified (typecheck, 203 unit tests, admin-ui build, `oblaka` config gen, a local
-`lopata` HTTP smoke, and the app↔IAM RPC path via [`examples/app`](./examples/app)). Two
-integration points depend on a live Cloudflare/Access environment and are **implemented to spec
+Implemented and verified (typecheck, 310 unit tests, admin-ui build, `oblaka` config gen, a local
+`lopata` HTTP smoke, and the app↔IAM RPC path via [`examples/app`](./examples/app)). One
+integration point depends on a live Cloudflare/Access environment and is **implemented to spec
 but not yet verified against real infrastructure**:
 
 1. **`get-identity`** group resolution — must be checked against a real Access-protected host.
-2. **Service-token provisioning** — the mint/principal/grant flow is implemented; adding the
-   token to the app's _Service Auth policy_ is left **manual for v1** (`policyInclusion:
-   'manual'`) pending confirmation that the Access policy API supports it.
+
+(API keys / machine identities are now propustka-native: `issueKey({ service })` mints a native
+service principal + `px_` credential, resolved via `mintFromKey` with no Cloudflare Access in front.)

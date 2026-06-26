@@ -63,9 +63,41 @@ export async function issueKey(
 	services: Services,
 	input: IssueKeyInput,
 	issuer: Issuer,
+	app: string,
 ): Promise<{ result: IssueKeyResult; auditLabel?: string }> {
-	// v1: binding is only to the issuer's OWN principal (a personal token). Cross-principal binding
-	// (a new machine principal) goes through issueServiceToken. A standalone credential needs grants.
+	// Service mode: create a NEW machine principal + grant and bind the key to it (the folded
+	// issueServiceToken). The grant is scoped to the issuer's verified `app`; the issuer must hold
+	// every requested action on `scope` (the same delegation rule as a grant).
+	if (input.service !== undefined) {
+		const svc = input.service
+		const grants = svc.permissions.map((action) => ({ action, scope: svc.scope ?? null }))
+		if (grants.length === 0 || findUncoveredGrant(issuer.permissions, grants) !== null) {
+			return { result: { ok: false, reason: 'not_allowed' } }
+		}
+		const principal = await services.db.createService(svc.label)
+		await services.db.createGrant({
+			principalId: principal.id,
+			app,
+			permissions: svc.permissions,
+			scopeType: svc.scope?.type ?? null,
+			scopeValue: svc.scope?.value ?? null,
+			grantedBy: issuer.id,
+			expiresAt: input.expiresAt ?? null,
+		})
+		const token = `${API_KEY_PREFIX}${generateToken()}`
+		const id = await services.db.createCredential({
+			tokenHash: await hashToken(token),
+			label: svc.label,
+			principalId: principal.id,
+			issuedBy: issuer.id,
+			expiresAt: input.expiresAt ?? null,
+			grants: [],
+		})
+		return { result: { ok: true, token, id, principalId: principal.id }, auditLabel: svc.label }
+	}
+
+	// v1: binding is only to the issuer's OWN principal (a personal token). A standalone credential
+	// needs grants.
 	if (input.principalId !== undefined && input.principalId !== issuer.id) {
 		return { result: { ok: false, reason: 'not_allowed' } }
 	}
@@ -87,7 +119,7 @@ export async function issueKey(
 		expiresAt: input.expiresAt ?? null,
 		grants: grants.map((g) => ({ action: g.action, scopeType: g.scope?.type ?? null, scopeValue: g.scope?.value ?? null })),
 	})
-	return { result: { ok: true, token, id }, auditLabel: input.label }
+	return { result: { ok: true, token, id, principalId: input.principalId }, auditLabel: input.label }
 }
 
 // ── issueJwt ──────────────────────────────────────────────────────────────────
@@ -134,7 +166,7 @@ function credentialGrantToKeyGrant(row: CredentialGrantRow): KeyGrant {
  * original issuer may always revoke; otherwise, for an ANONYMOUS credential (a share link), the caller
  * must be able to re-issue its grants — hold every granted action, checked with the same
  * `findUncoveredGrant` as issue. A principal-bound credential is managed through the principal path
- * (api-keys / service tokens), so a non-issuer caller cannot revoke it by id here. Idempotent — a
+ * (the api-keys page), so a non-issuer caller cannot revoke it by id here. Idempotent — a
  * second revoke returns `{ ok: true, revoked: false }`; an unknown id → `not_found`.
  */
 export async function revokeKey(services: Services, input: RevokeKeyInput, revoker: Issuer): Promise<RevokeKeyResult> {

@@ -45,21 +45,20 @@ export default createPage()
 				<div className="page-head">
 					<h1>API keys</h1>
 					<p className="hint">
-						Service principals issued a propustka-native API key (`px_…`) AND a Cloudflare Access service token. Secrets are never stored or shown after
-						creation.
+						Service principals issued a propustka-native API key (`px_…`), resolved directly by propustka (no Cloudflare Access in front). The key is shown
+						once at creation and never stored.
 					</p>
 				</div>
 
 				<ProvisionForm apps={data.apps} onDone={invalidate} />
 
 				<Table
-					colSpan={5}
+					colSpan={4}
 					isEmpty={data.apiKeys.length === 0}
 					empty="No API keys provisioned yet."
 					head={
 						<tr>
 							<th>Label</th>
-							<th>Client id</th>
 							<th>Status</th>
 							<th>Role / scope · expiry</th>
 							<th />
@@ -67,16 +66,8 @@ export default createPage()
 					}
 				>
 					{data.apiKeys.map((key) => (
-						<tr key={key.principalId} className={key.clientId === null ? 'row-warn' : undefined}>
-							<td>
-								{key.label}
-								{key.clientId === null && (
-									<div className="warn-text small">
-										Orphaned: no Access service token bound. Re-provisioning or manual reconciliation needed.
-									</div>
-								)}
-							</td>
-							<td>{key.clientId ? <code>{key.clientId}</code> : <span className="muted">—</span>}</td>
+						<tr key={key.principalId}>
+							<td>{key.label}</td>
 							<td>
 								<StatusBadge status={key.status} />
 							</td>
@@ -152,7 +143,7 @@ function ProvisionForm({ apps, onDone }: { apps: AppDto[]; onDone: () => void })
 					<input type="datetime-local" value={expiry} onChange={(e) => setExpiry(e.target.value)} />
 				</label>
 				<p className="hint">
-					The Access service token expires together with this date. Leave empty for a non-expiring token.
+					The key expires together with this date. Leave empty for a non-expiring key.
 				</p>
 				{error && <p className="error-text" role="alert">{error}</p>}
 				<div className="form-actions">
@@ -162,19 +153,7 @@ function ProvisionForm({ apps, onDone }: { apps: AppDto[]; onDone: () => void })
 			{secret && (
 				<SecretModal
 					title="API key provisioned"
-					fields={[
-						{ label: 'API key (propustka-native)', value: secret.apiKey, multiline: true },
-						{ label: 'Client ID (Cloudflare Access)', value: secret.clientId },
-						{ label: 'Client secret (Cloudflare Access)', value: secret.clientSecret, multiline: true },
-					]}
-					note={secret.policyInclusion === 'manual'
-						? (
-							<p className="warn-text">
-								<strong>Manual step required:</strong> this token was <em>not</em>{' '}
-								added to the app's Service Auth policy automatically. Add the Client ID to the policy in the Cloudflare dashboard, or it won't be accepted.
-							</p>
-						)
-						: undefined}
+					fields={[{ label: 'API key (propustka-native)', value: secret.apiKey, multiline: true }]}
 					onClose={() => setSecret(null)}
 				/>
 			)}
@@ -193,16 +172,16 @@ function RotateButton({ apiKey }: { apiKey: ApiKeyDto }) {
 
 	return (
 		<>
-			<button type="button" className="small" onClick={() => setConfirming(true)} disabled={apiKey.clientId === null}>
+			<button type="button" className="small" onClick={() => setConfirming(true)}>
 				Rotate
 			</button>
 			{confirming && (
 				<ConfirmDialog
-					title="Rotate secret"
+					title="Rotate key"
 					confirmLabel="Rotate"
 					body={
 						<p>
-							Rotate the secret for <strong>{apiKey.label}</strong>? The old secret stops working immediately.
+							Rotate the key for <strong>{apiKey.label}</strong>? The old key stops working immediately.
 						</p>
 					}
 					onConfirm={rotate}
@@ -211,12 +190,8 @@ function RotateButton({ apiKey }: { apiKey: ApiKeyDto }) {
 			)}
 			{secret && (
 				<SecretModal
-					title="Secret rotated"
-					fields={[
-						{ label: 'API key (propustka-native)', value: secret.apiKey, multiline: true },
-						{ label: 'Client ID (Cloudflare Access)', value: secret.clientId },
-						{ label: 'Client secret (Cloudflare Access)', value: secret.clientSecret, multiline: true },
-					]}
+					title="Key rotated"
+					fields={[{ label: 'API key (propustka-native)', value: secret.apiKey, multiline: true }]}
 					onClose={() => setSecret(null)}
 				/>
 			)}
@@ -241,7 +216,7 @@ function RevokeButton({ apiKey, onDone }: { apiKey: ApiKeyDto; onDone: () => voi
 					confirmLabel="Revoke"
 					body={
 						<p>
-							Revoke <strong>{apiKey.label}</strong>? This deletes the Access service token and its grants immediately — any caller using it stops working.
+							Revoke <strong>{apiKey.label}</strong>? This deletes its grants and credential immediately — any caller using it stops working.
 						</p>
 					}
 					onConfirm={revoke}

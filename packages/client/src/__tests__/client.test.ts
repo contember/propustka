@@ -231,6 +231,23 @@ describe('IamClient.issueKey', () => {
 		})
 	})
 
+	test('service mode → forwards the service spec and returns the new principalId', async () => {
+		const stub = new IamRpcStub({ issueKey: { ok: true, token: 'px_svc', id: 'cred-2', principalId: 'svc-1' } })
+		const result = await new IamClient(stub, 'app-x').issueKey(
+			makeRequest({ token: 'jwt', ray: 'ray-3' }),
+			{ service: { label: 'ci-bot', permissions: ['report.write'], scope: { type: 'project', value: 'p1' } } },
+		)
+		const ok = expectIssuedKey(result)
+		expect(ok.token).toBe('px_svc')
+		expect(ok.principalId).toBe('svc-1')
+		expect(stub.issueKeyInputs[0]).toMatchObject({
+			app: 'app-x',
+			token: 'jwt',
+			requestId: 'ray-3',
+			service: { label: 'ci-bot', permissions: ['report.write'], scope: { type: 'project', value: 'p1' } },
+		})
+	})
+
 	test('failure → status mapping', async () => {
 		const cases: {
 			reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed'

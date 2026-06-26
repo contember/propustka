@@ -138,7 +138,9 @@ export function principalStatus(row: PrincipalRow): PrincipalStatus {
 	if (row.disabled_at !== null) {
 		return 'disabled'
 	}
-	if (row.external_id === null) {
+	// Only a USER has the invite lifecycle (external_id NULL = invited, not yet claimed). A service
+	// principal is native (external_id NULL by construction) and is 'active' from creation.
+	if (row.type === 'user' && row.external_id === null) {
 		return 'invited'
 	}
 	return 'active'
@@ -261,14 +263,18 @@ export class Db {
 		)
 	}
 
-	/** Create a service principal up-front (provisioning). `external_id` = client_id. */
-	async createService(clientId: string, label: string): Promise<PrincipalRow> {
+	/**
+	 * Create a native service (machine) principal. `external_id` is NULL — a native service is resolved
+	 * through its `px_` credential (credential.principal_id → principal), never an external id. (The
+	 * legacy CF service-token path still resolves existing services by their stored external_id.)
+	 */
+	async createService(label: string): Promise<PrincipalRow> {
 		const id = uuidv7()
 		return firstRow<PrincipalRow>(
 			this.d1
 				.prepare(`INSERT INTO principals (id, type, external_id, email, label)
-					VALUES (?, 'service', ?, NULL, ?) RETURNING *`)
-				.bind(id, clientId, label),
+					VALUES (?, 'service', NULL, NULL, ?) RETURNING *`)
+				.bind(id, label),
 		)
 	}
 

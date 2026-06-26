@@ -2,7 +2,7 @@ import type { AccessAppDecl, AccessRule, AppAccess, AppSchema, IssueKeyInput, Ke
 import { API_KEY_PREFIX, isActionAllowed } from '@propustka/core'
 import type { ResolveOutcome } from '../auth'
 import { resolveRequest } from '../auth'
-import { CfAccessError, type MintedServiceToken, type PolicyInclusion } from '../cfaccess'
+import { CfAccessError } from '../cfaccess'
 import {
 	type AuditEventRow,
 	type AuthLogRow,
@@ -1036,7 +1036,7 @@ export async function deletePolicy(c: AdminContext, app: string, key: string): P
 	return json({ ok: true })
 }
 
-// ── API keys (service tokens) ─────────────────────────────────────────────────
+// ── API keys (native service credentials) ─────────────────────────────────────
 
 export async function listApiKeys(c: AdminContext): Promise<Response> {
 	const principals = await c.services.db.listPrincipals({ type: 'service' })
@@ -1051,7 +1051,6 @@ export async function listApiKeys(c: AdminContext): Promise<Response> {
 		items.push({
 			principalId: principal.id,
 			label: principal.label,
-			clientId: principal.external_id,
 			status: principalStatus(principal),
 			grants: grantDtos,
 			createdAt: principal.created_at,
@@ -1061,13 +1060,13 @@ export async function listApiKeys(c: AdminContext): Promise<Response> {
 }
 
 /**
- * Provision an API key: mint an Access service token, create the IAM principal +
- * grant, return the secret ONCE. No distributed transaction is available, so on a
- * failure after mint we attempt a best-effort rollback (delete the token); if that
- * also fails we write `iam.apikey.orphaned` so the orphan is never left silent.
+ * Provision an API key: create a native service principal + grant and mint a `px_`
+ * credential bound to it — resolved by the propustka-native path (`mintFromKey`), no
+ * Cloudflare Access in front. The plaintext `px_` token is returned ONCE.
  *
- * Service Auth policy inclusion (spec step 6) is option (b): not automated — the
- * response carries `policyInclusion: 'manual'`.
+ * There is no distributed transaction; the writes are local D1 (principal → grant →
+ * credential). A failure partway leaves an orphan principal at worst — harmless (it
+ * holds no live credential) and revocable from this page.
  */
 export async function provisionApiKey(c: AdminContext): Promise<Response> {
 	const body = await readJson(c.request)
@@ -1094,121 +1093,57 @@ export async function provisionApiKey(c: AdminContext): Promise<Response> {
 	if (expiresAt !== null && expiresAt <= nowSeconds) {
 		return error(400, 'expiresAt must be in the future')
 	}
-	// Couple the Access service-token lifetime to the IAM grant expiry so a key never
-	// silently outlives (or is outlived by) its authorization. Cloudflare *requires* a
-	// duration — left unset it defaults to 1 year, which would expire the token out from
-	// under a "never expires" grant. 'forever' is Access's non-expiring sentinel (≈100y);
-	// otherwise we pass the exact remaining seconds so the token tracks the grant.
-	const duration = expiresAt === null ? 'forever' : `${expiresAt - nowSeconds}s`
 
-	const cf = c.services.cfAccess
-
-	// 1. Mint the token in Access. If this fails, nothing was created — clean.
-	let minted: MintedServiceToken
-	try {
-		minted = await cf.createServiceToken(label, duration)
-	} catch (err) {
-		const message = err instanceof CfAccessError ? err.message : 'failed to mint service token'
-		return error(502, message)
-	}
-
-	// 2..5: create IAM principal + grant + audit. On any failure, roll the token back.
-	try {
-		const principal = await c.services.db.createService(minted.clientId, label)
-		const grant = await c.services.db.createGrant({
+	// Create the native service principal (external_id NULL — resolved by its `px_` key, not by a
+	// CF client_id) + its grant, then mint the bound credential. Shown once.
+	const principal = await c.services.db.createService(label)
+	const grant = await c.services.db.createGrant({
+		principalId: principal.id,
+		app,
+		roleKey: roleOrInline.roleKey,
+		permissions: roleOrInline.permissions,
+		scopeType: scope.scopeType,
+		scopeValue: scope.scopeValue,
+		grantedBy: c.admin.id,
+		expiresAt,
+	})
+	const apiKey = `${API_KEY_PREFIX}${generateToken()}`
+	await c.services.db.createCredential({
+		tokenHash: await hashToken(apiKey),
+		label,
+		principalId: principal.id,
+		issuedBy: c.admin.id,
+		expiresAt,
+		grants: [],
+	})
+	await adminAudit(c, {
+		action: 'iam.apikey.create',
+		resourceType: 'principal',
+		resourceId: principal.id,
+		metadata: { label, roleKey: roleOrInline.roleKey, permissions: roleOrInline.permissions, app },
+	})
+	await adminAudit(c, {
+		action: 'iam.grant.create',
+		resourceType: 'grant',
+		resourceId: grant.id,
+		metadata: {
 			principalId: principal.id,
-			app,
 			roleKey: roleOrInline.roleKey,
 			permissions: roleOrInline.permissions,
 			scopeType: scope.scopeType,
 			scopeValue: scope.scopeValue,
-			grantedBy: c.admin.id,
-			expiresAt,
-		})
-		await adminAudit(c, {
-			action: 'iam.apikey.create',
-			resourceType: 'principal',
-			resourceId: principal.id,
-			metadata: { tokenId: minted.id, label, roleKey: roleOrInline.roleKey, permissions: roleOrInline.permissions, app },
-		})
-		await adminAudit(c, {
-			action: 'iam.grant.create',
-			resourceType: 'grant',
-			resourceId: grant.id,
-			metadata: {
-				principalId: principal.id,
-				roleKey: roleOrInline.roleKey,
-				permissions: roleOrInline.permissions,
-				scopeType: scope.scopeType,
-				scopeValue: scope.scopeValue,
-				app,
-			},
-		})
+			app,
+		},
+	})
 
-		// Is the token already admitted at the edge? It is when the target app carries a reconciled
-		// `service-auth` policy ("any valid service token") — then no dashboard step is needed. We
-		// can only tell for an app-scoped key (a cross-app key has no single target app). A read
-		// failure must not fail provisioning — fall back to 'manual'.
-		let policyInclusion: PolicyInclusion = 'manual'
-		if (app !== null) {
-			try {
-				const readback = await readAppAccess(cf, app)
-				if (readback.policies.some((p) => p.kind === 'service-auth')) {
-					policyInclusion = 'automatic'
-				}
-			} catch {
-				// leave 'manual'
-			}
-		}
-
-		// Mint the propustka-NATIVE key too (add-only): a `px_` credential bound to the same service
-		// principal, resolved directly by the propustka-native path (no Access in front). Shown once.
-		const apiKey = `${API_KEY_PREFIX}${generateToken()}`
-		await c.services.db.createCredential({
-			tokenHash: await hashToken(apiKey),
-			label,
-			principalId: principal.id,
-			issuedBy: c.admin.id,
-			expiresAt,
-			grants: [],
-		})
-
-		const response: ProvisionApiKeyResponse = {
-			principalId: principal.id,
-			clientId: minted.clientId,
-			clientSecret: minted.clientSecret,
-			tokenId: minted.id,
-			policyInclusion,
-			apiKey,
-		}
-		return json(response, { status: 201 })
-	} catch (err) {
-		// Best-effort rollback: delete the orphaned Access token. If THAT fails too,
-		// record it for manual cleanup so a minted token never sits without an IAM record.
-		try {
-			await cf.deleteServiceToken(minted.id)
-		} catch {
-			await adminAudit(c, {
-				action: 'iam.apikey.orphaned',
-				resourceType: 'principal',
-				metadata: { tokenId: minted.id, clientId: minted.clientId, label },
-			})
-		}
-		const message = err instanceof Error ? err.message : 'provisioning failed after mint'
-		return error(500, message)
-	}
+	const response: ProvisionApiKeyResponse = { principalId: principal.id, apiKey }
+	return json(response, { status: 201 })
 }
 
 /**
- * Revoke an API key: (1) delete the Access service token, (3) hard-delete grants,
- * (4) soft-disable the principal, (5) write `iam.apikey.revoke`. (Step 2 — removing
- * the token from the Service Auth policy — is the manual counterpart of provisioning
- * step 6; not automated in v1.) Revocation is immediate: service auth has no session,
- * each request is re-evaluated.
- *
- * The Access token id isn't stored on the principal (the schema has no column), so it
- * is resolved from the stored client_id (`external_id`) via the Access API. Token
- * deletion is best-effort — IAM cleanup proceeds even if Access already lost it.
+ * Revoke an API key: hard-delete its grants, soft-disable the service principal, and
+ * revoke its `px_` credentials so they stop minting immediately. Revocation is
+ * effective at once — `mintFromKey` re-resolves the credential on every mint.
  */
 export async function revokeApiKey(c: AdminContext, principalId: string): Promise<Response> {
 	const principal = await c.services.db.getPrincipalById(principalId)
@@ -1216,24 +1151,6 @@ export async function revokeApiKey(c: AdminContext, principalId: string): Promis
 		return error(404, 'service principal not found')
 	}
 
-	// 1. Delete the Access service token (best-effort).
-	let tokenDeleted = false
-	if (principal.external_id !== null) {
-		const cf = c.services.cfAccess
-		try {
-			const tokenId = await cf.findTokenIdByClientId(principal.external_id)
-			if (tokenId) {
-				await cf.deleteServiceToken(tokenId)
-				tokenDeleted = true
-			}
-		} catch {
-			// Surface as metadata; still complete the IAM-side revocation below.
-		}
-	}
-
-	// 3. Hard-delete grants. 4. Soft-disable the principal (keep audit references). Also revoke the
-	// native `px_` credentials so they stop minting immediately (disable already blocks them, but a
-	// revoke is permanent and survives a future re-enable).
 	await c.services.db.deleteGrantsForPrincipal(principalId)
 	await c.services.db.disablePrincipal(principalId)
 	await c.services.db.revokeCredentialsForPrincipal(principalId)
@@ -1241,34 +1158,20 @@ export async function revokeApiKey(c: AdminContext, principalId: string): Promis
 		action: 'iam.apikey.revoke',
 		resourceType: 'principal',
 		resourceId: principalId,
-		metadata: { clientId: principal.external_id, accessTokenDeleted: tokenDeleted },
+		metadata: { label: principal.label },
 	})
-	return json({ ok: true, accessTokenDeleted: tokenDeleted })
+	return json({ ok: true })
 }
 
 /**
- * Rotate an API key's secret: token id and IAM principal unchanged. Resolves the
- * Access token id from the stored client_id, rotates via the Access API, returns the
- * new secret ONCE, writes `iam.apikey.rotate`.
+ * Rotate an API key: principal and grants unchanged. Revoke the principal's old `px_`
+ * credentials and mint a fresh one, returned ONCE. Effective immediately.
  */
 export async function rotateApiKey(c: AdminContext, principalId: string): Promise<Response> {
 	const principal = await c.services.db.getPrincipalById(principalId)
-	if (!principal || principal.type !== 'service' || principal.external_id === null) {
+	if (!principal || principal.type !== 'service') {
 		return error(404, 'service principal not found')
 	}
-	const cf = c.services.cfAccess
-	let rotated: MintedServiceToken
-	try {
-		const tokenId = await cf.findTokenIdByClientId(principal.external_id)
-		if (!tokenId) {
-			return error(404, 'Access service token not found for this principal')
-		}
-		rotated = await cf.rotateServiceToken(tokenId)
-	} catch (err) {
-		const message = err instanceof CfAccessError ? err.message : 'rotation failed'
-		return error(502, message)
-	}
-	// Rotate the native `px_` key in lockstep: revoke the principal's old credentials and mint one.
 	await c.services.db.revokeCredentialsForPrincipal(principalId)
 	const apiKey = `${API_KEY_PREFIX}${generateToken()}`
 	await c.services.db.createCredential({
@@ -1282,15 +1185,9 @@ export async function rotateApiKey(c: AdminContext, principalId: string): Promis
 		action: 'iam.apikey.rotate',
 		resourceType: 'principal',
 		resourceId: principalId,
-		metadata: { tokenId: rotated.id, clientId: rotated.clientId },
+		metadata: { label: principal.label },
 	})
-	const response: RotateApiKeyResponse = {
-		principalId,
-		clientId: rotated.clientId,
-		clientSecret: rotated.clientSecret,
-		tokenId: rotated.id,
-		apiKey,
-	}
+	const response: RotateApiKeyResponse = { principalId, apiKey }
 	return json(response)
 }
 
@@ -1328,7 +1225,7 @@ export async function createShareLink(c: AdminContext): Promise<Response> {
 		...(expiresAt !== undefined ? { expiresAt } : {}),
 	}
 
-	const { result, auditLabel } = await issueKey(c.services, issueInput, c.admin)
+	const { result, auditLabel } = await issueKey(c.services, issueInput, c.admin, c.app)
 	if (!result.ok) {
 		// Admin already gated; the only failure here is the delegation rule.
 		return error(403, `not allowed: ${result.reason}`)

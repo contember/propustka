@@ -1,7 +1,8 @@
 /**
- * Cloudflare Access API client for service-token (API-key) provisioning. The
- * Worker holds a scoped API token (*Access: Service Tokens Edit*) + account id as
- * secrets — admin-only, never exposed to app callers.
+ * Cloudflare Access API client for the edge front door — account-level reusable
+ * policies and the Access apps that reference them (consumed by Access-rules
+ * reconcile). The Worker holds a scoped API token (*Access: Apps and Policies Edit*)
+ * + account id as secrets — admin-only, never exposed to app callers.
  *
  * The Access API wraps responses in `{ success, result, errors }`; we surface the
  * `result` on success and throw a `CfAccessError` carrying the messages otherwise.
@@ -16,13 +17,6 @@ export class CfAccessError extends Error {
 		super(message)
 		this.name = 'CfAccessError'
 	}
-}
-
-/** A freshly minted service token. `clientSecret` is shown by Cloudflare ONCE. */
-export interface MintedServiceToken {
-	id: string
-	clientId: string
-	clientSecret: string
 }
 
 // ── Access apps + reusable policies (the edge front door) ──────────────────────
@@ -84,16 +78,12 @@ export interface CfAppSpec {
 }
 
 /**
- * The Cloudflare Access surface the worker depends on — service tokens (API keys) AND the
- * apps/reusable-policies used by Access-rules reconcile. Modelled as an interface (not just the
- * concrete client) so handlers take it off `Services` and tests inject an in-memory fake — the
- * same "interface, not concrete class" seam the auth surfaces use.
+ * The Cloudflare Access surface the worker depends on — the apps/reusable-policies used by
+ * Access-rules reconcile (the edge front door). Modelled as an interface (not just the concrete
+ * client) so handlers take it off `Services` and tests inject an in-memory fake — the same
+ * "interface, not concrete class" seam the auth surfaces use.
  */
 export interface CfAccess {
-	createServiceToken(name: string, duration?: string): Promise<MintedServiceToken>
-	deleteServiceToken(tokenId: string): Promise<void>
-	findTokenIdByClientId(clientId: string): Promise<string | null>
-	rotateServiceToken(tokenId: string): Promise<MintedServiceToken>
 	listReusablePolicies(): Promise<CfPolicy[]>
 	createReusablePolicy(spec: CfPolicySpec): Promise<CfPolicy>
 	updateReusablePolicy(id: string, spec: CfPolicySpec): Promise<CfPolicy>
@@ -128,17 +118,6 @@ function envelopeErrors(value: CfEnvelope): string[] {
 		}
 	}
 	return out
-}
-
-/** Narrow a service-token result without an `as` cast at the deserialization boundary. */
-function asServiceToken(result: unknown): MintedServiceToken {
-	const id = prop(result, 'id')
-	const clientId = prop(result, 'client_id')
-	const clientSecret = prop(result, 'client_secret')
-	if (typeof id !== 'string' || typeof clientId !== 'string' || typeof clientSecret !== 'string') {
-		throw new CfAccessError('Cloudflare Access API returned an unexpected service-token shape', 502)
-	}
-	return { id, clientId, clientSecret }
 }
 
 /** Narrow a reusable-policy result. `app_count` defaults to 0 when absent. */
@@ -236,70 +215,6 @@ export class CfAccessClient implements CfAccess {
 		return payload.result
 	}
 
-	/**
-	 * Mint a service token. `duration` bounds its life — a Go-style duration (e.g.
-	 * '8760h', '3600s') or the literal 'forever' for a non-expiring token (Access maps
-	 * it to ~100 years). When omitted, Access defaults to 1 year (8760h).
-	 * `client_secret` is returned exactly once — surface it to the caller/UI
-	 * immediately; never persist it.
-	 */
-	async createServiceToken(name: string, duration?: string): Promise<MintedServiceToken> {
-		const result = await this.request(
-			'POST',
-			`/accounts/${this.accountId}/access/service_tokens`,
-			duration === undefined ? { name } : { name, duration },
-		)
-		return asServiceToken(result)
-	}
-
-	/** Delete a service token (revocation / best-effort rollback after a mid-flow failure). */
-	async deleteServiceToken(tokenId: string): Promise<void> {
-		await this.request('DELETE', `/accounts/${this.accountId}/access/service_tokens/${tokenId}`)
-	}
-
-	/**
-	 * Resolve the Access token *id* from a stored `client_id`. The IAM principal
-	 * persists the client_id as `external_id` (the schema has no column for the token
-	 * id), so revoke/rotate look the id up here. Returns null when not found
-	 * (already deleted in Access). The list is paginated; we scan pages until matched.
-	 */
-	async findTokenIdByClientId(clientId: string): Promise<string | null> {
-		let page = 1
-		// Bounded scan — at internal scale there are tens of tokens, a couple of pages.
-		for (; page <= 100; page++) {
-			const result = await this.request(
-				'GET',
-				`/accounts/${this.accountId}/access/service_tokens?per_page=50&page=${page}`,
-			)
-			if (!Array.isArray(result) || result.length === 0) {
-				return null
-			}
-			for (const item of result) {
-				if (prop(item, 'client_id') === clientId) {
-					const id = prop(item, 'id')
-					return typeof id === 'string' ? id : null
-				}
-			}
-			if (result.length < 50) {
-				return null
-			}
-		}
-		return null
-	}
-
-	/**
-	 * Rotate a token's secret — token id and IAM principal unchanged. Returns the
-	 * new `client_secret` once. Plan for rotation from day one so a year-out mass
-	 * expiry doesn't surprise us.
-	 */
-	async rotateServiceToken(tokenId: string): Promise<MintedServiceToken> {
-		const result = await this.request(
-			'POST',
-			`/accounts/${this.accountId}/access/service_tokens/${tokenId}/rotate`,
-		)
-		return asServiceToken(result)
-	}
-
 	// ── Reusable policies (account-level) ───────────────────────────────────────
 
 	/** List every account-level reusable policy (paginated, bounded scan). */
@@ -393,11 +308,3 @@ export class CfAccessClient implements CfAccess {
 		})
 	}
 }
-
-/**
- * Whether a freshly minted service token is already admitted at the Access edge. `'automatic'`
- * once the target app carries a reconciled `service-auth` policy ("any valid service token" — see
- * admin/reconcile-access.ts), so no dashboard step is needed; `'manual'` only for an app that has
- * not yet had its Access rules reconciled (the operator must add the token by hand).
- */
-export type PolicyInclusion = 'automatic' | 'manual'

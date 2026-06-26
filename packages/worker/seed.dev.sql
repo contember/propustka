@@ -42,7 +42,7 @@ INSERT OR IGNORE INTO principals (id, type, external_id, email, label, disabled_
   ('p-alice',         'user',    'sub-alice',       'alice@firma.cz',   'alice@firma.cz',   NULL, unixepoch() - 72000),
   ('p-bob-invited',   'user',    NULL,              'bob@firma.cz',     'bob@firma.cz',     NULL, unixepoch() - 3600),
   ('p-carol',         'user',    'sub-carol',       'carol@firma.cz',   'carol@firma.cz',   unixepoch() - 100, unixepoch() - 50000),
-  ('p-svc-reports',   'service', 'svc-reports-cid', NULL,               'reports-exporter', NULL, unixepoch() - 60000);
+  ('p-svc-reports',   'service', NULL,              NULL,               'reports-exporter', NULL, unixepoch() - 60000);
 
 -- ── Grants ───────────────────────────────────────────────────────────────────
 -- Scope values (scope_value) are OPAQUE app-owned ids — Propustka never interprets

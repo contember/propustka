@@ -1,4 +1,4 @@
-import type { DomainEvent, KeyGrant, PrincipalListItem, PrincipalType, Scope } from '@propustka/core'
+import type { DomainEvent, IssueKeyServiceSpec, KeyGrant, PrincipalListItem, PrincipalType, Scope } from '@propustka/core'
 
 /**
  * The resolved caller's identity — who Access says you are, as the IAM Worker recorded
@@ -6,8 +6,8 @@ import type { DomainEvent, KeyGrant, PrincipalListItem, PrincipalType, Scope } f
  * activity actor, assignee) and render "signed in as …" without a second lookup. It is
  * NOT a permission surface — authorization is still `can()` / `scopedTo()`.
  *  - `id`    — the IAM principal id (UUIDv7); stable, safe to store on domain rows.
- *  - `type`  — 'user' (Access identity login) or 'service' (Access service token).
- *  - `label` — human-readable: the user's email, or the service token's name.
+ *  - `type`  — 'user' (a human identity) or 'service' (a machine principal / API key).
+ *  - `label` — human-readable: the user's email, or the service principal's name.
  */
 export interface PrincipalIdentity {
 	readonly id: string
@@ -68,6 +68,11 @@ export interface IssuedKey {
 	token: string
 	/** The credential id (safe to store/reference; pass to `revokeKey`). */
 	id: string
+	/**
+	 * The principal the key is bound to — the freshly-created service principal (`service` mode) or the
+	 * issuer's own id (self-bind); absent for a standalone (anonymous) share link.
+	 */
+	principalId?: string
 }
 
 /** Successful `issueJwt` — the signed passthrough token returned ONCE (audit-only, not revocable). */
@@ -133,6 +138,12 @@ export interface ListPrincipalsFailure {
  */
 export interface IssueKeyRequest {
 	/**
+	 * Create a NEW machine (service) principal and bind the key to it — the folded service-token
+	 * path. The issuer must hold every `permissions` action on `scope`. When set, `principalId` /
+	 * `permissions` (the bind / standalone modes) are ignored.
+	 */
+	service?: IssueKeyServiceSpec
+	/**
 	 * Bind to a principal (the credential then carries that principal's LIVE perms; inline
 	 * `permissions` downscope it). v1: only the issuer's OWN id. Omit for a standalone share link.
 	 */
@@ -154,68 +165,4 @@ export interface IssueJwtRequest {
 	label?: string
 	/** Requested lifetime (seconds); capped by the server. Defaults to the standard token TTL. */
 	ttl?: number
-}
-
-/**
- * App-supplied portion of `issueServiceToken`. The SDK fills `app` and the issuer's forwarded
- * credentials from the request — app code can never self-assert the issuer. `permissions` are
- * inline action patterns granted to the new service principal on `scope` (the delegation check
- * requires the issuer to itself hold each there).
- */
-export interface IssueServiceTokenRequest {
-	label: string
-	permissions: string[]
-	scope?: Scope | null
-	expiresAt?: number
-}
-
-/** Successful `issueServiceToken` — the `clientSecret` + native `apiKey` are returned ONCE. */
-export interface IssuedServiceToken {
-	readonly ok: true
-	/** Access service token client id (stable; carried by the machine as `CF-Access-Client-Id`). */
-	clientId: string
-	/** Plaintext secret — show once, never persist. */
-	clientSecret: string
-	/** The propustka-native API key (`px_…`) bound to the same principal — show once, never persist. */
-	apiKey: string
-	/** The IAM service principal id — the durable handle for revoke/rotate. */
-	principalId: string
-	/** The Access service token id. */
-	tokenId: string
-}
-
-/** `issueServiceToken` failure. missing/invalid → 401; provisioning_failed → 502; rest → 403. */
-export interface IssueServiceTokenFailure {
-	readonly ok: false
-	reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'provisioning_failed'
-	status: 401 | 403 | 502
-}
-
-/** Successful `revokeServiceToken`. `revoked` is false when the principal was already disabled. */
-export interface RevokedServiceToken {
-	readonly ok: true
-	revoked: boolean
-}
-
-/** `revokeServiceToken` failure. missing/invalid → 401; not_found → 404; rest → 403. */
-export interface RevokeServiceTokenFailure {
-	readonly ok: false
-	reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'not_found'
-	status: 401 | 403 | 404
-}
-
-/** Successful `rotateServiceToken` — new `clientSecret` + native `apiKey` ONCE; the client_id is unchanged. */
-export interface RotatedServiceToken {
-	readonly ok: true
-	clientId: string
-	clientSecret: string
-	apiKey: string
-	tokenId: string
-}
-
-/** `rotateServiceToken` failure. missing/invalid → 401; not_found → 404; provisioning_failed → 502; rest → 403. */
-export interface RotateServiceTokenFailure {
-	readonly ok: false
-	reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'not_found' | 'provisioning_failed'
-	status: 401 | 403 | 404 | 502
 }

@@ -7,8 +7,6 @@ import type {
 	IssueJwtResult,
 	IssueKeyInput,
 	IssueKeyResult,
-	IssueServiceTokenInput,
-	IssueServiceTokenResult,
 	Jwks,
 	ListPrincipalsInput,
 	ListPrincipalsResult,
@@ -18,10 +16,6 @@ import type {
 	MintTokenResult,
 	RevokeKeyInput,
 	RevokeKeyResult,
-	RevokeServiceTokenInput,
-	RevokeServiceTokenResult,
-	RotateServiceTokenInput,
-	RotateServiceTokenResult,
 } from '@propustka/core'
 
 /**
@@ -32,9 +26,6 @@ export class IamRpcStub implements IamRpc {
 	readonly auditCalls: AuditInput[] = []
 	readonly authenticateInputs: AuthenticateInput[] = []
 	readonly revokeKeyInputs: RevokeKeyInput[] = []
-	readonly issueServiceInputs: IssueServiceTokenInput[] = []
-	readonly revokeServiceInputs: RevokeServiceTokenInput[] = []
-	readonly rotateServiceInputs: RotateServiceTokenInput[] = []
 	readonly listPrincipalsInputs: ListPrincipalsInput[] = []
 	readonly mintTokenInputs: MintTokenInput[] = []
 	readonly mintFromKeyInputs: MintFromKeyInput[] = []
@@ -45,9 +36,6 @@ export class IamRpcStub implements IamRpc {
 		private readonly canned: {
 			authenticate?: AuthenticateResult
 			revokeKey?: RevokeKeyResult
-			issueService?: IssueServiceTokenResult
-			revokeService?: RevokeServiceTokenResult
-			rotateService?: RotateServiceTokenResult
 			listPrincipals?: ListPrincipalsResult
 			mintToken?: MintTokenResult
 			mintFromKey?: MintFromKeyResult
@@ -104,27 +92,6 @@ export class IamRpcStub implements IamRpc {
 		this.revokeKeyInputs.push(input)
 		return Promise.resolve(
 			this.canned.revokeKey ?? { ok: false, reason: 'not_found' },
-		)
-	}
-
-	issueServiceToken(input: IssueServiceTokenInput): Promise<IssueServiceTokenResult> {
-		this.issueServiceInputs.push(input)
-		return Promise.resolve(
-			this.canned.issueService ?? { ok: false, reason: 'not_allowed' },
-		)
-	}
-
-	revokeServiceToken(input: RevokeServiceTokenInput): Promise<RevokeServiceTokenResult> {
-		this.revokeServiceInputs.push(input)
-		return Promise.resolve(
-			this.canned.revokeService ?? { ok: false, reason: 'not_found' },
-		)
-	}
-
-	rotateServiceToken(input: RotateServiceTokenInput): Promise<RotateServiceTokenResult> {
-		this.rotateServiceInputs.push(input)
-		return Promise.resolve(
-			this.canned.rotateService ?? { ok: false, reason: 'not_found' },
 		)
 	}
 }

@@ -56,6 +56,19 @@ export interface KeyGrant {
 	scope?: Scope | null
 }
 
+/**
+ * Create a NEW service (machine) principal and bind the key to it — the folded `issueServiceToken`.
+ * The issuer must hold every `permissions` action on `scope` (the same delegation rule as a grant).
+ */
+export interface IssueKeyServiceSpec {
+	/** Display label for the new service principal + the credential. */
+	label: string
+	/** Inline action patterns granted to the new service principal; delegation-checked on `scope`. */
+	permissions: string[]
+	/** Scope the grant + the delegation check apply to; omitted/null → global. */
+	scope?: Scope | null
+}
+
 export interface IssueKeyInput {
 	app: string
 	/** The ISSUER's Access JWT — issuer is resolved server-side, never self-asserted. */
@@ -63,6 +76,11 @@ export interface IssueKeyInput {
 	cookie: string | null
 	origin: string | null
 	requestId: string
+	/**
+	 * Create a NEW machine principal and bind the key to it (the folded `issueServiceToken`). When set,
+	 * `principalId` / `permissions` (the bind / standalone modes) are ignored.
+	 */
+	service?: IssueKeyServiceSpec
 	/**
 	 * Bind to a principal (the credential then carries that principal's LIVE perms; inline
 	 * `permissions` downscope it). v1: only the issuer's OWN id. Omit for a standalone credential.
@@ -76,8 +94,12 @@ export interface IssueKeyInput {
 }
 
 export type IssueKeyResult =
-	/** Plaintext `px_` token returned ONCE; `id` is the credential's stable handle (revoke). */
-	| { ok: true; token: string; id: string }
+	/**
+	 * Plaintext `px_` token returned ONCE; `id` is the credential's stable handle (revoke). `principalId`
+	 * is present when the key is bound to a principal (a `service` create or a self-bind), absent for a
+	 * standalone (anonymous) credential.
+	 */
+	| { ok: true; token: string; id: string; principalId?: string }
 	| { ok: false; reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' }
 
 export interface IssueJwtInput {
@@ -156,79 +178,6 @@ export type RevokeKeyResult =
 	/** `revoked` is false when the credential was already revoked (idempotent). */
 	| { ok: true; revoked: boolean }
 	| { ok: false; reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'not_found' }
-
-// ── Service tokens (machine principals) ────────────────────────────────────────
-//
-// A service token is a Cloudflare Access service token (client_id + client_secret) backed
-// by a propustka SERVICE principal carrying real grants — so a machine caller is authorized
-// through `can()`/`scopedTo()` exactly like a user, not as an anonymous share link. Issuing
-// one mints the Access token (account API) AND creates the principal + grant, so it is a
-// privileged op exposed over the binding as a DELEGATED call: the issuer is resolved from the
-// forwarded Access JWT and may only grant what it itself holds (the same delegation rule as
-// `issueKey`). The plaintext `clientSecret` is returned ONCE. The minted token works at
-// the edge only on an Access app whose Service Auth policy accepts it (e.g. "Any Access Service
-// Token"); per-resource authorization is the propustka grant, never the edge.
-
-export interface IssueServiceTokenInput {
-	app: string
-	/** The ISSUER's Access JWT — issuer is resolved server-side, never self-asserted. */
-	token: string | null
-	/** Issuer's CF_Authorization cookie (group-derived permissions count toward delegation too). */
-	cookie: string | null
-	origin: string | null
-	requestId: string
-	/** Display name in Access + the IAM principal label. */
-	label: string
-	/**
-	 * Inline action patterns granted to the new service principal (the binding path is
-	 * inline-only; named roles stay an admin-HTTP concern). Each is delegation-checked against
-	 * the issuer on `scope` — the issuer must itself hold every action there.
-	 */
-	permissions: string[]
-	/** Scope the grant + the delegation check apply to; omitted/null → global. */
-	scope?: Scope | null
-	/** Optional grant expiry (unix seconds). */
-	expiresAt?: number
-}
-
-export type IssueServiceTokenResult =
-	/**
-	 * Plaintext `clientSecret` (CF Access) + `apiKey` (the propustka-native `px_` credential bound to
-	 * the same principal) returned ONCE; `principalId` is the stable IAM handle for revoke/rotate.
-	 */
-	| { ok: true; principalId: string; clientId: string; clientSecret: string; tokenId: string; apiKey: string }
-	| { ok: false; reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'provisioning_failed' }
-
-export interface RevokeServiceTokenInput {
-	app: string
-	/** The CALLER's Access JWT — the authorizer is resolved server-side, never self-asserted. */
-	token: string | null
-	cookie: string | null
-	origin: string | null
-	requestId: string
-	/** The service PRINCIPAL id (the `principalId` from issueServiceToken), NOT the client_id. */
-	principalId: string
-}
-
-export type RevokeServiceTokenResult =
-	/** `revoked` is false when the principal was already disabled (idempotent). */
-	| { ok: true; revoked: boolean }
-	| { ok: false; reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'not_found' }
-
-export interface RotateServiceTokenInput {
-	app: string
-	token: string | null
-	cookie: string | null
-	origin: string | null
-	requestId: string
-	/** The service PRINCIPAL id whose secret to rotate; the principal + its grants are unchanged. */
-	principalId: string
-}
-
-export type RotateServiceTokenResult =
-	/** New plaintext `clientSecret` + new native `apiKey` returned ONCE; the client_id is unchanged. */
-	| { ok: true; clientId: string; clientSecret: string; tokenId: string; apiKey: string }
-	| { ok: false; reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'not_found' | 'provisioning_failed' }
 
 // ── List principals (the app's people directory) ───────────────────────────────
 //
@@ -323,25 +272,4 @@ export interface IamRpc {
 	 * `{ ok: true, revoked: false }`. An unknown id returns `{ ok: false, reason: 'not_found' }`.
 	 */
 	revokeKey(input: RevokeKeyInput): Promise<RevokeKeyResult>
-	/**
-	 * Mint a Cloudflare Access service token and back it with a SERVICE principal carrying the
-	 * requested grant. Delegated like `issueKey`: the issuer is resolved from the forwarded
-	 * Access JWT and may only grant actions it itself holds on `scope` (else `not_allowed`). The
-	 * Access token is minted via the account API, the principal + grant created, and the plaintext
-	 * `clientSecret` returned ONCE; a CF API failure reports `provisioning_failed` and rolls the
-	 * Access token back. `principalId` is the durable handle for revoke/rotate.
-	 */
-	issueServiceToken(input: IssueServiceTokenInput): Promise<IssueServiceTokenResult>
-	/**
-	 * Revoke a service token by its principal id: delete the Access token, drop the principal's
-	 * grants, and disable the principal. The caller is resolved from the forwarded credentials and
-	 * authorized like a capability revoke — it must be able to (re-)issue the principal's grants
-	 * (hold every granted action on its scope). Idempotent; an unknown principal → `not_found`.
-	 */
-	revokeServiceToken(input: RevokeServiceTokenInput): Promise<RevokeServiceTokenResult>
-	/**
-	 * Rotate a service token's secret (principal id, client_id and grants unchanged), returning the
-	 * new `clientSecret` ONCE. Same caller authorization as `revokeServiceToken`.
-	 */
-	rotateServiceToken(input: RotateServiceTokenInput): Promise<RotateServiceTokenResult>
 }
