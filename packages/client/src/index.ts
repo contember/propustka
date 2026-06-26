@@ -11,7 +11,7 @@ export { applyScope } from './scope'
 // minting a fresh one from the SSO session when needed. The middleware an app puts in front of its
 // request handler instead of the Cloudflare-Access-fronted `IamClient.authenticate` path.
 export { PropustkaAuth } from './session'
-export type { SessionAuthConfig, SessionAuthResult } from './session'
+export type { CredentialLocation, SessionAuthConfig, SessionAuthResult } from './session'
 // Deploy-time helpers: reconcile an app's declared AppSchema (authz vocabulary) and AppAccess
 // (Cloudflare Access edge rules) into Propustka (HTTP admin calls, NOT over the service binding).
 // Import from a deploy/provisioning step, never request handling.

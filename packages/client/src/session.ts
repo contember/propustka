@@ -30,11 +30,32 @@ import { createLocalJWKSet, errors as joseErrors, jwtVerify } from 'jose'
 import { buildAuthContext } from './client'
 import type { AuthContext } from './types'
 
+/**
+ * A declared place a propustka credential (a `px_` key or a passthrough JWT) may ride, beyond the
+ * defaults (`Authorization: Bearer` + the `px_*` cookies). The SDK extracts the raw token from this
+ * location and resolves it like a bearer. This is the SDK side of the per-path rule schema — e.g.
+ * opice declaring its ingest token rides in `X-Opice-Token` for `/api/v1/*`.
+ */
+export interface CredentialLocation {
+	/** Where the credential rides. */
+	in: 'header' | 'query' | 'cookie'
+	/** The header / query-param / cookie name carrying the credential. */
+	name: string
+	/** Optional path glob (`*` matches any chars, e.g. `/api/v1/*`); when set, only matching requests use it. */
+	path?: string
+}
+
 export interface SessionAuthConfig {
 	/** propustka's origin — verifies the token `iss` and is the base for the `/auth/login` redirect. */
 	issuer: string
 	/** Force the `px_token` cookie's `Secure` flag; default = derived from the request URL scheme. */
 	secure?: boolean
+	/**
+	 * Extra, app-declared places a credential may ride (a header / query param / named cookie), tried
+	 * BEFORE the default `Authorization: Bearer` + `px_*` cookies. For machine callers that carry the
+	 * credential in a custom header or query param per path.
+	 */
+	credentials?: CredentialLocation[]
 }
 
 /**
@@ -64,10 +85,10 @@ export class PropustkaAuth {
 		const now = Math.floor(Date.now() / 1000)
 		const requestId = request.headers.get('cf-ray') ?? crypto.randomUUID()
 
-		// 0. Machine path — `Authorization: Bearer …` takes precedence over cookies (machines don't
-		// carry a browser cookie jar). An opaque `px_` credential is exchanged once and cached; an
-		// already-signed access token (a passthrough JWT) is verified locally with no binding call.
-		const bearer = readBearer(request.headers.get('Authorization'))
+		// 0. Machine path — a credential in a declared custom location, else `Authorization: Bearer …`,
+		// takes precedence over cookies (machines don't carry a browser cookie jar). An opaque `px_`
+		// credential is exchanged once and cached; an already-signed passthrough JWT is verified locally.
+		const bearer = this.readConfiguredCredential(request) ?? readBearer(request.headers.get('Authorization'))
 		if (bearer !== null) {
 			return this.authenticateBearer(bearer, request, requestId, now)
 		}
@@ -135,6 +156,25 @@ export class PropustkaAuth {
 			return { ok: false, reason: 'invalid_key', loginUrl: this.loginUrl(request) }
 		}
 		return { ok: true, context: this.context(claims, requestId) }
+	}
+
+	/** The raw credential from the first matching declared location, or null if none applies/carries one. */
+	private readConfiguredCredential(request: Request): string | null {
+		const sources = this.config.credentials
+		if (sources === undefined || sources.length === 0) {
+			return null
+		}
+		const url = new URL(request.url)
+		for (const source of sources) {
+			if (source.path !== undefined && !pathMatches(source.path, url.pathname)) {
+				continue
+			}
+			const raw = extractCredential(request, url, source)
+			if (raw !== null && raw !== '') {
+				return raw
+			}
+		}
+		return null
 	}
 
 	/** Where to send the browser to log in, returning to the current URL afterwards. */
@@ -217,6 +257,28 @@ function readBearer(header: string | null): string | null {
 	}
 	const match = /^Bearer\s+(.+)$/i.exec(header.trim())
 	return match ? (match[1]?.trim() ?? null) : null
+}
+
+/** Pull the raw credential from a declared location. A header value may be bare or `Bearer <token>`. */
+function extractCredential(request: Request, url: URL, source: CredentialLocation): string | null {
+	if (source.in === 'header') {
+		const value = request.headers.get(source.name)
+		return value === null ? null : (readBearer(value) ?? value.trim())
+	}
+	if (source.in === 'query') {
+		return url.searchParams.get(source.name)
+	}
+	return readCookie(request.headers.get('Cookie'), source.name)
+}
+
+/** Glob match where `*` matches any run of characters; the rest is literal. Anchored. */
+function pathMatches(pattern: string, pathname: string): boolean {
+	const regex = new RegExp(`^${pattern.split('*').map(escapeRegExp).join('.*')}$`)
+	return regex.test(pathname)
+}
+
+function escapeRegExp(literal: string): string {
+	return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 /** Build the host-only `px_token` cookie carrying a freshly minted permission token. */

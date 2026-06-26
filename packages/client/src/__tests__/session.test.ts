@@ -1,7 +1,7 @@
 import { buildAccessClaims, type Jwks, type PermissionEntry } from '@propustka/core'
 import { describe, expect, test } from 'bun:test'
 import { exportJWK, generateKeyPair, type KeyLike, SignJWT } from 'jose'
-import { PropustkaAuth } from '../session'
+import { type CredentialLocation, PropustkaAuth } from '../session'
 import { IamRpcStub } from './stub'
 
 const ISSUER = 'https://propustka.test'
@@ -31,6 +31,12 @@ async function signToken(key: KeyLike, ttlSeconds: number): Promise<string> {
 function auth(binding: IamRpcStub): PropustkaAuth {
 	return new PropustkaAuth(binding, APP, { issuer: ISSUER })
 }
+
+function authWith(binding: IamRpcStub, credentials: CredentialLocation[]): PropustkaAuth {
+	return new PropustkaAuth(binding, APP, { issuer: ISSUER, credentials })
+}
+
+const future = () => Math.floor(Date.now() / 1000) + 300
 
 function request(cookie?: string): Request {
 	const headers = new Headers()
@@ -181,5 +187,51 @@ describe('PropustkaAuth — bearer (machine)', () => {
 		expect(result.ok).toBe(false)
 		expect(binding.mintFromKeyInputs).toHaveLength(0)
 		expect(binding.mintTokenInputs).toHaveLength(0)
+	})
+})
+
+describe('PropustkaAuth — configured credential locations', () => {
+	test('a px_ key in a declared header (path-matched) is resolved', async () => {
+		const token = await signToken(privateKey, 300)
+		const binding = new IamRpcStub({ jwks: JWKS, mintFromKey: { ok: true, token, expiresAt: future() } })
+		const a = authWith(binding, [{ in: 'header', name: 'x-opice-token', path: '/api/v1/*' }])
+
+		const result = await a.authenticate(new Request('https://app.example.com/api/v1/ingest', { headers: { 'x-opice-token': 'px_ci' } }))
+		expect(result.ok).toBe(true)
+		expect(binding.mintFromKeyInputs[0]?.key).toBe('px_ci')
+	})
+
+	test('the location only applies on a matching path', async () => {
+		const binding = new IamRpcStub({ jwks: JWKS }) // mintToken → no_session, mintFromKey → invalid_key
+		const a = authWith(binding, [{ in: 'header', name: 'x-opice-token', path: '/api/v1/*' }])
+
+		// Header present, but the path does not match → the location is skipped (falls to the session path).
+		const result = await a.authenticate(new Request('https://app.example.com/other', { headers: { 'x-opice-token': 'px_ci' } }))
+		expect(result.ok).toBe(false)
+		expect(binding.mintFromKeyInputs).toHaveLength(0)
+	})
+
+	test('a passthrough JWT in a declared query param verifies locally', async () => {
+		const token = await signAnon(privateKey, 3600)
+		const binding = new IamRpcStub({ jwks: JWKS })
+		const a = authWith(binding, [{ in: 'query', name: 'pxt' }])
+
+		const result = await a.authenticate(new Request(`https://app.example.com/x?pxt=${token}`))
+		expect(result.ok).toBe(true)
+		if (!result.ok) {
+			throw new Error('expected ok')
+		}
+		expect(result.context.principal).toBeNull()
+		expect(binding.mintFromKeyInputs).toHaveLength(0)
+	})
+
+	test('a header value may carry a Bearer prefix', async () => {
+		const token = await signToken(privateKey, 300)
+		const binding = new IamRpcStub({ jwks: JWKS, mintFromKey: { ok: true, token, expiresAt: future() } })
+		const a = authWith(binding, [{ in: 'header', name: 'x-token' }])
+
+		const result = await a.authenticate(new Request('https://app.example.com/x', { headers: { 'x-token': 'Bearer px_ci2' } }))
+		expect(result.ok).toBe(true)
+		expect(binding.mintFromKeyInputs[0]?.key).toBe('px_ci2')
 	})
 })
