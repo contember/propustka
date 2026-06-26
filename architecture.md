@@ -1,9 +1,9 @@
 # Propustka — Architecture
 
-Ties together the two specs into a buildable whole:
+Ties the design into a buildable whole:
 
-- `iam-service-spec.md` — the IAM Worker (RPC, D1 model, capabilities, provisioning).
-- `admin-ui-spec.md` — the admin SPA.
+- `propustka-native-spec.md` — the current design of record: propustka-native auth (any-OIDC SSO,
+  the unified credential primitive, per-app tokens) that absorbs Cloudflare Access's job.
 - **this doc** — repository layout, package graph, the Worker's internal module structure,
   provisioning with **oblaka**, local dev with **lopata**, environments, and the build/deploy
   pipeline.
@@ -25,11 +25,11 @@ browser (admin) ──▶ Access (admin-only policy) ──▶ Propustka Worker 
                                                      │  • cron: prune auth_log
                                                      │  • RPC (WorkerEntrypoint):
 app worker ───────────── env.IAM (ServiceReference) ─┤      authenticate / audit
-  (behind its own Access)                            │      redeemCapability / issueCapability
+  (behind its own Access)                            │      mintToken / mintFromKey / issueKey
                                                      │
 browser (end user) ──▶ Access (app policy) ──▶ App Worker ──┘
                                                      │
-browser (anon, share link) ──▶ [Bypass path on App Worker] ─┘  (App calls iam.redeemCapability)
+browser (anon, share link px_) ──▶ App Worker SDK ──┘   (SDK resolves the px_ key via iam.mintFromKey)
                        └───────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -40,9 +40,10 @@ Key boundary facts:
   Worker can be fully behind Access (admin policy) for HTTP yet still serve RPC to apps.
 - **The IAM Worker's only HTTP surface is the admin** (SPA + `/admin/*`), behind Access +
   an in-Worker `can('iam.admin')` re-check. It exposes **no public HTTP**.
-- **Capability redeem is RPC, not an IAM HTTP route.** The public Bypass path lives on the
-  _app_ Worker (e.g. `reports.firma.cz/r/<token>`); the app calls `iam.redeemCapability()`
-  over the binding. The IAM Worker never needs a public, Access-free path.
+- **Share-link resolution is RPC, not an IAM HTTP route.** A share link is an anonymous `px_`
+  credential riding in a URL path/header (e.g. `reports.firma.cz/r/<px_token>`); the app's SDK
+  resolves it via `iam.mintFromKey()` over the binding. The IAM Worker never needs a public,
+  Access-free path.
 - **`can()` / `scopedTo()` run in the app**, in `@propustka/client`, over the permissions
   array returned by one `authenticate()` RPC. No per-check round-trip.
 
@@ -92,8 +93,8 @@ The deliberately small shared package — only things that **must not drift** be
 Worker and the SDK:
 
 - **Permission matcher** — wildcard matching (`*`, `prefix.*`) used by both `can()` in the SDK
-  _and_ the `issueCapability()` delegation check in the Worker (core spec: "Wildcard matching
-  happens in TypeScript, not SQL"). One implementation, one set of tests. Alongside it,
+  _and_ the `issueKey()` delegation check in the Worker (wildcard matching happens in TypeScript,
+  not SQL). One implementation, one set of tests. Alongside it,
   `isActionAllowed(pattern, catalog)` — the action-catalog validator the Worker uses to keep
   inline-grant and policy patterns inside an app's declared action set.
 - **Shared types** — `DomainEvent`; the `permissions[]` entry shape (`{action, scope, source}`,
@@ -101,7 +102,7 @@ Worker and the SDK:
   `Scope` type; the `RoleDef`/`RoleSource` interfaces; the **app-vocabulary types**
   (`AppSchema` = `{ scopes, actions, roles }`, with `AppScopeDef` / `AppActionDef`) an app
   declares in code and reconciles in; failure-reason unions; and the **`IamRpc` interface** —
-  the four RPC method signatures (`authenticate`/`audit`/`redeemCapability`/`issueCapability`)
+  the RPC method signatures (`authenticate`/`audit`/`mintToken`/`mintFromKey`/`issueKey`/…)
   the Worker `implements` and the SDK consumes. Putting the contract here is what lets the SDK
   type `env.IAM` as `Service<IamRpc>` **without depending on the Worker**.
 - **`uuidv7()`** — all self-owned ids are UUIDv7 (hard requirement). Implemented **inline, no
@@ -124,8 +125,8 @@ export class Propustka extends WorkerEntrypoint<Env> {
   // ── RPC (called by app workers: env.IAM.authenticate(...)) ──
   authenticate(input)      { /* ... */ }
   audit(event)             { /* ... */ }
-  redeemCapability(input)  { /* ... */ }
-  issueCapability(input)   { /* ... */ }
+  mintFromKey(input)       { /* ... */ }
+  issueKey(input)          { /* ... */ }
 
   // ── HTTP (admin SPA + /admin/*, behind Access) ──
   override fetch(req: Request) { return this.router.handle(req) }
@@ -148,17 +149,19 @@ packages/worker/
     index.ts                 # WorkerEntrypoint: RPC methods + fetch + scheduled
     env.ts                   # Env interface — single source of truth for bindings/secrets
     services.ts              # buildServices(env): wires db, jwt, identity, cf-api (opice pattern)
-    db.ts                    # D1 data access (principals, grants, audit, capabilities, ...)
+    db.ts                    # D1 data access (principals, grants, audit, credentials, sessions, ...)
     roles.ts                 # built-in cross-app `admin=['*']` + RoleSource over the app's DB roles
     resolve.ts               # permission resolution: grants (role or inline) ∪ groups ∪ bootstrap, dedupe
     jwt.ts                   # jose JWKS validate; aud → app via ACCESS_APPS
     identity.ts              # get-identity fetch + group→role mapping (users only)
     cache.ts                 # per-isolate group-membership cache (used by identity.ts), short TTL, fail-open
-    capabilities.ts          # redeem (atomic UPDATE…RETURNING) + issue (delegation rule)
+    secret.ts                # opaque-secret helpers (generateToken / hashToken) for stored credentials
+    tokens.ts                # mintToken (session) + mintFromKey (px_ key) → signed access token
+    issue.ts                 # issueKey / issueJwt / revokeKey (the unified credential primitive)
     cfaccess.ts              # Cloudflare Access API client (service-token provisioning)
     admin/
       router.ts              # /admin/* REST; admin gate (can('iam.admin'))
-      handlers.ts            # principals/grants/group-mappings/api-keys/capabilities/
+      handlers.ts            # principals/grants/group-mappings/api-keys/share-links/
                              #   apps (schema reconcile + custom policies)/audit/auth-log
 ```
 
@@ -169,9 +172,9 @@ opice dashboard pattern (`import type` from the worker, end-to-end typed, no cod
 
 ### `@propustka/client` — the app SDK (published)
 
-A **normal runtime package** — real classes (`IamClient`, `AuthContext`, `Capability`) and
-functions (`applyScope`, `FakeIamClient`), fully defined in the core spec's "Client SDK"
-section. Framework-agnostic, runs inside app Workers; **the only package published to npm**.
+A **normal runtime package** — real classes (`IamClient`, `AuthContext`, `PropustkaAuth`) and
+functions (`applyScope`, `FakeIamClient`). Framework-agnostic, runs inside app Workers; **the
+only package published to npm**.
 
 Depends **only on `@propustka/core`** (a normal runtime dependency: the matcher powers
 `can()`/`scopedTo()`; `IamRpc`/`DomainEvent`/permission types come from there). It does **not**
@@ -183,13 +186,12 @@ the binding.
 
 ### `@propustka/admin-ui` — the admin SPA
 
-buzola SPA per `admin-ui-spec.md`. Built with Vite to `dist/`, which the Worker serves via its
-`ASSETS` binding. Imports the Worker's admin-API types type-only so requests/responses are
-typed end to end. Detailed page/IA design lives in its own spec; this doc only places it in the
-build graph.
+buzola SPA. Built with Vite to `dist/`, which the Worker serves via its `ASSETS` binding.
+Imports the Worker's admin-API types type-only so requests/responses are typed end to end. This
+doc places it in the build graph; the live pages are under `packages/admin-ui/src/routes/`.
 
-Decided stack (see `admin-ui-spec.md` → Resolved decisions): **SPA served at the Worker root
-`/`** while the **JSON API stays at `/admin/*`** (core-spec paths verbatim — `run_worker_first`
+Decided stack: **SPA served at the Worker root `/`** while the **JSON API stays at `/admin/*`**
+(`run_worker_first`
 routes `/admin/*` to the API handlers, everything else falls through to the SPA assets);
 **data via buzola loaders** (no react-query); **minimal hand-rolled UI** (no component kit).
 

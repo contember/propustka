@@ -4,8 +4,8 @@ How propustka stops _riding on_ Cloudflare Access and becomes the auth layer its
 (any OIDC provider), its own credentials, its own per-app tokens — so apps no longer depend on CF
 Access and we no longer pay for / sync with CF Access Teams.
 
-This document is the design of record for the `feat/propustka-native-auth` work. It complements
-`iam-service-spec.md` (authz) and `admin-ui-spec.md` (admin).
+This document is the design of record for the `feat/propustka-native-auth` work. See
+`architecture.md` for the repository layout, package graph, provisioning, and the deploy pipeline.
 
 ## Why
 

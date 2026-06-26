@@ -72,9 +72,9 @@ later follow-up.
   `PROPUSTKA_OIDC_CLIENT_SECRET` (`wrangler secret put` remote / `.dev.vars` local, like CF_API_TOKEN).
 - **Read `propustka-native-spec.md` before touching this** — it has the unified model (stateful key
   vs passthrough JWT), what's built, and the follow-ups (repoint service tokens, the per-path rule
-  schema, CF Access removal, Access bypass for `/auth/*`). NOTE: the older system specs
-  (`iam-service-spec.md`, `architecture.md`, `admin-ui-spec.md`) still describe the pre-fold
-  capability-token model and have not been rewritten.
+  schema, CF Access removal, Access bypass for `/auth/*`). The current design docs are just
+  `propustka-native-spec.md` (auth model) + `architecture.md` (layout/provisioning/deploy); the
+  superseded `iam-service-spec.md` / `admin-ui-spec.md` were deleted in the capability fold.
 
 npm releases (`@propustka/core`, `@propustka/client`) publish on a `v*` tag via `release.yml`
 (OIDC trusted publishing — no npm token).
