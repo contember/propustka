@@ -54,7 +54,7 @@ export default createPage()
 				<div className="page-head">
 					<h1>Audit — auth log</h1>
 					<p className="hint">
-						Outcomes of <code>authenticate()</code> / <code>redeemCapability()</code>. This is where you debug "login looks broken" — e.g.{' '}
+						Outcomes of <code>authenticate()</code> / <code>mintFromKey()</code>. This is where you debug "login looks broken" — e.g.{' '}
 						<code>aud_not_configured</code> or <code>groups_unavailable</code>.
 					</p>
 				</div>
@@ -70,7 +70,7 @@ export default createPage()
 							<th>When</th>
 							<th>App</th>
 							<th>Kind</th>
-							<th>Principal / capability</th>
+							<th>Principal / credential</th>
 							<th>Decision</th>
 							<th>Reason</th>
 						</tr>
@@ -82,10 +82,10 @@ export default createPage()
 							<td>{row.app}</td>
 							<td>{row.kind}</td>
 							<td>
-								{row.capabilityTokenId
+								{row.credentialId
 									? (
-										<span title={row.capabilityTokenId}>
-											capability <code className="small">{row.capabilityTokenId}</code>
+										<span title={row.credentialId}>
+											credential <code className="small">{row.credentialId}</code>
 										</span>
 									)
 									: row.principalId

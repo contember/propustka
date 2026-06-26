@@ -30,14 +30,17 @@ test('creates every table the worker reads/writes (and retires projects)', () =>
 			'group_role_mappings',
 			'audit_events',
 			'auth_log',
-			'capability_tokens',
-			'capability_grants',
+			'credentials',
+			'credential_grants',
 		]
 	) {
 		expect(names).toContain(t)
 	}
 	// `projects` is gone — scope values are app-owned now, not a Propustka table.
 	expect(names).not.toContain('projects')
+	// `capability_tokens` is folded into `credentials` (0006).
+	expect(names).not.toContain('capability_tokens')
+	expect(names).not.toContain('capability_grants')
 })
 
 test('roles.permissions rejects non-JSON via the json_valid CHECK', () => {
@@ -155,44 +158,38 @@ test('at most one user principal per email (invite target uniqueness)', () => {
 	expect(() => db.run("INSERT INTO principals (id, type, external_id, email, label) VALUES ('p2', 'user', NULL, 'dup@x.cz', 'dup@x.cz')")).toThrow()
 })
 
-test('atomic redeem UPDATE…RETURNING increments used_count and returns the token', () => {
+test('a credential allows a NULL principal_id (anonymous share link) and a bound one', () => {
 	const db = freshDb()
-	db.run(
-		"INSERT INTO capability_tokens (id, token_hash, label, max_uses, used_count) VALUES ('t1', 'hash1', 'Share Q2', 3, 0)",
-	)
-	const redeem = db.query<{ id: string; label: string | null }, [string]>(
-		`UPDATE capability_tokens SET used_count = used_count + 1
-		 WHERE token_hash = ?
-		   AND revoked_at IS NULL
-		   AND (expires_at IS NULL OR expires_at > unixepoch())
-		   AND (max_uses IS NULL OR used_count < max_uses)
-		 RETURNING id, label`,
-	)
-	const first = redeem.get('hash1')
-	expect(first?.id).toBe('t1')
-	const after = db.query<{ used_count: number }, [string]>('SELECT used_count FROM capability_tokens WHERE id = ?').get('t1')
-	expect(after?.used_count).toBe(1)
+	db.run("INSERT INTO principals (id, type, external_id, email, label) VALUES ('p1', 'user', 'sub1', 'a@x.cz', 'a@x.cz')")
+	// Anonymous (no principal) — the share-link / standalone-key case.
+	expect(() => db.run("INSERT INTO credentials (id, token_hash, principal_id) VALUES ('c1', 'hA', NULL)")).not.toThrow()
+	// Principal-bound (live perms) — the API-key / personal-token case.
+	expect(() => db.run("INSERT INTO credentials (id, token_hash, principal_id) VALUES ('c2', 'hB', 'p1')")).not.toThrow()
+	// token_hash is UNIQUE.
+	expect(() => db.run("INSERT INTO credentials (id, token_hash, principal_id) VALUES ('c3', 'hA', NULL)")).toThrow()
 })
 
-test('redeem matches zero rows when revoked / expired / exhausted', () => {
+test('credential_grants scope is both-or-neither (scope_type and scope_value rise/fall together)', () => {
 	const db = freshDb()
-	const stmt = db.query<{ id: string }, [string]>(
-		`UPDATE capability_tokens SET used_count = used_count + 1
-		 WHERE token_hash = ?
-		   AND revoked_at IS NULL
-		   AND (expires_at IS NULL OR expires_at > unixepoch())
-		   AND (max_uses IS NULL OR used_count < max_uses)
-		 RETURNING id`,
-	)
-	db.run("INSERT INTO capability_tokens (id, token_hash, revoked_at) VALUES ('rev', 'hRev', unixepoch())")
-	db.run("INSERT INTO capability_tokens (id, token_hash, expires_at) VALUES ('exp', 'hExp', unixepoch() - 1)")
-	db.run("INSERT INTO capability_tokens (id, token_hash, max_uses, used_count) VALUES ('exh', 'hExh', 2, 2)")
-	expect(stmt.get('hRev')).toBeNull()
-	expect(stmt.get('hExp')).toBeNull()
-	expect(stmt.get('hExh')).toBeNull()
-	// A clean follow-up SELECT can still find the row to classify the failure.
-	const row = db.query<{ revoked_at: number | null }, [string]>('SELECT revoked_at FROM capability_tokens WHERE token_hash = ?').get('hRev')
-	expect(row?.revoked_at).not.toBeNull()
+	db.run("INSERT INTO credentials (id, token_hash, principal_id) VALUES ('c1', 'hA', NULL)")
+	// Half-set scopes are rejected.
+	expect(() => db.run("INSERT INTO credential_grants (credential_id, action, scope_type, scope_value) VALUES ('c1', 'report.read', 'team', NULL)"))
+		.toThrow()
+	expect(() => db.run("INSERT INTO credential_grants (credential_id, action, scope_type, scope_value) VALUES ('c1', 'report.read', NULL, 'acme')"))
+		.toThrow()
+	// Both set, or both NULL (global) — ok.
+	expect(() => db.run("INSERT INTO credential_grants (credential_id, action, scope_type, scope_value) VALUES ('c1', 'report.read', 'team', 'acme')"))
+		.not.toThrow()
+	expect(() => db.run("INSERT INTO credential_grants (credential_id, action) VALUES ('c1', 'report.export')")).not.toThrow()
+})
+
+test('credential_grants cascade-delete with the credential', () => {
+	const db = freshDb()
+	db.run("INSERT INTO credentials (id, token_hash, principal_id) VALUES ('c1', 'hA', NULL)")
+	db.run("INSERT INTO credential_grants (credential_id, action) VALUES ('c1', 'report.read')")
+	db.run("DELETE FROM credentials WHERE id = 'c1'")
+	const remaining = db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM credential_grants WHERE credential_id = 'c1'").get()
+	expect(remaining?.n).toBe(0)
 })
 
 test('audit_events.diff rejects non-JSON via the json_valid CHECK', () => {

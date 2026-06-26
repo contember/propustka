@@ -12,10 +12,10 @@
  */
 
 import { SESSION_COOKIE } from '@propustka/core'
-import { hashToken } from '../capabilities'
 import type { Env } from '../env'
 import { generatePkce, randomToken } from '../oidc'
 import { resolveUserPrincipal } from '../resolve'
+import { hashToken } from '../secret'
 import type { Config, Services } from '../services'
 import { getSigner } from '../signing'
 import { clearCookie, readCookie, serializeCookie } from './cookies'

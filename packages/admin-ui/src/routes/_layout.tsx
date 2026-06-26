@@ -6,7 +6,7 @@ type Page =
 	| 'principals'
 	| 'group-mappings'
 	| 'api-keys'
-	| 'capabilities'
+	| 'share-links'
 	| 'audit'
 	| 'audit/auth-log'
 	| 'policies'
@@ -32,7 +32,7 @@ const NAV: NavItem[] = [
 	{ to: 'principals', label: 'Principals', match: '/principals' },
 	{ to: 'group-mappings', label: 'Group mappings', match: '/group-mappings' },
 	{ to: 'api-keys', label: 'API keys', match: '/api-keys' },
-	{ to: 'capabilities', label: 'Capabilities', match: '/capabilities' },
+	{ to: 'share-links', label: 'Share links', match: '/share-links' },
 	{
 		to: 'audit',
 		label: 'Audit',

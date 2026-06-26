@@ -6,9 +6,9 @@ import { allMigrations } from './helpers/migrations'
 
 // TEST-4: the RPC entrypoint (`Propustka` in src/index.ts) wires several spec-mandated
 // behaviors that nothing else exercises:
-//   1. every authenticate()/redeemCapability() writes EXACTLY ONE auth_log row with the
+//   1. every authenticate()/mintFromKey() writes EXACTLY ONE auth_log row with the
 //      right app, decision (allow/deny) and reason;
-//   2. issueCapability resolves the issuer server-side and its `iam.capability.create`
+//   2. issueKey resolves the issuer server-side and its `iam.credential.create`
 //      audit event carries the grants but NEVER the plaintext token.
 //
 // We drive the real class against a real `Db(env.DB)` backed by an in-memory bun:sqlite
@@ -200,7 +200,7 @@ interface AuthLogRow {
 	app: string
 	kind: string
 	principal_id: string | null
-	capability_token_id: string | null
+	credential_id: string | null
 	decision: string
 	reason: string | null
 }
@@ -276,47 +276,47 @@ describe('Propustka RPC entrypoint (TEST-4)', () => {
 		expect(row?.app).toBe('app-projects')
 	})
 
-	test('redeemCapability DENY (unknown token) writes one redeem auth_log row, capability_token_id null', async () => {
+	test('mintFromKey DENY (unknown key) writes one authenticate auth_log row, credential_id null', async () => {
 		const ctx = makeCtx()
 		const worker = new Propustka(ctx, makeEnv(db))
 
-		const result = await worker.redeemCapability({ app: 'reports', token: 'does-not-exist', requestId: 'req-redeem' })
-		expect(result.ok).toBe(false)
+		const result = await worker.mintFromKey({ app: 'reports', key: 'px_does-not-exist', requestId: 'req-mint' })
+		expect(result).toEqual({ ok: false, reason: 'invalid_key' })
 
 		await settle(ctx)
 
 		const rows = authLogRows(db)
 		expect(rows).toHaveLength(1)
 		const row = rows[0]
-		expect(row?.kind).toBe('redeem')
+		expect(row?.kind).toBe('authenticate')
 		expect(row?.decision).toBe('deny')
-		expect(row?.capability_token_id).toBeNull()
+		expect(row?.reason).toBe('invalid_key')
+		expect(row?.credential_id).toBeNull()
 		expect(row?.principal_id).toBeNull()
 		expect(row?.app).toBe('reports')
 	})
 
-	test('issueCapability happy path: one capability.create audit row carrying grants, never the plaintext token', async () => {
+	test('issueKey happy path (anonymous share link): one iam.credential.create audit row carrying grants, never the plaintext token', async () => {
 		// Local bypass resolves the issuer to the global-admin (permissions: [{ action: '*' }]),
-		// so the requested grant is fully covered and a token is issued.
+		// so the requested grant is fully covered and a credential is issued.
 		const ctx = makeCtx()
 		const worker = new Propustka(ctx, makeEnv(db))
 
-		const grants = [{ action: 'report.read', resource: 'r-1' }]
-		const result = await worker.issueCapability({
+		const permissions = [{ action: 'report.read', scope: null }]
+		const result = await worker.issueKey({
 			app: 'reports',
 			token: null,
 			cookie: null,
 			origin: null,
 			requestId: 'req-issue',
-			grants,
+			permissions,
 		})
 
 		expect(result.ok).toBe(true)
 		if (!result.ok) {
-			throw new Error('expected issueCapability to succeed')
+			throw new Error('expected issueKey to succeed')
 		}
-		expect(typeof result.token).toBe('string')
-		expect(result.token.length).toBeGreaterThan(0)
+		expect(result.token.startsWith('px_')).toBe(true)
 		expect(typeof result.id).toBe('string')
 
 		await settle(ctx)
@@ -324,85 +324,85 @@ describe('Propustka RPC entrypoint (TEST-4)', () => {
 		const rows = auditRows(db)
 		expect(rows).toHaveLength(1)
 		const row = rows[0]
-		expect(row?.action).toBe('iam.capability.create')
-		expect(row?.resource_type).toBe('capability')
+		expect(row?.action).toBe('iam.credential.create')
+		expect(row?.resource_type).toBe('credential')
 		expect(row?.resource_id).toBe(result.id)
 		expect(row?.principal_id).toBe(LOCAL_DEV_ADMIN_ID)
 
-		// metadata.grants must equal the requested grants (action + resource only).
+		// metadata.grants must equal the requested grants (action + scope).
 		const metadata: unknown = JSON.parse(row?.metadata ?? 'null')
-		expect(metadata).toMatchObject({ grants: [{ action: 'report.read', resource: 'r-1' }] })
+		expect(metadata).toMatchObject({ grants: [{ action: 'report.read', scope: null }] })
 
 		// The plaintext token must NEVER be persisted anywhere on the audit row.
 		const serializedRow = JSON.stringify(row)
 		expect(serializedRow).not.toContain(result.token)
 	})
 
-	test('revokeCapability: issue → revoke flips the token, audits the revoke, and the token no longer redeems', async () => {
+	test('revokeKey: issueKey → revokeKey flips the credential, audits the revoke, and the credential no longer mints', async () => {
 		const ctx = makeCtx()
 		const worker = new Propustka(ctx, makeEnv(db))
 
-		// Issue under the local-bypass admin so the grant is covered.
-		const issued = await worker.issueCapability({
+		// Issue an anonymous share link under the local-bypass admin so the grant is covered.
+		const issued = await worker.issueKey({
 			app: 'reports',
 			token: null,
 			cookie: null,
 			origin: null,
 			requestId: 'req-issue',
-			grants: [{ action: 'report.read', resource: 'r-1' }],
+			permissions: [{ action: 'report.read', scope: null }],
 		})
 		if (!issued.ok) {
-			throw new Error('expected issueCapability to succeed')
+			throw new Error('expected issueKey to succeed')
 		}
 
-		const revoked = await worker.revokeCapability({
+		// Before revoke the key mints fine.
+		const before = await worker.mintFromKey({ app: 'reports', key: issued.token, requestId: 'req-mint-before' })
+		expect(before.ok).toBe(true)
+
+		const revoked = await worker.revokeKey({
 			app: 'reports',
 			token: null,
 			cookie: null,
 			origin: null,
 			requestId: 'req-revoke',
-			tokenId: issued.id,
+			id: issued.id,
 		})
 		expect(revoked).toEqual({ ok: true, revoked: true })
 
-		// Redeeming the revoked token now fails with reason 'revoked'.
-		const redeem = await worker.redeemCapability({ app: 'reports', token: issued.token, requestId: 'req-redeem' })
-		expect(redeem.ok).toBe(false)
-		if (redeem.ok) {
-			throw new Error('unreachable')
-		}
-		expect(redeem.reason).toBe('revoked')
+		// Minting from the revoked key now fails with reason 'invalid_key'.
+		const after = await worker.mintFromKey({ app: 'reports', key: issued.token, requestId: 'req-mint-after' })
+		expect(after).toEqual({ ok: false, reason: 'invalid_key' })
 
 		// A second revoke is idempotent.
-		const again = await worker.revokeCapability({
+		const again = await worker.revokeKey({
 			app: 'reports',
 			token: null,
 			cookie: null,
 			origin: null,
 			requestId: 'req-revoke-2',
-			tokenId: issued.id,
+			id: issued.id,
 		})
 		expect(again).toEqual({ ok: true, revoked: false })
 
 		await settle(ctx)
 
-		// Exactly one iam.capability.revoke audit row (the no-op second revoke writes none).
-		const revokeRows = auditRows(db).filter((r) => r.action === 'iam.capability.revoke')
+		// Exactly one iam.credential.revoke audit row (the no-op second revoke writes none).
+		const revokeRows = auditRows(db).filter((r) => r.action === 'iam.credential.revoke')
 		expect(revokeRows).toHaveLength(1)
 		expect(revokeRows[0]?.resource_id).toBe(issued.id)
 		expect(revokeRows[0]?.principal_id).toBe(LOCAL_DEV_ADMIN_ID)
 	})
 
-	test('revokeCapability: unknown id → not_found', async () => {
+	test('revokeKey: unknown id → not_found', async () => {
 		const ctx = makeCtx()
 		const worker = new Propustka(ctx, makeEnv(db))
-		const result = await worker.revokeCapability({
+		const result = await worker.revokeKey({
 			app: 'reports',
 			token: null,
 			cookie: null,
 			origin: null,
 			requestId: 'req-revoke-missing',
-			tokenId: 'does-not-exist',
+			id: 'does-not-exist',
 		})
 		expect(result).toEqual({ ok: false, reason: 'not_found' })
 	})

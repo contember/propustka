@@ -6,12 +6,12 @@ import type { Services } from './services'
 /**
  * The shared authentication flow: validate the forwarded Access JWT, resolve the
  * principal, and compute its permissions. Used by `authenticate()` (RPC), the
- * admin gate, and `issueCapability()` (which resolves the *issuer*). Aims to never
- * throw — returns a structured `AuthenticateResult` for every expected outcome,
- * including the lazy-create/claim races (recovered in `resolveUserPrincipal`). A
- * transient D1 error on a read can still propagate; callers (`authenticate()` /
- * `issueCapability()`) backstop that, failing closed and still writing an auth-log
- * row, so an unexpected throw never becomes a 500.
+ * admin gate, and the delegated issue/revoke paths (`issueKey()` etc., which resolve
+ * the *issuer*). Aims to never throw — returns a structured `AuthenticateResult` for
+ * every expected outcome, including the lazy-create/claim races (recovered in
+ * `resolveUserPrincipal`). A transient D1 error on a read can still propagate; callers
+ * (`authenticate()` / `issueKey()`) backstop that, failing closed and still writing an
+ * auth-log row, so an unexpected throw never becomes a 500.
  *
  * The result includes the verified app id (aud-derived) and whether group
  * resolution was unavailable, alongside the standard AuthenticateResult — callers

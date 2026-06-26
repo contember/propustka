@@ -127,12 +127,12 @@ export type AuthenticateResult =
 export interface AuditInput {
 	app: string
 	requestId: string
-	/** NULL for capability-driven events. */
+	/** NULL for an anonymous-credential event (a share link / passthrough JWT has no principal). */
 	principalId: string | null
-	/** Snapshot — survives principal deletion (token label for capabilities). */
+	/** Snapshot — survives principal deletion (the credential/token label for anonymous events). */
 	principalLabel: string
-	/** Set for capability-driven events. */
-	capabilityTokenId?: string
+	/** Set for an anonymous-credential event — the issuing credential / passthrough-token id. */
+	credentialId?: string
 	action: string
 	resourceType: string
 	resourceId?: string
@@ -140,48 +140,7 @@ export interface AuditInput {
 	metadata?: unknown
 }
 
-export interface RedeemCapabilityInput {
-	app: string
-	token: string
-	requestId: string
-}
-
-export interface CapabilityGrant {
-	action: string
-	resource: string
-}
-
-export type RedeemCapabilityResult =
-	| { ok: true; capabilities: CapabilityGrant[]; tokenId: string; label: string | null }
-	| { ok: false; reason: 'unknown' | 'expired' | 'revoked' | 'exhausted' }
-
-export interface IssueCapabilityGrant {
-	action: string
-	resource: string
-	/** Scope for the delegation check ONLY (not stored). Omitted → issuer must hold the action globally. */
-	scope?: Scope | null
-}
-
-export interface IssueCapabilityInput {
-	app: string
-	/** The ISSUER's Access JWT — issuer is resolved server-side, never self-asserted. */
-	token: string | null
-	/** Issuer's CF_Authorization cookie (group-derived permissions count toward delegation too). */
-	cookie: string | null
-	origin: string | null
-	requestId: string
-	grants: IssueCapabilityGrant[]
-	label?: string
-	expiresAt?: number
-	maxUses?: number
-}
-
-export type IssueCapabilityResult =
-	/** Plaintext token returned ONCE. */
-	| { ok: true; token: string; id: string }
-	| { ok: false; reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' }
-
-export interface RevokeCapabilityInput {
+export interface RevokeKeyInput {
 	app: string
 	/** The CALLER's Access JWT — the authorizer is resolved server-side, never self-asserted. */
 	token: string | null
@@ -189,12 +148,12 @@ export interface RevokeCapabilityInput {
 	cookie: string | null
 	origin: string | null
 	requestId: string
-	/** The capability token id (the `id` returned by issueCapability), NOT the plaintext token. */
-	tokenId: string
+	/** The credential id (the `id` returned by `issueKey`), NOT the plaintext `px_` token. */
+	id: string
 }
 
-export type RevokeCapabilityResult =
-	/** `revoked` is false when the token was already revoked (idempotent). */
+export type RevokeKeyResult =
+	/** `revoked` is false when the credential was already revoked (idempotent). */
 	| { ok: true; revoked: boolean }
 	| { ok: false; reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'not_found' }
 
@@ -202,11 +161,11 @@ export type RevokeCapabilityResult =
 //
 // A service token is a Cloudflare Access service token (client_id + client_secret) backed
 // by a propustka SERVICE principal carrying real grants — so a machine caller is authorized
-// through `can()`/`scopedTo()` exactly like a user, not as an anonymous capability. Issuing
+// through `can()`/`scopedTo()` exactly like a user, not as an anonymous share link. Issuing
 // one mints the Access token (account API) AND creates the principal + grant, so it is a
 // privileged op exposed over the binding as a DELEGATED call: the issuer is resolved from the
 // forwarded Access JWT and may only grant what it itself holds (the same delegation rule as
-// `issueCapability`). The plaintext `clientSecret` is returned ONCE. The minted token works at
+// `issueKey`). The plaintext `clientSecret` is returned ONCE. The minted token works at
 // the edge only on an Access app whose Service Auth policy accepts it (e.g. "Any Access Service
 // Token"); per-resource authorization is the propustka grant, never the edge.
 
@@ -356,19 +315,17 @@ export interface IamRpc {
 	 * one permission on the app; a zero-grant authenticated user gets `not_allowed`. Read-only.
 	 */
 	listPrincipals(input: ListPrincipalsInput): Promise<ListPrincipalsResult>
-	redeemCapability(input: RedeemCapabilityInput): Promise<RedeemCapabilityResult>
-	issueCapability(input: IssueCapabilityInput): Promise<IssueCapabilityResult>
 	/**
-	 * Revoke a previously-issued capability token by id. The caller is resolved from the
-	 * forwarded Access credentials and authorized: the original issuer may always revoke;
-	 * otherwise the caller must hold every granted action globally (an admin / app-wide
-	 * operator). Idempotent — revoking an already-revoked token returns `{ ok: true,
-	 * revoked: false }`. An unknown id returns `{ ok: false, reason: 'not_found' }`.
+	 * Revoke a previously-issued opaque `px_` credential (an API key / share link) by id. The caller
+	 * is resolved from the forwarded Access credentials and authorized: the original issuer may always
+	 * revoke; otherwise, for an anonymous credential, the caller must hold every granted action (an
+	 * admin / app-wide operator). Idempotent — revoking an already-revoked credential returns
+	 * `{ ok: true, revoked: false }`. An unknown id returns `{ ok: false, reason: 'not_found' }`.
 	 */
-	revokeCapability(input: RevokeCapabilityInput): Promise<RevokeCapabilityResult>
+	revokeKey(input: RevokeKeyInput): Promise<RevokeKeyResult>
 	/**
 	 * Mint a Cloudflare Access service token and back it with a SERVICE principal carrying the
-	 * requested grant. Delegated like `issueCapability`: the issuer is resolved from the forwarded
+	 * requested grant. Delegated like `issueKey`: the issuer is resolved from the forwarded
 	 * Access JWT and may only grant actions it itself holds on `scope` (else `not_allowed`). The
 	 * Access token is minted via the account API, the principal + grant created, and the plaintext
 	 * `clientSecret` returned ONCE; a CF API failure reports `provisioning_failed` and rolls the

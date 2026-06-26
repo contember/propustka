@@ -268,31 +268,29 @@ export interface RotateApiKeyResponse {
 	apiKey: string
 }
 
-// ── Capability tokens ─────────────────────────────────────────────────────────
+// ── Share links (anonymous credentials) ─────────────────────────────────────────
 
-/** Metadata only — never the token hash or plaintext. */
-export interface CapabilityListItem {
+/** Metadata only — never the token hash or plaintext. A share link is an anonymous credential. */
+export interface ShareLinkListItem {
 	id: string
 	label: string | null
 	issuedBy: string | null
 	expiresAt: number | null
-	maxUses: number | null
-	usedCount: number
 	revokedAt: number | null
 	createdAt: number
-	grants: { action: string; resource: string }[]
+	/** Frozen inline grants — matched by `permits` (action + optional scope), not exact resource. */
+	grants: { action: string; scope: { type: string; value: string } | null }[]
 }
 
-export interface IssueCapabilityRequest {
-	/** `scope` is the delegation-check coordinate only (not stored); omitted → global. */
-	grants: { action: string; resource: string; scope?: { type: string; value: string } | null }[]
+export interface IssueShareLinkRequest {
+	/** Each grant is delegation-checked against the issuer on its `scope` (omitted → global). */
+	grants: { action: string; scope?: { type: string; value: string } | null }[]
 	label?: string
 	expiresAt?: number
-	maxUses?: number
 }
 
-/** Issued-capability result — plaintext `token` returned ONCE. */
-export interface IssuedCapabilityResponse {
+/** Issued share-link result — the plaintext `px_` token returned ONCE. */
+export interface IssuedShareLinkResponse {
 	id: string
 	token: string
 }
@@ -304,7 +302,7 @@ export interface AuditEventDto {
 	requestId: string
 	principalId: string | null
 	principalLabel: string
-	capabilityTokenId: string | null
+	credentialId: string | null
 	app: string
 	action: string
 	resourceType: string
@@ -318,9 +316,9 @@ export interface AuthLogDto {
 	id: number
 	requestId: string
 	app: string
-	kind: 'authenticate' | 'redeem'
+	kind: 'authenticate'
 	principalId: string | null
-	capabilityTokenId: string | null
+	credentialId: string | null
 	decision: 'allow' | 'deny'
 	reason: string | null
 	createdAt: number

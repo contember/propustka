@@ -1,7 +1,7 @@
 import { parseAccessClaims, permits } from '@propustka/core'
 import { describe, expect, test } from 'bun:test'
 import { createLocalJWKSet, jwtVerify } from 'jose'
-import { hashToken } from '../capabilities'
+import { hashToken } from '../secret'
 import { getSigner } from '../signing'
 import { mintToken } from '../tokens'
 import { createHarness, seedInlineGrant, seedUser } from './helpers/harness'

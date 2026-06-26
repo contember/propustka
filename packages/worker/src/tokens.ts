@@ -24,11 +24,11 @@ import {
 	type PrincipalType,
 	type Scope,
 } from '@propustka/core'
-import { hashToken } from './capabilities'
 import type { CredentialGrantRow, CredentialRow } from './db'
 import { principalStatus } from './db'
 import type { Env } from './env'
 import { resolveServicePermissions, resolveUserPermissions } from './resolve'
+import { hashToken } from './secret'
 import type { Services } from './services'
 import { getSigner } from './signing'
 

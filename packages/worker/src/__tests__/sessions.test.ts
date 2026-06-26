@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { hashToken } from '../capabilities'
+import { hashToken } from '../secret'
 import { createHarness, seedUser } from './helpers/harness'
 
 const FUTURE = Math.floor(Date.now() / 1000) + 3600

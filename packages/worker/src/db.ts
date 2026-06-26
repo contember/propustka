@@ -76,7 +76,7 @@ export interface AuditEventRow {
 	request_id: string
 	principal_id: string | null
 	principal_label: string
-	capability_token_id: string | null
+	credential_id: string | null
 	app: string
 	action: string
 	resource_type: string
@@ -90,30 +90,12 @@ export interface AuthLogRow {
 	id: number
 	request_id: string
 	app: string
-	kind: 'authenticate' | 'redeem'
+	kind: 'authenticate'
 	principal_id: string | null
-	capability_token_id: string | null
+	credential_id: string | null
 	decision: 'allow' | 'deny'
 	reason: string | null
 	created_at: number
-}
-
-export interface CapabilityTokenRow {
-	id: string
-	token_hash: string
-	label: string | null
-	issued_by: string | null
-	expires_at: number | null
-	max_uses: number | null
-	used_count: number
-	revoked_at: number | null
-	created_at: number
-}
-
-export interface CapabilityGrantRow {
-	token_id: string
-	action: string
-	resource: string
 }
 
 /** A unified credential row (the `credentials` table). Only the secret's hash is stored. */
@@ -167,7 +149,7 @@ export interface AuditEventInput {
 	requestId: string
 	principalId: string | null
 	principalLabel: string
-	capabilityTokenId?: string | null
+	credentialId?: string | null
 	app: string
 	action: string
 	resourceType: string
@@ -179,9 +161,9 @@ export interface AuditEventInput {
 export interface AuthLogInput {
 	requestId: string
 	app: string
-	kind: 'authenticate' | 'redeem'
+	kind: 'authenticate'
 	principalId: string | null
-	capabilityTokenId?: string | null
+	credentialId?: string | null
 	decision: 'allow' | 'deny'
 	reason?: string | null
 }
@@ -202,7 +184,7 @@ async function firstRow<T>(statement: D1PreparedStatement): Promise<T> {
 /**
  * All D1 access. Prepared statements via `db.prepare(...).bind(...)`. Grouped by
  * the modules that need them: principals (resolve/admin), grants, group mappings,
- * projects, capabilities (redeem/issue), and the two write-only audit tables.
+ * credentials (API keys / share links), sessions, and the two write-only audit tables.
  */
 export class Db {
 	constructor(private readonly d1: D1Database) {}
@@ -667,83 +649,6 @@ export class Db {
 			.bind(app, ...keep)
 	}
 
-	// ── Capability tokens ─────────────────────────────────────────────────────
-
-	/**
-	 * Atomic redeem: validate + increment `used_count` in a single statement to
-	 * avoid races. Zero rows → caller classifies via `getCapabilityTokenByHash`.
-	 */
-	async redeemCapabilityToken(tokenHash: string): Promise<{ id: string; label: string | null } | null> {
-		return this.d1
-			.prepare(`UPDATE capability_tokens SET used_count = used_count + 1
-				WHERE token_hash = ?
-					AND revoked_at IS NULL
-					AND (expires_at IS NULL OR expires_at > unixepoch())
-					AND (max_uses IS NULL OR used_count < max_uses)
-				RETURNING id, label`)
-			.bind(tokenHash)
-			.first<{ id: string; label: string | null }>()
-	}
-
-	/** Follow-up classification lookup after a zero-row redeem. */
-	async getCapabilityTokenByHash(tokenHash: string): Promise<CapabilityTokenRow | null> {
-		return this.d1.prepare('SELECT * FROM capability_tokens WHERE token_hash = ?').bind(tokenHash).first<CapabilityTokenRow>()
-	}
-
-	async getCapabilityTokenById(id: string): Promise<CapabilityTokenRow | null> {
-		return this.d1.prepare('SELECT * FROM capability_tokens WHERE id = ?').bind(id).first<CapabilityTokenRow>()
-	}
-
-	async getCapabilityGrants(tokenId: string): Promise<CapabilityGrantRow[]> {
-		const { results } = await this.d1
-			.prepare('SELECT * FROM capability_grants WHERE token_id = ?')
-			.bind(tokenId)
-			.all<CapabilityGrantRow>()
-		return results
-	}
-
-	async listCapabilityTokens(): Promise<CapabilityTokenRow[]> {
-		const { results } = await this.d1
-			.prepare('SELECT * FROM capability_tokens ORDER BY created_at DESC')
-			.all<CapabilityTokenRow>()
-		return results
-	}
-
-	/** Insert the token + its grant rows. Only the hash is stored, never plaintext. */
-	async createCapabilityToken(input: {
-		tokenHash: string
-		label?: string | null
-		issuedBy: string
-		expiresAt?: number | null
-		maxUses?: number | null
-		grants: { action: string; resource: string }[]
-	}): Promise<string> {
-		const id = uuidv7()
-		const statements: D1PreparedStatement[] = [
-			this.d1
-				.prepare(`INSERT INTO capability_tokens (id, token_hash, label, issued_by, expires_at, max_uses)
-					VALUES (?, ?, ?, ?, ?, ?)`)
-				.bind(id, input.tokenHash, input.label ?? null, input.issuedBy, input.expiresAt ?? null, input.maxUses ?? null),
-		]
-		for (const grant of input.grants) {
-			statements.push(
-				this.d1
-					.prepare('INSERT INTO capability_grants (token_id, action, resource) VALUES (?, ?, ?)')
-					.bind(id, grant.action, grant.resource),
-			)
-		}
-		await this.d1.batch(statements)
-		return id
-	}
-
-	async revokeCapabilityToken(id: string): Promise<boolean> {
-		const result = await this.d1
-			.prepare('UPDATE capability_tokens SET revoked_at = unixepoch() WHERE id = ? AND revoked_at IS NULL')
-			.bind(id)
-			.run()
-		return (result.meta.changes ?? 0) > 0
-	}
-
 	// ── Credentials (unified opaque API keys / share links) ───────────────────
 
 	/**
@@ -806,6 +711,14 @@ export class Db {
 		const { results } = await this.d1
 			.prepare('SELECT * FROM credentials WHERE principal_id = ? ORDER BY created_at DESC')
 			.bind(principalId)
+			.all<CredentialRow>()
+		return results
+	}
+
+	/** Anonymous credentials — the share links (no bound principal). The admin share-links list. */
+	async listAnonymousCredentials(): Promise<CredentialRow[]> {
+		const { results } = await this.d1
+			.prepare('SELECT * FROM credentials WHERE principal_id IS NULL ORDER BY created_at DESC')
 			.all<CredentialRow>()
 		return results
 	}
@@ -894,14 +807,14 @@ export class Db {
 		const id = uuidv7()
 		await this.d1
 			.prepare(`INSERT INTO audit_events
-				(id, request_id, principal_id, principal_label, capability_token_id, app, action, resource_type, resource_id, diff, metadata)
+				(id, request_id, principal_id, principal_label, credential_id, app, action, resource_type, resource_id, diff, metadata)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 			.bind(
 				id,
 				input.requestId,
 				input.principalId,
 				input.principalLabel,
-				input.capabilityTokenId ?? null,
+				input.credentialId ?? null,
 				input.app,
 				input.action,
 				input.resourceType,
@@ -915,14 +828,14 @@ export class Db {
 	async writeAuthLog(input: AuthLogInput): Promise<void> {
 		await this.d1
 			.prepare(`INSERT INTO auth_log
-				(request_id, app, kind, principal_id, capability_token_id, decision, reason)
+				(request_id, app, kind, principal_id, credential_id, decision, reason)
 				VALUES (?, ?, ?, ?, ?, ?, ?)`)
 			.bind(
 				input.requestId,
 				input.app,
 				input.kind,
 				input.principalId,
-				input.capabilityTokenId ?? null,
+				input.credentialId ?? null,
 				input.decision,
 				input.reason ?? null,
 			)

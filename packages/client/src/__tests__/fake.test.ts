@@ -175,67 +175,52 @@ describe('FakeIamClient.listPrincipals (simple mode)', () => {
 	})
 })
 
-describe('FakeIamClient.redeemCapability', () => {
-	test('returns a fake capability whose can() respects the deny list', async () => {
-		const cap = await new FakeIamClient({ deny: ['report.delete'] }).redeemCapability(makeRequest(), 'tok')
-		expect(cap.ok).toBe(true)
-		if (!cap.ok) {
-			throw new Error('unreachable')
-		}
-		expect(cap.can('report.read', 'report:q2')).toBe(true)
-		expect(cap.can('report.delete', 'report:q2')).toBe(false)
-		await expect(cap.audit({ action: 'report.read', resourceType: 'report' })).resolves.toBeUndefined()
-	})
-})
-
-describe('FakeIamClient.issueCapability', () => {
-	test('always ok with fake token + id', async () => {
-		const issued = await new FakeIamClient().issueCapability(makeRequest(), { grants: [] })
+describe('FakeIamClient.issueKey', () => {
+	test('always ok with a fake px_ token + id', async () => {
+		const issued = await new FakeIamClient().issueKey(makeRequest(), { permissions: [] })
 		expect(issued.ok).toBe(true)
 		if (!issued.ok) {
 			throw new Error('unreachable')
 		}
-		expect(issued.token.startsWith('fake-token-')).toBe(true)
-		expect(issued.id.startsWith('fake-')).toBe(true)
+		expect(issued.token.startsWith('px_fake-')).toBe(true)
+		expect(issued.id.startsWith('fake-cred-')).toBe(true)
 	})
 })
 
-describe('FakeIamClient.revokeCapability', () => {
-	test('issue → revoke → redeem reads revoked (in-memory registry stays consistent)', async () => {
-		const fake = new FakeIamClient()
-		const issued = await fake.issueCapability(makeRequest(), { grants: [] })
+describe('FakeIamClient.issueJwt', () => {
+	test('always ok with a fake passthrough token + expiry', async () => {
+		const issued = await new FakeIamClient().issueJwt(makeRequest(), { permissions: [{ action: 'report.read', scope: null }] })
+		expect(issued.ok).toBe(true)
 		if (!issued.ok) {
 			throw new Error('unreachable')
 		}
-		// Before revoke, the issued token redeems fine.
-		const before = await fake.redeemCapability(makeRequest(), issued.token)
-		expect(before.ok).toBe(true)
+		expect(issued.token.startsWith('fake-jwt-')).toBe(true)
+		expect(typeof issued.expiresAt).toBe('number')
+	})
+})
 
-		const revoked = await fake.revokeCapability(makeRequest(), issued.id)
-		expect(revoked).toEqual({ ok: true, revoked: true })
-
-		// After revoke, the SAME token reads 'revoked' (404), like the real Worker.
-		const after = await fake.redeemCapability(makeRequest(), issued.token)
-		expect(after.ok).toBe(false)
-		if (after.ok) {
+describe('FakeIamClient.revokeKey', () => {
+	test('issue → revoke flips the credential (in-memory registry stays consistent)', async () => {
+		const fake = new FakeIamClient()
+		const issued = await fake.issueKey(makeRequest(), { permissions: [] })
+		if (!issued.ok) {
 			throw new Error('unreachable')
 		}
-		expect(after.reason).toBe('revoked')
-		expect(after.status).toBe(404)
+		expect(await fake.revokeKey(makeRequest(), issued.id)).toEqual({ ok: true, revoked: true })
 	})
 
 	test('second revoke is idempotent (revoked:false)', async () => {
 		const fake = new FakeIamClient()
-		const issued = await fake.issueCapability(makeRequest(), { grants: [] })
+		const issued = await fake.issueKey(makeRequest(), { permissions: [] })
 		if (!issued.ok) {
 			throw new Error('unreachable')
 		}
-		await fake.revokeCapability(makeRequest(), issued.id)
-		expect(await fake.revokeCapability(makeRequest(), issued.id)).toEqual({ ok: true, revoked: false })
+		await fake.revokeKey(makeRequest(), issued.id)
+		expect(await fake.revokeKey(makeRequest(), issued.id)).toEqual({ ok: true, revoked: false })
 	})
 
 	test('unknown id → not_found (404)', async () => {
-		const revoked = await new FakeIamClient().revokeCapability(makeRequest(), 'never-issued')
+		const revoked = await new FakeIamClient().revokeKey(makeRequest(), 'never-issued')
 		expect(revoked.ok).toBe(false)
 		if (revoked.ok) {
 			throw new Error('unreachable')

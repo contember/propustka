@@ -8,9 +8,8 @@ import { createRemoteJWKSet, type JWTPayload, jwtVerify, type JWTVerifyGetKey } 
  * SECURITY NOTE (hard requirement 3): the app id used for the auth log and the
  * request context is the *verified* one derived from the token's `aud`, NEVER the
  * SDK-passed `app`. The SDK-passed value is trusted only where no token exists
- * (audit(), redeemCapability(), failure-path log rows) — for labeling, not as a
- * security boundary. Principal identity is likewise resolved from the verified
- * token, never app-asserted.
+ * (audit(), failure-path log rows) — for labeling, not as a security boundary.
+ * Principal identity is likewise resolved from the verified token, never app-asserted.
  */
 
 /** The verified outcome of validating an Access JWT. */

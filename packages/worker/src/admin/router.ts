@@ -3,10 +3,10 @@ import { principalFromOutcome, resolveRequest } from '../auth'
 import type { Services } from '../services'
 import type { AdminContext } from './handlers'
 import {
-	createCapability,
 	createGrant,
 	createGroupMapping,
 	createPolicy,
+	createShareLink,
 	deleteGrant,
 	deleteGroupMapping,
 	deletePolicy,
@@ -20,17 +20,17 @@ import {
 	listApps,
 	listAudit,
 	listAuthLog,
-	listCapabilities,
 	listGroupMappings,
 	listPolicies,
 	listPrincipals,
 	listRoles,
+	listShareLinks,
 	patchPrincipal,
 	provisionApiKey,
 	putAppAccess,
 	putAppSchema,
 	revokeApiKey,
-	revokeCapability,
+	revokeShareLink,
 	rotateApiKey,
 	updatePolicy,
 } from './handlers'
@@ -252,13 +252,13 @@ async function dispatch(c: AdminContext): Promise<Response> {
 			}
 			return method === 'DELETE' ? revokeApiKey(c, idOrSub) : methodNotAllowed()
 
-		case 'capabilities':
+		case 'share-links':
 			if (idOrSub === undefined) {
-				if (method === 'GET') return listCapabilities(c)
-				if (method === 'POST') return createCapability(c)
+				if (method === 'GET') return listShareLinks(c)
+				if (method === 'POST') return createShareLink(c)
 				return methodNotAllowed()
 			}
-			return method === 'DELETE' ? revokeCapability(c, idOrSub) : methodNotAllowed()
+			return method === 'DELETE' ? revokeShareLink(c, idOrSub) : methodNotAllowed()
 
 		case 'audit':
 			return method === 'GET' ? listAudit(c) : methodNotAllowed()

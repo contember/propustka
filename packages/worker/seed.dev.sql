@@ -65,23 +65,24 @@ INSERT OR IGNORE INTO group_role_mappings (id, provider, group_ref, role_key, ap
   ('gm-coredevs', 'github', 'my-org/core-devs', 'editor', 'opice', 'organization', 'acme', unixepoch() - 65000),
   ('gm-admins',   'github', 'my-org/admins',    'editor', NULL,    NULL,           NULL,   unixepoch() - 65000);
 
--- ── Capability token (hash only; plaintext never stored). used_count = telemetry. ─
-INSERT OR IGNORE INTO capability_tokens (id, token_hash, label, issued_by, expires_at, max_uses, used_count, revoked_at, created_at) VALUES
-  ('cap-q2', 'seed-sha256-q2-acme-not-a-real-hash', 'Share: report Q2 (ACME)', 'local-dev-admin', unixepoch() + 2592000, NULL, 2, NULL, unixepoch() - 40000);
-INSERT OR IGNORE INTO capability_grants (token_id, action, resource) VALUES
-  ('cap-q2', 'report.read',            'report:q2-acme'),
-  ('cap-q2', 'report.feedback.create', 'report:q2-acme');
+-- ── Share link = anonymous credential (principal_id NULL; hash only, plaintext never stored). ─
+INSERT OR IGNORE INTO credentials (id, token_hash, label, principal_id, issued_by, expires_at, revoked_at, created_at) VALUES
+  ('cred-q2', 'seed-sha256-q2-acme-not-a-real-hash', 'Share: report Q2 (ACME)', NULL, 'local-dev-admin', unixepoch() + 2592000, NULL, unixepoch() - 40000);
+-- Frozen inline grants, matched by permits() (action + scope), not an exact resource.
+INSERT OR IGNORE INTO credential_grants (credential_id, action, scope_type, scope_value) VALUES
+  ('cred-q2', 'report.read',            'report', 'q2-acme'),
+  ('cred-q2', 'report.feedback.create', 'report', 'q2-acme');
 
 -- ── Domain audit events (TEXT ids chosen to sort by time, newest last) ───────
-INSERT OR IGNORE INTO audit_events (id, request_id, principal_id, principal_label, capability_token_id, app, action, resource_type, resource_id, diff, metadata, created_at) VALUES
+INSERT OR IGNORE INTO audit_events (id, request_id, principal_id, principal_label, credential_id, app, action, resource_type, resource_id, diff, metadata, created_at) VALUES
   ('aud-001', 'req-seed-1', 'local-dev-admin', 'local-dev-admin', NULL, 'iam-admin', 'iam.grant.create',     'grant',     'grant-alice-org',   NULL, '{"role":"editor","scope":"organization=acme"}', unixepoch() - 70000),
   ('aud-002', 'req-seed-2', 'local-dev-admin', 'local-dev-admin', NULL, 'iam-admin', 'iam.role.create',      'role',      'opice/report-exporter', NULL, '{"origin":"custom"}', unixepoch() - 50000),
   ('aud-003', 'req-seed-3', 'local-dev-admin', 'local-dev-admin', NULL, 'iam-admin', 'iam.principal.invite', 'principal', 'p-bob-invited',     NULL, '{"email":"bob@firma.cz"}', unixepoch() - 3600),
-  ('aud-004', 'req-seed-4', 'local-dev-admin', 'local-dev-admin', NULL, 'iam-admin', 'iam.capability.create','capability','cap-q2',            NULL, '{"label":"Share: report Q2 (ACME)"}', unixepoch() - 40000),
+  ('aud-004', 'req-seed-4', 'local-dev-admin', 'local-dev-admin', NULL, 'iam-admin', 'iam.credential.create','credential','cred-q2',           NULL, '{"label":"Share: report Q2 (ACME)"}', unixepoch() - 40000),
   ('aud-005', 'req-seed-5', 'p-alice', 'alice@firma.cz', NULL, 'opice', 'project.settings.update', 'project', 'acme', '{"name":["Acme","Acme (renamed)"]}', NULL, unixepoch() - 1000);
 
 -- ── Auth log (rowid PK — omit id) ────────────────────────────────────────────
-INSERT OR IGNORE INTO auth_log (request_id, app, kind, principal_id, capability_token_id, decision, reason, created_at) VALUES
+INSERT OR IGNORE INTO auth_log (request_id, app, kind, principal_id, credential_id, decision, reason, created_at) VALUES
   ('req-seed-5', 'opice',   'authenticate', 'p-alice', NULL, 'allow', NULL, unixepoch() - 1000),
   ('req-seed-6', 'opice',   'authenticate', NULL, NULL, 'deny', 'unknown_principal', unixepoch() - 900),
-  ('req-seed-7', 'poplach', 'redeem', NULL, 'cap-q2', 'allow', NULL, unixepoch() - 800);
+  ('req-seed-7', 'poplach', 'authenticate', NULL, 'cred-q2', 'allow', 'mint_key', unixepoch() - 800);

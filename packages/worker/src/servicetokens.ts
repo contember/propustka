@@ -10,9 +10,9 @@ import type {
 } from '@propustka/core'
 import { permits } from '@propustka/core'
 import { API_KEY_PREFIX } from '@propustka/core'
-import { generateToken, hashToken } from './capabilities'
 import { CfAccessError, type MintedServiceToken } from './cfaccess'
 import { resolveServicePermissions } from './resolve'
+import { generateToken, hashToken } from './secret'
 import type { Services } from './services'
 
 /** Mint a propustka-native `px_` credential bound to a service principal; returns the plaintext once. */

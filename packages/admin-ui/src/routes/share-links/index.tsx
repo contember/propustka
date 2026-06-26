@@ -1,5 +1,5 @@
 import { createPage } from '@buzola/router'
-import type { CapabilityListItem, IssueCapabilityRequest, IssuedCapabilityResponse, ListResponse } from '@propustka/worker/admin'
+import type { IssuedShareLinkResponse, IssueShareLinkRequest, ListResponse, ShareLinkListItem } from '@propustka/worker/admin'
 import { useState } from 'react'
 import { Badge } from '../../components/Badge'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
@@ -8,79 +8,87 @@ import { Table } from '../../components/Table'
 import { api, ApiError } from '../../lib/api'
 import { fmtExpiry, parseDateTimeLocal } from '../../lib/format'
 
-/** Known capability resource-type prefixes (app-owned shared namespace). */
-const RESOURCE_HINTS = ['report:', 'invoice:', 'export:']
+type LinkStatus = 'active' | 'expired' | 'revoked'
 
-type CapStatus = 'active' | 'expired' | 'revoked' | 'exhausted'
-
-function capStatus(cap: CapabilityListItem): CapStatus {
-	if (cap.revokedAt !== null) return 'revoked'
+function linkStatus(link: ShareLinkListItem): LinkStatus {
+	if (link.revokedAt !== null) return 'revoked'
 	// expiresAt is epoch-seconds (backend `unixepoch()`), so compare in seconds.
-	if (cap.expiresAt !== null && cap.expiresAt <= Date.now() / 1000) return 'expired'
-	if (cap.maxUses !== null && cap.usedCount >= cap.maxUses) return 'exhausted'
+	if (link.expiresAt !== null && link.expiresAt <= Date.now() / 1000) return 'expired'
 	return 'active'
 }
 
 export default createPage()
 	.loader(async () => {
-		const capabilities = await api.get<ListResponse<CapabilityListItem>>('/capabilities')
-		return { capabilities: capabilities.items }
+		const shareLinks = await api.get<ListResponse<ShareLinkListItem>>('/share-links')
+		return { shareLinks: shareLinks.items }
 	})
-	.route('/capabilities')
+	.route('/share-links')
 	.render(({ data, invalidate }) => (
 		<>
 			<div className="page-head">
-				<h1>Capabilities</h1>
+				<h1>Share links</h1>
 				<p className="hint">
-					Scoped, short-lived tokens granting specific <code>(action, resource)</code>{' '}
-					pairs. Resources are an app-owned shared namespace. Token plaintext is shown once at issue and never stored.
+					Anonymous, revocable <code>px_</code> credentials granting specific <code>(action, scope)</code> permissions — matched by <code>permits()</code>
+					{' '}
+					at use time, like any other token. Carry the link in a URL path or header; the plaintext is shown once at issue and never stored.
 				</p>
 			</div>
 
 			<IssueForm onDone={invalidate} />
 
 			<Table
-				colSpan={6}
-				isEmpty={data.capabilities.length === 0}
-				empty="No capability tokens issued yet."
+				colSpan={5}
+				isEmpty={data.shareLinks.length === 0}
+				empty="No share links issued yet."
 				head={
 					<tr>
 						<th>Label</th>
 						<th>Grants</th>
 						<th>Expires</th>
-						<th>Uses</th>
 						<th>Status</th>
 						<th />
 					</tr>
 				}
 			>
-				{data.capabilities.map((cap) => <CapabilityRow key={cap.id} cap={cap} onDone={invalidate} />)}
+				{data.shareLinks.map((link) => <ShareLinkRow key={link.id} link={link} onDone={invalidate} />)}
 			</Table>
 		</>
 	))
 
-function CapabilityRow({ cap, onDone }: { cap: CapabilityListItem; onDone: () => void }) {
+function ShareLinkRow({ link, onDone }: { link: ShareLinkListItem; onDone: () => void }) {
 	const [confirming, setConfirming] = useState(false)
-	const status = capStatus(cap)
+	const status = linkStatus(link)
 	const tone = status === 'active' ? 'good' : status === 'revoked' ? 'bad' : 'muted'
 
 	async function revoke() {
-		await api.del(`/capabilities/${cap.id}`)
+		await api.del(`/share-links/${link.id}`)
 		onDone()
 	}
 
 	return (
 		<tr>
-			<td>{cap.label ?? <span className="muted">—</span>}</td>
+			<td>{link.label ?? <span className="muted">—</span>}</td>
 			<td>
-				{cap.grants.map((g, i) => (
-					<div key={`${g.action}:${g.resource}:${i}`} className="grant-chip">
-						<code>{g.action}</code> <span className="muted">on</span> <code>{g.resource}</code>
+				{link.grants.map((g, i) => (
+					<div key={`${g.action}:${g.scope?.type ?? ''}:${g.scope?.value ?? ''}:${i}`} className="grant-chip">
+						<code>{g.action}</code>
+						{g.scope
+							? (
+								<>
+									{' '}
+									<span className="muted">on</span> <code>{g.scope.type}={g.scope.value}</code>
+								</>
+							)
+							: (
+								<>
+									{' '}
+									<span className="muted">(global)</span>
+								</>
+							)}
 					</div>
 				))}
 			</td>
-			<td>{fmtExpiry(cap.expiresAt)}</td>
-			<td>{cap.usedCount}{cap.maxUses !== null ? ` / ${cap.maxUses}` : ''}</td>
+			<td>{fmtExpiry(link.expiresAt)}</td>
 			<td>
 				<Badge tone={tone}>{status}</Badge>
 			</td>
@@ -88,11 +96,11 @@ function CapabilityRow({ cap, onDone }: { cap: CapabilityListItem; onDone: () =>
 				{status !== 'revoked' && <button type="button" className="danger small" onClick={() => setConfirming(true)}>Revoke</button>}
 				{confirming && (
 					<ConfirmDialog
-						title="Revoke capability"
+						title="Revoke share link"
 						confirmLabel="Revoke"
 						body={
 							<p>
-								Revoke the capability token <strong>{cap.label ?? cap.id}</strong>? Effective immediately.
+								Revoke the share link <strong>{link.label ?? link.id}</strong>? Effective immediately.
 							</p>
 						}
 						onConfirm={revoke}
@@ -106,22 +114,20 @@ function CapabilityRow({ cap, onDone }: { cap: CapabilityListItem; onDone: () =>
 
 interface GrantRow {
 	action: string
-	resource: string
-	/** Optional delegation-check scope dimension; both-or-neither with `scopeValue`. */
+	/** Scope dimension; both-or-neither with `scopeValue` (both empty = global). */
 	scopeType: string
 	scopeValue: string
 }
 
-const EMPTY_ROW: GrantRow = { action: '', resource: '', scopeType: '', scopeValue: '' }
+const EMPTY_ROW: GrantRow = { action: '', scopeType: '', scopeValue: '' }
 
 function IssueForm({ onDone }: { onDone: () => void }) {
 	const [rows, setRows] = useState<GrantRow[]>([{ ...EMPTY_ROW }])
 	const [label, setLabel] = useState('')
 	const [expiry, setExpiry] = useState('')
-	const [maxUses, setMaxUses] = useState('')
 	const [busy, setBusy] = useState(false)
 	const [error, setError] = useState<string | null>(null)
-	const [token, setToken] = useState<IssuedCapabilityResponse | null>(null)
+	const [token, setToken] = useState<IssuedShareLinkResponse | null>(null)
 
 	function updateRow(index: number, patch: Partial<GrantRow>) {
 		setRows((prev) => prev.map((row, i) => (i === index ? { ...row, ...patch } : row)))
@@ -140,51 +146,41 @@ function IssueForm({ onDone }: { onDone: () => void }) {
 		const grants = rows
 			.map((row) => ({
 				action: row.action.trim(),
-				resource: row.resource.trim(),
 				scopeType: row.scopeType.trim(),
 				scopeValue: row.scopeValue.trim(),
 			}))
-			.filter((row) => row.action !== '' || row.resource !== '' || row.scopeType !== '' || row.scopeValue !== '')
+			.filter((row) => row.action !== '' || row.scopeType !== '' || row.scopeValue !== '')
 		if (grants.length === 0) {
-			setError('Add at least one (action, resource) grant.')
+			setError('Add at least one grant.')
 			return
 		}
-		if (grants.some((g) => g.action === '' || g.resource === '')) {
-			setError('Each grant needs both an action and a resource.')
+		if (grants.some((g) => g.action === '')) {
+			setError('Each grant needs an action.')
 			return
 		}
 		if (grants.some((g) => (g.scopeType === '') !== (g.scopeValue === ''))) {
-			setError('A scope needs both a dimension and a value, or leave both empty for global.')
-			return
-		}
-
-		const maxUsesNum = maxUses.trim() === '' ? undefined : Number(maxUses)
-		if (maxUsesNum !== undefined && (!Number.isInteger(maxUsesNum) || maxUsesNum < 1)) {
-			setError('Max uses must be a positive whole number.')
+			setError('A scope needs both a dimension and a value, or leave both empty for a global grant.')
 			return
 		}
 
 		const expiresAt = parseDateTimeLocal(expiry)
 
-		const body: IssueCapabilityRequest = {
+		const body: IssueShareLinkRequest = {
 			grants: grants.map((g) => ({
 				action: g.action,
-				resource: g.resource,
 				scope: g.scopeType === '' ? null : { type: g.scopeType, value: g.scopeValue },
 			})),
 			...(label.trim() === '' ? {} : { label: label.trim() }),
 			...(expiresAt === null ? {} : { expiresAt }),
-			...(maxUsesNum === undefined ? {} : { maxUses: maxUsesNum }),
 		}
 
 		setBusy(true)
 		try {
-			const result = await api.post<IssuedCapabilityResponse>('/capabilities', body)
+			const result = await api.post<IssuedShareLinkResponse>('/share-links', body)
 			setToken(result)
 			setRows([{ ...EMPTY_ROW }])
 			setLabel('')
 			setExpiry('')
-			setMaxUses('')
 			onDone()
 		} catch (cause) {
 			setError(cause instanceof ApiError ? cause.message : 'Issue failed.')
@@ -196,11 +192,10 @@ function IssueForm({ onDone }: { onDone: () => void }) {
 	return (
 		<>
 			<form className="panel form wide" onSubmit={submit}>
-				<h2>Issue capability</h2>
+				<h2>Issue share link</h2>
 				<div className="grant-rows">
 					<div className="grant-rows-head">
 						<span>Action</span>
-						<span>Resource</span>
 						<span>Scope dimension (optional)</span>
 						<span>Scope value</span>
 						<span />
@@ -212,13 +207,6 @@ function IssueForm({ onDone }: { onDone: () => void }) {
 								value={row.action}
 								onChange={(e) => updateRow(i, { action: e.target.value })}
 								placeholder="report.read"
-							/>
-							<input
-								aria-label="Resource"
-								value={row.resource}
-								onChange={(e) => updateRow(i, { resource: e.target.value })}
-								placeholder="report:q3-2025"
-								list="resource-hints"
 							/>
 							<input
 								aria-label="Scope dimension"
@@ -237,14 +225,10 @@ function IssueForm({ onDone }: { onDone: () => void }) {
 							</button>
 						</div>
 					))}
-					<datalist id="resource-hints">
-						{RESOURCE_HINTS.map((hint) => <option key={hint} value={hint} />)}
-					</datalist>
 					<button type="button" className="small" onClick={addRow}>+ Add grant</button>
 					<p className="hint">
-						Known resource-type prefixes:{' '}
-						{RESOURCE_HINTS.map((h) => <code key={h}>{h}</code>)}. The scope is the delegation-check coordinate only (not stored); leave both fields empty
-						for a global check.
+						The grant is matched by <code>permits()</code>{' '}
+						at use time (action + scope). The issuer can only delegate what it itself holds; leave both scope fields empty for a global grant.
 					</p>
 				</div>
 				<label>
@@ -255,22 +239,18 @@ function IssueForm({ onDone }: { onDone: () => void }) {
 					Expires (optional)
 					<input type="datetime-local" value={expiry} onChange={(e) => setExpiry(e.target.value)} />
 				</label>
-				<label>
-					Max uses (optional)
-					<input type="number" min={1} step={1} value={maxUses} onChange={(e) => setMaxUses(e.target.value)} placeholder="unlimited" />
-				</label>
 				{error && <p className="error-text" role="alert">{error}</p>}
 				<div className="form-actions">
-					<button type="submit" className="primary" disabled={busy}>{busy ? 'Issuing…' : 'Issue capability'}</button>
+					<button type="submit" className="primary" disabled={busy}>{busy ? 'Issuing…' : 'Issue share link'}</button>
 				</div>
 			</form>
 			{token && (
 				<SecretModal
-					title="Capability issued"
+					title="Share link issued"
 					fields={[{ label: 'Token', value: token.token, multiline: true }]}
 					note={
 						<p className="hint">
-							Hand this token to the holder over a trusted channel. It is the only secret — anyone with it can redeem the granted actions.
+							Hand this token to the holder over a trusted channel. It is the only secret — anyone with it can perform the granted actions.
 						</p>
 					}
 					onClose={() => setToken(null)}

@@ -3,8 +3,6 @@ import type {
 	AuthenticateInput,
 	AuthenticateResult,
 	IamRpc,
-	IssueCapabilityInput,
-	IssueCapabilityResult,
 	IssueJwtInput,
 	IssueJwtResult,
 	IssueKeyInput,
@@ -19,10 +17,8 @@ import type {
 	MintTokenInput,
 	MintTokenResult,
 	PrincipalListItem,
-	RedeemCapabilityInput,
-	RedeemCapabilityResult,
-	RevokeCapabilityInput,
-	RevokeCapabilityResult,
+	RevokeKeyInput,
+	RevokeKeyResult,
 	RevokeServiceTokenInput,
 	RevokeServiceTokenResult,
 	RotateServiceTokenInput,
@@ -32,9 +28,8 @@ import { WorkerEntrypoint } from 'cloudflare:workers'
 import { handleAdmin } from './admin/router'
 import { principalFromOutcome, resolveRequest } from './auth'
 import { handleAuth } from './auth/routes'
-import { issueCapability, redeemCapability, revokeCapability } from './capabilities'
 import type { Env } from './env'
-import { issueJwt, issueKey } from './issue'
+import { issueJwt, issueKey, revokeKey } from './issue'
 import { buildServices } from './services'
 import { issueServiceToken, revokeServiceToken, rotateServiceToken } from './servicetokens'
 import { getSigner } from './signing'
@@ -51,11 +46,11 @@ const AUTH_LOG_RETENTION_SECONDS = 30 * 24 * 60 * 60 // 30 days
  * Access). It exposes no public HTTP.
  *
  * SECURITY MODEL (hard requirement 3): on calls that forward a valid Access JWT
- * (`authenticate`, `issueCapability`), the verified `aud` identifies the app and
+ * (`authenticate`, `issueKey`), the verified `aud` identifies the app and
  * supersedes the SDK-passed `app` for the auth log / context. The SDK-passed app is
- * trusted only where no token exists (`audit`, `redeemCapability`, failure-path log
- * rows) — for labeling, not as a security boundary. Principal identity is always
- * resolved server-side from the forwarded credentials, never app-asserted.
+ * trusted only where no token exists (`audit`, failure-path log rows) — for labeling,
+ * not as a security boundary. Principal identity is always resolved server-side from
+ * the forwarded credentials, never app-asserted.
  */
 export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 	async authenticate(input: AuthenticateInput): Promise<AuthenticateResult> {
@@ -162,7 +157,7 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 					app: input.app,
 					kind: 'authenticate',
 					principalId,
-					capabilityTokenId: credentialId,
+					credentialId,
 					decision: result.ok ? 'allow' : 'deny',
 					reason: result.ok ? 'mint_key' : result.reason,
 				}),
@@ -204,7 +199,7 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 					requestId: event.requestId,
 					principalId: event.principalId,
 					principalLabel: event.principalLabel,
-					capabilityTokenId: event.capabilityTokenId ?? null,
+					credentialId: event.credentialId ?? null,
 					app: event.app,
 					action: event.action,
 					resourceType: event.resourceType,
@@ -259,93 +254,11 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 		}
 	}
 
-	async redeemCapability(input: RedeemCapabilityInput): Promise<RedeemCapabilityResult> {
-		const services = buildServices(this.env)
-		const result = await redeemCapability(services, input)
-
-		// auth_log row: kind='redeem', principal_id NULL, capability_token_id set on
-		// success. The app is self-asserted (no token on a redeem). Fire-and-forget.
-		this.ctx.waitUntil(
-			services.db.writeAuthLog({
-				requestId: input.requestId,
-				app: input.app,
-				kind: 'redeem',
-				principalId: null,
-				capabilityTokenId: result.ok ? result.tokenId : null,
-				decision: result.ok ? 'allow' : 'deny',
-				reason: result.ok ? null : result.reason,
-			}),
-		)
-
-		return result
-	}
-
-	async issueCapability(input: IssueCapabilityInput): Promise<IssueCapabilityResult> {
+	async revokeKey(input: RevokeKeyInput): Promise<RevokeKeyResult> {
 		const services = buildServices(this.env)
 		try {
-			// Resolve the ISSUER from the forwarded credentials exactly like authenticate()
-			// — never a self-asserted principal id (same failure reasons).
-			const outcome = await resolveRequest(services, {
-				app: input.app,
-				token: input.token,
-				cookie: input.cookie,
-				origin: input.origin,
-				requestId: input.requestId,
-			})
-			const issuer = principalFromOutcome(outcome)
-			if (!issuer || !outcome.result.ok) {
-				// Map the auth failure straight through (missing/invalid/unknown/disabled).
-				return outcome.result.ok ? { ok: false, reason: 'unknown_principal' } : { ok: false, reason: outcome.result.reason }
-			}
-
-			const { result, auditLabel } = await issueCapability(services, input, issuer)
-
-			if (result.ok) {
-				// iam.capability.create audit event — issuer, label, grants; NEVER plaintext.
-				const app = outcome.verifiedApp ?? input.app
-				this.ctx.waitUntil(
-					services.db.writeAuditEvent({
-						requestId: input.requestId,
-						principalId: issuer.id,
-						principalLabel: outcome.result.principal.label,
-						app,
-						action: 'iam.capability.create',
-						resourceType: 'capability',
-						resourceId: result.id,
-						metadata: {
-							label: auditLabel ?? null,
-							grants: input.grants.map((g) => ({ action: g.action, resource: g.resource })),
-						},
-					}),
-				)
-			}
-
-			return result
-		} catch (err) {
-			// Same fail-closed posture as authenticate(): never surface a 500. Record a deny
-			// auth_log row for the issuer-resolution path ('internal_error' goes only into the
-			// free-string reason column — the IssueCapabilityResult union has no such variant and
-			// must not gain one) and return unknown_principal (maps to 403).
-			console.error(`issueCapability failed for request '${input.requestId}'`, err)
-			this.ctx.waitUntil(
-				services.db.writeAuthLog({
-					requestId: input.requestId,
-					app: input.app,
-					kind: 'authenticate',
-					principalId: null,
-					decision: 'deny',
-					reason: 'internal_error',
-				}),
-			)
-			return { ok: false, reason: 'unknown_principal' }
-		}
-	}
-
-	async revokeCapability(input: RevokeCapabilityInput): Promise<RevokeCapabilityResult> {
-		const services = buildServices(this.env)
-		try {
-			// Resolve + authorize the REVOKER from the forwarded credentials, exactly like
-			// issueCapability resolves the issuer — never a self-asserted principal id.
+			// Resolve + authorize the REVOKER from the forwarded credentials, exactly like the
+			// issue path resolves the issuer — never a self-asserted principal id.
 			const outcome = await resolveRequest(services, {
 				app: input.app,
 				token: input.token,
@@ -358,7 +271,7 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 				return outcome.result.ok ? { ok: false, reason: 'unknown_principal' } : { ok: false, reason: outcome.result.reason }
 			}
 
-			const result = await revokeCapability(services, input, revoker)
+			const result = await revokeKey(services, input, { id: revoker.id, permissions: revoker.permissions })
 
 			// Audit only an actual state change (revoked === true); a no-op idempotent
 			// revoke or a denied/not-found attempt writes no domain event.
@@ -370,17 +283,17 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 						principalId: revoker.id,
 						principalLabel: outcome.result.principal.label,
 						app,
-						action: 'iam.capability.revoke',
-						resourceType: 'capability',
-						resourceId: input.tokenId,
+						action: 'iam.credential.revoke',
+						resourceType: 'credential',
+						resourceId: input.id,
 					}),
 				)
 			}
 
 			return result
 		} catch (err) {
-			// Same fail-closed posture as authenticate()/issueCapability(): never surface a 500.
-			console.error(`revokeCapability failed for request '${input.requestId}'`, err)
+			// Same fail-closed posture as authenticate(): never surface a 500.
+			console.error(`revokeKey failed for request '${input.requestId}'`, err)
 			this.ctx.waitUntil(
 				services.db.writeAuthLog({
 					requestId: input.requestId,
@@ -398,7 +311,7 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 	async issueKey(input: IssueKeyInput): Promise<IssueKeyResult> {
 		const services = buildServices(this.env)
 		try {
-			// Resolve the ISSUER from the forwarded credentials exactly like issueCapability().
+			// Resolve the ISSUER from the forwarded credentials exactly like authenticate().
 			const outcome = await resolveRequest(services, {
 				app: input.app,
 				token: input.token,
@@ -501,7 +414,7 @@ export class Propustka extends WorkerEntrypoint<Env> implements IamRpc {
 	async issueServiceToken(input: IssueServiceTokenInput): Promise<IssueServiceTokenResult> {
 		const services = buildServices(this.env)
 		try {
-			// Resolve the ISSUER from the forwarded credentials exactly like issueCapability().
+			// Resolve the ISSUER from the forwarded credentials exactly like authenticate().
 			const outcome = await resolveRequest(services, {
 				app: input.app,
 				token: input.token,

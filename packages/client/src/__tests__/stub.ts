@@ -3,8 +3,6 @@ import type {
 	AuthenticateInput,
 	AuthenticateResult,
 	IamRpc,
-	IssueCapabilityInput,
-	IssueCapabilityResult,
 	IssueJwtInput,
 	IssueJwtResult,
 	IssueKeyInput,
@@ -18,10 +16,8 @@ import type {
 	MintFromKeyResult,
 	MintTokenInput,
 	MintTokenResult,
-	RedeemCapabilityInput,
-	RedeemCapabilityResult,
-	RevokeCapabilityInput,
-	RevokeCapabilityResult,
+	RevokeKeyInput,
+	RevokeKeyResult,
 	RevokeServiceTokenInput,
 	RevokeServiceTokenResult,
 	RotateServiceTokenInput,
@@ -29,15 +25,13 @@ import type {
 } from '@propustka/core'
 
 /**
- * In-memory `IamRpc` stub for SDK tests — no network. Returns canned authenticate/redeem/
- * issue/revoke results and records every `audit` call so tests can assert the auto-attached fields.
+ * In-memory `IamRpc` stub for SDK tests — no network. Returns canned authenticate/mint/issue/
+ * revoke results and records every `audit` call so tests can assert the auto-attached fields.
  */
 export class IamRpcStub implements IamRpc {
 	readonly auditCalls: AuditInput[] = []
 	readonly authenticateInputs: AuthenticateInput[] = []
-	readonly redeemInputs: RedeemCapabilityInput[] = []
-	readonly issueInputs: IssueCapabilityInput[] = []
-	readonly revokeInputs: RevokeCapabilityInput[] = []
+	readonly revokeKeyInputs: RevokeKeyInput[] = []
 	readonly issueServiceInputs: IssueServiceTokenInput[] = []
 	readonly revokeServiceInputs: RevokeServiceTokenInput[] = []
 	readonly rotateServiceInputs: RotateServiceTokenInput[] = []
@@ -50,9 +44,7 @@ export class IamRpcStub implements IamRpc {
 	constructor(
 		private readonly canned: {
 			authenticate?: AuthenticateResult
-			redeem?: RedeemCapabilityResult
-			issue?: IssueCapabilityResult
-			revoke?: RevokeCapabilityResult
+			revokeKey?: RevokeKeyResult
 			issueService?: IssueServiceTokenResult
 			revokeService?: RevokeServiceTokenResult
 			rotateService?: RotateServiceTokenResult
@@ -108,24 +100,10 @@ export class IamRpcStub implements IamRpc {
 		return Promise.resolve()
 	}
 
-	redeemCapability(input: RedeemCapabilityInput): Promise<RedeemCapabilityResult> {
-		this.redeemInputs.push(input)
+	revokeKey(input: RevokeKeyInput): Promise<RevokeKeyResult> {
+		this.revokeKeyInputs.push(input)
 		return Promise.resolve(
-			this.canned.redeem ?? { ok: false, reason: 'unknown' },
-		)
-	}
-
-	issueCapability(input: IssueCapabilityInput): Promise<IssueCapabilityResult> {
-		this.issueInputs.push(input)
-		return Promise.resolve(
-			this.canned.issue ?? { ok: false, reason: 'not_allowed' },
-		)
-	}
-
-	revokeCapability(input: RevokeCapabilityInput): Promise<RevokeCapabilityResult> {
-		this.revokeInputs.push(input)
-		return Promise.resolve(
-			this.canned.revoke ?? { ok: false, reason: 'not_found' },
+			this.canned.revokeKey ?? { ok: false, reason: 'not_found' },
 		)
 	}
 

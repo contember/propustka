@@ -4,18 +4,18 @@ import { readCredentials } from './request'
 import type {
 	AuthContext,
 	AuthFailure,
-	Capability,
-	CapabilityFailure,
-	IssueCapabilityRequest,
-	IssuedCapability,
+	IssuedJwt,
+	IssuedKey,
 	IssuedServiceToken,
 	IssueFailure,
+	IssueJwtRequest,
+	IssueKeyRequest,
 	IssueServiceTokenFailure,
 	IssueServiceTokenRequest,
 	ListPrincipalsFailure,
 	PrincipalIdentity,
 	PrincipalList,
-	RevokedCapability,
+	RevokedKey,
 	RevokedServiceToken,
 	RevokeFailure,
 	RevokeServiceTokenFailure,
@@ -64,51 +64,7 @@ class RealAuthContext implements AuthContext {
 			requestId: this.requestId,
 			principalId: this.principal?.id ?? null,
 			principalLabel: this.auditLabel,
-			...(this.anonymousTokenId === null ? {} : { capabilityTokenId: this.anonymousTokenId }),
-			action: event.action,
-			resourceType: event.resourceType,
-			resourceId: event.resourceId,
-			diff: event.diff,
-			metadata: event.metadata,
-		})
-	}
-}
-
-// ── Capability (real) ──────────────────────────────────────────────────────────
-
-/**
- * A redeemed, anonymous capability token. `can` is EXACT-match (action, resource) — no
- * wildcards. `audit` attaches the token id + label and a null principal.
- */
-class RealCapability implements Capability {
-	readonly ok = true
-
-	constructor(
-		private readonly binding: IamRpc,
-		private readonly appId: string,
-		private readonly requestId: string,
-		private readonly tokenId: string,
-		private readonly label: string | null,
-		private readonly capabilities: ReadonlyArray<{ action: string; resource: string }>,
-	) {}
-
-	can(action: string, resource: string): boolean {
-		for (const c of this.capabilities) {
-			if (c.action === action && c.resource === resource) {
-				return true
-			}
-		}
-		return false
-	}
-
-	audit(event: DomainEvent): Promise<void> {
-		return this.binding.audit({
-			app: this.appId,
-			requestId: this.requestId,
-			principalId: null,
-			// Snapshot the token label; fall back to `capability:<id>` when unlabeled.
-			principalLabel: this.label ?? `capability:${this.tokenId}`,
-			capabilityTokenId: this.tokenId,
+			...(this.anonymousTokenId === null ? {} : { credentialId: this.anonymousTokenId }),
 			action: event.action,
 			resourceType: event.resourceType,
 			resourceId: event.resourceId,
@@ -177,35 +133,24 @@ export class IamClient {
 	}
 
 	/**
-	 * Redeem a capability token (a share link). No identity. A bad/expired/revoked/exhausted
-	 * token reads as a 404 (the link is "invalid or expired"), never a leaky 401/403.
+	 * Mint an opaque, stored, revocable `px_` credential (API key / share link). Forwards the
+	 * REQUESTER's credentials as the issuer — the IAM Worker resolves the issuer server-side and
+	 * enforces the delegation rule (you can only delegate what you can do). Returns the plaintext
+	 * `px_` token ONCE; persist only the `id` (the handle for `revokeKey`). The transport — bearer
+	 * header for a machine, URL-path token for a share link — is the app's choice.
 	 */
-	async redeemCapability(req: Request, token: string): Promise<Capability | CapabilityFailure> {
-		const { requestId } = readCredentials(req)
-		const result = await this.binding.redeemCapability({ app: this.appId, token, requestId })
-		if (result.ok) {
-			return new RealCapability(this.binding, this.appId, requestId, result.tokenId, result.label, result.capabilities)
-		}
-		return { ok: false, reason: result.reason, status: 404 }
-	}
-
-	/**
-	 * Mint a capability (share link) in-flow. Forwards the REQUESTER's credentials as the
-	 * issuer — the IAM Worker resolves the issuer server-side and enforces the delegation rule
-	 * (you can only delegate what you can do). The app supplies only the grants/label/expiry.
-	 */
-	async issueCapability(req: Request, input: IssueCapabilityRequest): Promise<IssuedCapability | IssueFailure> {
+	async issueKey(req: Request, input: IssueKeyRequest): Promise<IssuedKey | IssueFailure> {
 		const { token, cookie, origin, requestId } = readCredentials(req)
-		const result = await this.binding.issueCapability({
+		const result = await this.binding.issueKey({
 			app: this.appId,
 			token,
 			cookie,
 			origin,
 			requestId,
-			grants: input.grants,
+			principalId: input.principalId,
+			permissions: input.permissions,
 			label: input.label,
 			expiresAt: input.expiresAt,
-			maxUses: input.maxUses,
 		})
 		if (result.ok) {
 			return { ok: true, token: result.token, id: result.id }
@@ -214,14 +159,38 @@ export class IamClient {
 	}
 
 	/**
-	 * Revoke a capability (share link) by its id. Forwards the CALLER's credentials as the
-	 * authorizer — the IAM Worker resolves the caller server-side and enforces the rule (the
-	 * original issuer, or anyone who could re-issue the grants, may revoke). Idempotent: a
+	 * Sign a stateless passthrough access token (audit-only, TTL-bounded, NOT revocable). Forwards the
+	 * REQUESTER's credentials as the issuer (same delegation rule as `issueKey`). The holder carries the
+	 * returned JWT directly as `Authorization: Bearer`; apps verify it locally with no propustka
+	 * round-trip. There is nothing to revoke — it is TTL-only by design.
+	 */
+	async issueJwt(req: Request, input: IssueJwtRequest): Promise<IssuedJwt | IssueFailure> {
+		const { token, cookie, origin, requestId } = readCredentials(req)
+		const result = await this.binding.issueJwt({
+			app: this.appId,
+			token,
+			cookie,
+			origin,
+			requestId,
+			permissions: input.permissions,
+			label: input.label,
+			ttl: input.ttl,
+		})
+		if (result.ok) {
+			return { ok: true, token: result.token, expiresAt: result.expiresAt, id: result.id }
+		}
+		return { ok: false, reason: result.reason, status: issueFailureStatus(result.reason) }
+	}
+
+	/**
+	 * Revoke an opaque `px_` credential (API key / share link) by its id. Forwards the CALLER's
+	 * credentials as the authorizer — the IAM Worker resolves the caller server-side and enforces the
+	 * rule (the original issuer, or anyone who could re-issue the grants, may revoke). Idempotent: a
 	 * second revoke returns `{ ok: true, revoked: false }`. An unknown id → 404.
 	 */
-	async revokeCapability(req: Request, tokenId: string): Promise<RevokedCapability | RevokeFailure> {
+	async revokeKey(req: Request, id: string): Promise<RevokedKey | RevokeFailure> {
 		const { token, cookie, origin, requestId } = readCredentials(req)
-		const result = await this.binding.revokeCapability({ app: this.appId, token, cookie, origin, requestId, tokenId })
+		const result = await this.binding.revokeKey({ app: this.appId, token, cookie, origin, requestId, id })
 		if (result.ok) {
 			return { ok: true, revoked: result.revoked }
 		}

@@ -1,4 +1,4 @@
-import type { DomainEvent, IssueCapabilityGrant, PrincipalListItem, PrincipalType, Scope } from '@propustka/core'
+import type { DomainEvent, KeyGrant, PrincipalListItem, PrincipalType, Scope } from '@propustka/core'
 
 /**
  * The resolved caller's identity — who Access says you are, as the IAM Worker recorded
@@ -19,7 +19,7 @@ export interface PrincipalIdentity {
 //
 // Every method returns a discriminated union whose members all carry an `ok` field,
 // so app code branches once on `result.ok`. The ok:true members are the rich
-// `AuthContext` / `Capability` / `IssuedCapability` surfaces; the ok:false members are
+// `AuthContext` / `IssuedKey` / `IssuedJwt` surfaces; the ok:false members are
 // the typed failures below, each carrying the HTTP status the app should return.
 //
 // The ok:true surfaces are modelled as *interfaces* (not concrete classes) so that both
@@ -61,31 +61,30 @@ export interface AuthContext {
 	audit(event: DomainEvent): Promise<void>
 }
 
-/**
- * An anonymous redeemed capability token. Same `can` ergonomics as `AuthContext`, but
- * EXACT (action, resource) matching — no wildcards, no project scope.
- */
-export interface Capability {
+/** Successful `issueKey` — the plaintext `px_` token returned ONCE; `id` is the durable revoke handle. */
+export interface IssuedKey {
 	readonly ok: true
-	/** Exact match against the token's (action, resource) list. No wildcards. */
-	can(action: string, resource: string): boolean
-	/** Emit a domain audit event; capabilityTokenId + token label attached, principalId null. */
-	audit(event: DomainEvent): Promise<void>
-}
-
-/** Successful `issueCapability` — plaintext token returned ONCE. */
-export interface IssuedCapability {
-	readonly ok: true
-	/** Plaintext token — show once, never persist. */
+	/** Plaintext `px_` token — show once, never persist. Carry as a bearer or a share-link path token. */
 	token: string
-	/** The capability token id (safe to store/reference). */
+	/** The credential id (safe to store/reference; pass to `revokeKey`). */
 	id: string
 }
 
-/** Successful `revokeCapability`. `revoked` is false when the token was already revoked. */
-export interface RevokedCapability {
+/** Successful `issueJwt` — the signed passthrough token returned ONCE (audit-only, not revocable). */
+export interface IssuedJwt {
 	readonly ok: true
-	/** True when this call flipped the token to revoked; false if it was already revoked (idempotent). */
+	/** The signed JWT — carry it as `Authorization: Bearer`. Verified locally by the app's SDK. */
+	token: string
+	/** Expiry (unix seconds). */
+	expiresAt: number
+	/** The token's audit reference (there is no DB row to revoke). */
+	id: string
+}
+
+/** Successful `revokeKey`. `revoked` is false when the credential was already revoked. */
+export interface RevokedKey {
+	readonly ok: true
+	/** True when this call flipped the credential to revoked; false if it was already revoked (idempotent). */
 	revoked: boolean
 }
 
@@ -104,21 +103,14 @@ export interface AuthFailure {
 	status: 401 | 403
 }
 
-/** `redeemCapability` failure — a bad/expired share link reads as 404. */
-export interface CapabilityFailure {
-	readonly ok: false
-	reason: 'unknown' | 'expired' | 'revoked' | 'exhausted'
-	status: 404
-}
-
-/** `issueCapability` failure. missing/invalid → 401; unknown_principal/disabled/not_allowed → 403. */
+/** `issueKey` / `issueJwt` failure. missing/invalid → 401; unknown_principal/disabled/not_allowed → 403. */
 export interface IssueFailure {
 	readonly ok: false
 	reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed'
 	status: 401 | 403
 }
 
-/** `revokeCapability` failure. missing/invalid → 401; unknown/disabled/not_allowed → 403; not_found → 404. */
+/** `revokeKey` failure. missing/invalid → 401; unknown/disabled/not_allowed → 403; not_found → 404. */
 export interface RevokeFailure {
 	readonly ok: false
 	reason: 'missing_token' | 'invalid_token' | 'unknown_principal' | 'disabled' | 'not_allowed' | 'not_found'
@@ -135,15 +127,33 @@ export interface ListPrincipalsFailure {
 // ── Inputs ───────────────────────────────────────────────────────────────────
 
 /**
- * App-supplied portion of `issueCapability` — the grants/label/expiry/maxUses. The SDK
- * fills `app` and the issuer's forwarded credentials (token/cookie/origin/requestId) from
- * the request, so app code can never self-assert the issuer.
+ * App-supplied portion of `issueKey` — an opaque, stored, revocable `px_` credential (API key /
+ * share link). The SDK fills `app` and the issuer's forwarded credentials (token/cookie/origin/
+ * requestId) from the request, so app code can never self-assert the issuer.
  */
-export interface IssueCapabilityRequest {
-	grants: IssueCapabilityGrant[]
+export interface IssueKeyRequest {
+	/**
+	 * Bind to a principal (the credential then carries that principal's LIVE perms; inline
+	 * `permissions` downscope it). v1: only the issuer's OWN id. Omit for a standalone share link.
+	 */
+	principalId?: string
+	/** Inline grants — the frozen set (standalone share link) and/or a downscope restriction (bound). */
+	permissions?: KeyGrant[]
 	label?: string
+	/** Absolute credential expiry (unix seconds); omitted = no expiry. */
 	expiresAt?: number
-	maxUses?: number
+}
+
+/**
+ * App-supplied portion of `issueJwt` — a stateless passthrough access token (audit-only, TTL-bounded,
+ * NOT revocable). The SDK fills `app` and the issuer's forwarded credentials from the request.
+ */
+export interface IssueJwtRequest {
+	/** Inline grants the passthrough token carries (frozen at issue). */
+	permissions: KeyGrant[]
+	label?: string
+	/** Requested lifetime (seconds); capped by the server. Defaults to the standard token TTL. */
+	ttl?: number
 }
 
 /**

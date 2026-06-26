@@ -3,18 +3,18 @@ import { matchAction, permits, scopedValues } from '@propustka/core'
 import type {
 	AuthContext,
 	AuthFailure,
-	Capability,
-	CapabilityFailure,
-	IssueCapabilityRequest,
-	IssuedCapability,
+	IssuedJwt,
+	IssuedKey,
 	IssuedServiceToken,
 	IssueFailure,
+	IssueJwtRequest,
+	IssueKeyRequest,
 	IssueServiceTokenFailure,
 	IssueServiceTokenRequest,
 	ListPrincipalsFailure,
 	PrincipalIdentity,
 	PrincipalList,
-	RevokedCapability,
+	RevokedKey,
 	RevokedServiceToken,
 	RevokeFailure,
 	RevokeServiceTokenFailure,
@@ -182,20 +182,6 @@ class PersonaAuthContext implements AuthContext {
 	}
 }
 
-class FakeCapability implements Capability {
-	readonly ok = true
-
-	constructor(private readonly deny: string[]) {}
-
-	can(action: string, _resource: string): boolean {
-		return !isDenied(this.deny, action)
-	}
-
-	audit(_event: DomainEvent): Promise<void> {
-		return Promise.resolve()
-	}
-}
-
 // ── FakeIamClient ─────────────────────────────────────────────────────────────
 
 /**
@@ -212,10 +198,8 @@ export class FakeIamClient {
 	private readonly personaHeader: string
 	private readonly defaultPersona?: string
 	private readonly resolve?: (req: Request) => FakePersona | null | Promise<FakePersona | null>
-	// In-memory capability registry so issue → redeem → revoke stay consistent in dev/tests
-	// (no IAM Worker locally). Maps the plaintext token to its id, tracks every issued id,
-	// and the subset that has been revoked — so a redeemed-then-revoked token reads 'revoked'.
-	private readonly issuedTokens = new Map<string, string>()
+	// In-memory credential registry so issueKey → revokeKey stay consistent in dev/tests (no IAM
+	// Worker locally): tracks every issued credential id and the subset that has been revoked.
 	private readonly issuedIds = new Set<string>()
 	private readonly revokedIds = new Set<string>()
 	// In-memory service-token registry (keyed by clientId) so a locally minted service token
@@ -288,34 +272,29 @@ export class FakeIamClient {
 		return Promise.resolve({ ok: true, principals })
 	}
 
-	redeemCapability(_req: Request, token: string): Promise<Capability | CapabilityFailure> {
-		// A token issued by THIS fake and since revoked reads 'revoked' (404), like the real
-		// Worker. Tokens we never issued (e.g. a hand-written one) still redeem allow-all — the
-		// fake is a dev/test convenience, not a validator.
-		const id = this.issuedTokens.get(token)
-		if (id && this.revokedIds.has(id)) {
-			return Promise.resolve({ ok: false, reason: 'revoked', status: 404 })
-		}
-		return Promise.resolve(new FakeCapability(this.deny))
-	}
-
-	issueCapability(_req: Request, _input: IssueCapabilityRequest): Promise<IssuedCapability | IssueFailure> {
+	issueKey(_req: Request, _input: IssueKeyRequest): Promise<IssuedKey | IssueFailure> {
 		const suffix = crypto.randomUUID()
-		const token = `fake-token-${suffix}`
-		const id = `fake-${this.identity.id}-${suffix}`
-		this.issuedTokens.set(token, id)
+		const token = `px_fake-${suffix}`
+		const id = `fake-cred-${suffix}`
 		this.issuedIds.add(id)
 		return Promise.resolve({ ok: true, token, id })
 	}
 
-	revokeCapability(_req: Request, tokenId: string): Promise<RevokedCapability | RevokeFailure> {
-		if (!this.issuedIds.has(tokenId)) {
+	issueJwt(_req: Request, _input: IssueJwtRequest): Promise<IssuedJwt | IssueFailure> {
+		const suffix = crypto.randomUUID()
+		// A fake passthrough token (audit-only, not revocable) — no registry entry. The `expiresAt`
+		// is a fixed 5-minute window so callers can exercise the shape without real signing.
+		return Promise.resolve({ ok: true, token: `fake-jwt-${suffix}`, expiresAt: 300, id: `fake-jwt-${suffix}` })
+	}
+
+	revokeKey(_req: Request, id: string): Promise<RevokedKey | RevokeFailure> {
+		if (!this.issuedIds.has(id)) {
 			return Promise.resolve({ ok: false, reason: 'not_found', status: 404 })
 		}
-		if (this.revokedIds.has(tokenId)) {
+		if (this.revokedIds.has(id)) {
 			return Promise.resolve({ ok: true, revoked: false })
 		}
-		this.revokedIds.add(tokenId)
+		this.revokedIds.add(id)
 		return Promise.resolve({ ok: true, revoked: true })
 	}
 

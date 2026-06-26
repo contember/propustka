@@ -1,7 +1,7 @@
 import type { ResolvedPrincipal } from '@propustka/core'
 import { describe, expect, test } from 'bun:test'
 import { IamClient } from '../client'
-import type { AuthContext, AuthFailure, Capability, CapabilityFailure, IssuedCapability, IssueFailure } from '../types'
+import type { AuthContext, AuthFailure, IssuedKey, IssueFailure } from '../types'
 import { IamRpcStub, makeRequest } from './stub'
 
 const principal = (overrides: Partial<ResolvedPrincipal> = {}): ResolvedPrincipal => ({
@@ -23,18 +23,10 @@ function expectAuth(result: AuthContext | AuthFailure): AuthContext {
 	return result
 }
 
-function expectCap(result: Capability | CapabilityFailure): Capability {
+function expectIssuedKey(result: IssuedKey | IssueFailure): IssuedKey {
 	expect(result.ok).toBe(true)
 	if (!result.ok) {
-		throw new Error('expected a Capability')
-	}
-	return result
-}
-
-function expectIssued(result: IssuedCapability | IssueFailure): IssuedCapability {
-	expect(result.ok).toBe(true)
-	if (!result.ok) {
-		throw new Error('expected an IssuedCapability')
+		throw new Error('expected an IssuedKey')
 	}
 	return result
 }
@@ -180,67 +172,6 @@ describe('AuthContext.audit', () => {
 	})
 })
 
-describe('IamClient.redeemCapability', () => {
-	const cap = async (caps: { action: string; resource: string }[], label: string | null = null): Promise<Capability> => {
-		const stub = new IamRpcStub({ redeem: { ok: true, capabilities: caps, tokenId: 'tok-1', label } })
-		const result = await new IamClient(stub, 'app-x').redeemCapability(makeRequest({ ray: 'ray-7' }), 'the-token')
-		return expectCap(result)
-	}
-
-	test('can() is exact (action, resource) match — no wildcards', async () => {
-		const c = await cap([{ action: 'report.read', resource: 'report:q2' }])
-		expect(c.can('report.read', 'report:q2')).toBe(true)
-		expect(c.can('report.read', 'report:q3')).toBe(false)
-		expect(c.can('report.write', 'report:q2')).toBe(false)
-		// Wildcards must NOT widen a capability.
-		expect(c.can('report.*', 'report:q2')).toBe(false)
-	})
-
-	test('forwards app + token + requestId to the binding', async () => {
-		const stub = new IamRpcStub({ redeem: { ok: true, capabilities: [], tokenId: 't', label: null } })
-		await new IamClient(stub, 'app-z').redeemCapability(makeRequest({ ray: 'ray-3' }), 'tok')
-		expect(stub.redeemInputs[0]).toEqual({ app: 'app-z', token: 'tok', requestId: 'ray-3' })
-	})
-
-	test('failure → 404 regardless of reason', async () => {
-		for (const reason of ['unknown', 'expired', 'revoked', 'exhausted'] as const) {
-			const stub = new IamRpcStub({ redeem: { ok: false, reason } })
-			const result = await new IamClient(stub, 'app-x').redeemCapability(makeRequest(), 'tok')
-			expect(result.ok).toBe(false)
-			if (result.ok) {
-				throw new Error('unreachable')
-			}
-			expect(result.reason).toBe(reason)
-			expect(result.status).toBe(404)
-		}
-	})
-
-	test('audit injects capabilityTokenId + label, principalId null', async () => {
-		const stub = new IamRpcStub({ redeem: { ok: true, capabilities: [], tokenId: 'tok-X', label: 'Share Q2' } })
-		const c = expectCap(await new IamClient(stub, 'app-x').redeemCapability(makeRequest({ ray: 'ray-5' }), 'tok'))
-		await c.audit({ action: 'report.feedback.create', resourceType: 'report', resourceId: 'q2' })
-		expect(stub.auditCalls[0]).toEqual({
-			app: 'app-x',
-			requestId: 'ray-5',
-			principalId: null,
-			principalLabel: 'Share Q2',
-			capabilityTokenId: 'tok-X',
-			action: 'report.feedback.create',
-			resourceType: 'report',
-			resourceId: 'q2',
-			diff: undefined,
-			metadata: undefined,
-		})
-	})
-
-	test('audit label falls back to capability:<id> when unlabeled', async () => {
-		const stub = new IamRpcStub({ redeem: { ok: true, capabilities: [], tokenId: 'tok-Y', label: null } })
-		const c = expectCap(await new IamClient(stub, 'app-x').redeemCapability(makeRequest(), 'tok'))
-		await c.audit({ action: 'report.read', resourceType: 'report' })
-		expect(stub.auditCalls[0]?.principalLabel).toBe('capability:tok-Y')
-	})
-})
-
 describe('IamClient.listPrincipals', () => {
 	test('forwards credentials and returns the roster on success', async () => {
 		const principals = [{ id: 'p1', type: 'user' as const, label: 'a@x.test', email: 'a@x.test', disabled: false }]
@@ -272,32 +203,31 @@ describe('IamClient.listPrincipals', () => {
 	})
 })
 
-describe('IamClient.issueCapability', () => {
-	test('ok → IssuedCapability and forwards issuer credentials + grants', async () => {
-		const stub = new IamRpcStub({ issue: { ok: true, token: 'plaintext', id: 'cap-1' } })
+describe('IamClient.issueKey', () => {
+	test('ok → IssuedKey and forwards issuer credentials + binding + grants', async () => {
+		const stub = new IamRpcStub({ issueKey: { ok: true, token: 'px_plaintext', id: 'cred-1' } })
 		const iam = new IamClient(stub, 'app-x')
-		const result = await iam.issueCapability(
+		const result = await iam.issueKey(
 			makeRequest({ url: 'https://r.example.com/x', token: 'jwt', cookie: 'ck', ray: 'ray-2' }),
 			{
-				grants: [{ action: 'report.read', resource: 'report:q2', scope: { type: 'project', value: 'p1' } }],
+				permissions: [{ action: 'report.read', scope: { type: 'project', value: 'p1' } }],
 				label: 'Share',
 				expiresAt: 99,
-				maxUses: 3,
 			},
 		)
-		const ok = expectIssued(result)
-		expect(ok.token).toBe('plaintext')
-		expect(ok.id).toBe('cap-1')
-		expect(stub.issueInputs[0]).toEqual({
+		const ok = expectIssuedKey(result)
+		expect(ok.token).toBe('px_plaintext')
+		expect(ok.id).toBe('cred-1')
+		expect(stub.issueKeyInputs[0]).toEqual({
 			app: 'app-x',
 			token: 'jwt',
 			cookie: 'ck',
 			origin: 'https://r.example.com',
 			requestId: 'ray-2',
-			grants: [{ action: 'report.read', resource: 'report:q2', scope: { type: 'project', value: 'p1' } }],
+			principalId: undefined,
+			permissions: [{ action: 'report.read', scope: { type: 'project', value: 'p1' } }],
 			label: 'Share',
 			expiresAt: 99,
-			maxUses: 3,
 		})
 	})
 
@@ -313,8 +243,8 @@ describe('IamClient.issueCapability', () => {
 			{ reason: 'not_allowed', status: 403 },
 		]
 		for (const c of cases) {
-			const stub = new IamRpcStub({ issue: { ok: false, reason: c.reason } })
-			const result = await new IamClient(stub, 'app-x').issueCapability(makeRequest(), { grants: [] })
+			const stub = new IamRpcStub({ issueKey: { ok: false, reason: c.reason } })
+			const result = await new IamClient(stub, 'app-x').issueKey(makeRequest(), { permissions: [] })
 			expect(result.ok).toBe(false)
 			if (result.ok) {
 				throw new Error('unreachable')
@@ -325,32 +255,59 @@ describe('IamClient.issueCapability', () => {
 	})
 })
 
-describe('IamClient.revokeCapability', () => {
-	test('ok → forwards caller credentials + tokenId, returns revoked flag', async () => {
-		const stub = new IamRpcStub({ revoke: { ok: true, revoked: true } })
+describe('IamClient.issueJwt', () => {
+	test('ok → IssuedJwt and forwards issuer credentials + grants', async () => {
+		const stub = new IamRpcStub({ issueJwt: { ok: true, token: 'eyJ.jwt', expiresAt: 123, id: 'tok-1' } })
+		const result = await new IamClient(stub, 'app-x').issueJwt(
+			makeRequest({ url: 'https://r.example.com/x', token: 'jwt', cookie: 'ck', ray: 'ray-4' }),
+			{ permissions: [{ action: 'report.read', scope: null }], label: 'pass', ttl: 600 },
+		)
+		expect(result).toEqual({ ok: true, token: 'eyJ.jwt', expiresAt: 123, id: 'tok-1' })
+		expect(stub.issueJwtInputs[0]).toEqual({
+			app: 'app-x',
+			token: 'jwt',
+			cookie: 'ck',
+			origin: 'https://r.example.com',
+			requestId: 'ray-4',
+			permissions: [{ action: 'report.read', scope: null }],
+			label: 'pass',
+			ttl: 600,
+		})
+	})
+
+	test('failure → 403 (not_allowed)', async () => {
+		const stub = new IamRpcStub({ issueJwt: { ok: false, reason: 'not_allowed' } })
+		const result = await new IamClient(stub, 'app-x').issueJwt(makeRequest(), { permissions: [] })
+		expect(result).toEqual({ ok: false, reason: 'not_allowed', status: 403 })
+	})
+})
+
+describe('IamClient.revokeKey', () => {
+	test('ok → forwards caller credentials + id, returns revoked flag', async () => {
+		const stub = new IamRpcStub({ revokeKey: { ok: true, revoked: true } })
 		const iam = new IamClient(stub, 'app-x')
-		const result = await iam.revokeCapability(
+		const result = await iam.revokeKey(
 			makeRequest({ url: 'https://r.example.com/x', token: 'jwt', cookie: 'ck', ray: 'ray-9' }),
-			'cap-7',
+			'cred-7',
 		)
 		expect(result.ok).toBe(true)
 		if (!result.ok) {
 			throw new Error('unreachable')
 		}
 		expect(result.revoked).toBe(true)
-		expect(stub.revokeInputs[0]).toEqual({
+		expect(stub.revokeKeyInputs[0]).toEqual({
 			app: 'app-x',
 			token: 'jwt',
 			cookie: 'ck',
 			origin: 'https://r.example.com',
 			requestId: 'ray-9',
-			tokenId: 'cap-7',
+			id: 'cred-7',
 		})
 	})
 
 	test('already revoked → ok with revoked:false (idempotent)', async () => {
-		const stub = new IamRpcStub({ revoke: { ok: true, revoked: false } })
-		const result = await new IamClient(stub, 'app-x').revokeCapability(makeRequest(), 'cap-7')
+		const stub = new IamRpcStub({ revokeKey: { ok: true, revoked: false } })
+		const result = await new IamClient(stub, 'app-x').revokeKey(makeRequest(), 'cred-7')
 		expect(result).toEqual({ ok: true, revoked: false })
 	})
 
@@ -367,8 +324,8 @@ describe('IamClient.revokeCapability', () => {
 			{ reason: 'not_found', status: 404 },
 		]
 		for (const c of cases) {
-			const stub = new IamRpcStub({ revoke: { ok: false, reason: c.reason } })
-			const result = await new IamClient(stub, 'app-x').revokeCapability(makeRequest(), 'cap-7')
+			const stub = new IamRpcStub({ revokeKey: { ok: false, reason: c.reason } })
+			const result = await new IamClient(stub, 'app-x').revokeKey(makeRequest(), 'cred-7')
 			expect(result.ok).toBe(false)
 			if (result.ok) {
 				throw new Error('unreachable')

@@ -153,10 +153,10 @@ function AuditRow({ event }: { event: AuditEventDto }) {
 			<tr>
 				<td>{fmtDate(event.createdAt)}</td>
 				<td>
-					{event.capabilityTokenId
+					{event.credentialId
 						? (
-							<span title={event.capabilityTokenId}>
-								capability <code className="small">{event.capabilityTokenId}</code>
+							<span title={event.credentialId}>
+								credential <code className="small">{event.credentialId}</code>
 							</span>
 						)
 						: event.principalLabel}

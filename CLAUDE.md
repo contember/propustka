@@ -59,16 +59,22 @@ later follow-up.
   `issueKey` mints an opaque revocable `px_` credential (optional principal binding, optional inline
   grants/downscope), `issueJwt` signs a stateless passthrough token; `mintFromKey` resolves a `px_`
   bearer → access token. `PropustkaAuth` accepts an `Authorization: Bearer` `px_` key (exchanged +
-  cached) or a passthrough JWT (local verify) in addition to the `px_session` cookie. STILL on the
-  CF path (add-only, follow-ups): `issueServiceToken` (not yet repointed onto credentials),
-  `capability_tokens`/`redeemCapability` (not yet folded), the per-path rule schema, CF removal.
+  cached) or a passthrough JWT (local verify) in addition to the `px_session` cookie. The capability
+  tokens are now FULLY FOLDED into credentials (migration `0006`): `capability_tokens`/
+  `capability_grants` dropped, `redeemCapability`→`mintFromKey`, `issueCapability`→`issueKey`,
+  `revokeCapability`→`revokeKey`, the admin "Share links" page issues anonymous credentials, and the
+  audit linkage column is `credential_id` (kind='redeem' retired). STILL on the CF path (add-only,
+  follow-ups): `issueServiceToken` (the CF service-token half — native `px_` key minted alongside),
+  the per-path rule schema, CF removal.
 - New deploy vars/secrets: `PROPUSTKA_HOSTNAME` (now also the token `iss`), `PROPUSTKA_OIDC_ISSUER`,
   `PROPUSTKA_OIDC_CLIENT_ID` (+ optional `PROPUSTKA_OIDC_SCOPES`, `PROPUSTKA_OIDC_REQUIRE_VERIFIED_EMAIL`),
   and the SECRETS `PROPUSTKA_SIGNING_KEYS` (JSON array of EC P-256 private JWKs) +
   `PROPUSTKA_OIDC_CLIENT_SECRET` (`wrangler secret put` remote / `.dev.vars` local, like CF_API_TOKEN).
 - **Read `propustka-native-spec.md` before touching this** — it has the unified model (stateful key
-  vs passthrough JWT), what's built, and the follow-ups (repoint service tokens, fold capability
-  tokens, the per-path rule schema, CF Access removal, Access bypass for `/auth/*`).
+  vs passthrough JWT), what's built, and the follow-ups (repoint service tokens, the per-path rule
+  schema, CF Access removal, Access bypass for `/auth/*`). NOTE: the older system specs
+  (`iam-service-spec.md`, `architecture.md`, `admin-ui-spec.md`) still describe the pre-fold
+  capability-token model and have not been rewritten.
 
 npm releases (`@propustka/core`, `@propustka/client`) publish on a `v*` tag via `release.yml`
 (OIDC trusted publishing — no npm token).

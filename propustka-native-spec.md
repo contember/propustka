@@ -235,17 +235,19 @@ per kind defaulting), `SESSION_COOKIE_DOMAIN`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, 
 
 ## Migration (from the split model)
 
-- **Wire token**: `PrincipalTokenClaims` + `CapabilityTokenClaims` → one `AccessTokenClaims` (drop
-  `kind`, optional principal). The SDK's `RealCapability` collapses into the anonymous variant of
+- **Wire token** ✅ DONE: `PrincipalTokenClaims` + `CapabilityTokenClaims` → one `AccessTokenClaims`
+  (drop `kind`, optional principal). The SDK's `RealCapability` collapsed into the anonymous variant of
   `RealAuthContext`; `can(action, resource)` consumers move to `can(action, { type, value })`.
-- **Tables**: `capability_tokens` (+ `capability_grants`) → `credentials` (+ `credential_grants`).
-  `sessions` stays its own table (different birth: OIDC `idp_sub`/`email`) but is the human instance
-  of the same primitive and shares the resolve→sign pipeline.
-- **RPC**: `mintToken` generalizes to accept a session OR a key source and an optional (capped) TTL.
-  `issueServiceToken`/`issueCapability` reduce to `issueKey`; `redeemCapability` becomes the key
-  resolution path. `issueJwt` is new. The CF service-token half of `issueServiceToken` is kept
-  **add-only** during migration (existing service-token clients keep working behind Access) and
-  removed when the last machine app has flipped.
+- **Tables** ✅ DONE (migration `0006`): `capability_tokens` (+ `capability_grants`) → `credentials`
+  (+ `credential_grants`); the audit linkage column `capability_token_id` → `credential_id` and the
+  unused `auth_log` kind='redeem' is retired. `sessions` stays its own table (different birth: OIDC
+  `idp_sub`/`email`) but is the human instance of the same primitive and shares the resolve→sign
+  pipeline.
+- **RPC** ✅ DONE (capability fold): `mintToken` accepts a session source; `mintFromKey` is the key
+  resolution path that replaced `redeemCapability`. `issueCapability` → `issueKey`; `revokeCapability`
+  → `revokeKey`. `issueJwt` is new. The admin share-links page issues anonymous credentials via
+  `issueKey`. STILL add-only: the CF service-token half of `issueServiceToken` (existing service-token
+  clients keep working behind Access) — removed when the last machine app has flipped.
 - **CF Access removal (last)**: delete `cfaccess.ts`, `scripts/provision-access*.ts`,
   `reconcile-access`, `ACCESS_APPS`/`TEAM`; rebirth `propustka.access.ts` as the per-path credential
   declaration above. Until then `/auth/*` + `/.well-known/jwks.json` need a `public` carve-out.
@@ -263,12 +265,13 @@ per kind defaulting), `SESSION_COOKIE_DOMAIN`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, 
 
 ## Build order
 
-1. **Core** — unify the access token (`AccessTokenClaims`, build/parse, resolved mapping).
-2. **Worker** — `credentials` table + Db, `resolveCredential` (2×2), generalize `mintToken`
-   (session|key, capped TTL), `issueKey` + `issueJwt`, repoint capability + service-token onto the
-   primitive (CF half add-only).
-3. **SDK** — `PropustkaAuth` accepts cookie / `px_` bearer / passthrough JWT; collapse `Capability`
-   into the anonymous `AuthContext`.
+1. **Core** ✅ — unify the access token (`AccessTokenClaims`, build/parse, resolved mapping).
+2. **Worker** ✅ — `credentials` table + Db, `resolveCredential` (2×2), generalize `mintToken`
+   (session|key, capped TTL), `issueKey` + `issueJwt`, fold `capability_tokens`/`redeemCapability`/
+   `issueCapability`/`revokeCapability` onto the primitive (migration `0006`); service-token CF half
+   stays add-only.
+3. **SDK** ✅ — `PropustkaAuth` accepts cookie / `px_` bearer / passthrough JWT; `Capability` collapsed
+   into the anonymous `AuthContext`; `IamClient` exposes `issueKey`/`issueJwt`/`revokeKey`.
 4. **Rule schema + CF Access removal** — the per-path credential declaration; delete CF Access
    machinery (later slice).
 

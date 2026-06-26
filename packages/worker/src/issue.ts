@@ -21,10 +21,13 @@ import {
 	MAX_PASSTHROUGH_TTL_SECONDS,
 	type PermissionEntry,
 	permits,
+	type RevokeKeyInput,
+	type RevokeKeyResult,
 	uuidv7,
 } from '@propustka/core'
-import { generateToken, hashToken } from './capabilities'
+import type { CredentialGrantRow } from './db'
 import type { Env } from './env'
+import { generateToken, hashToken } from './secret'
 import type { Services } from './services'
 import { signAccessToken } from './tokens'
 
@@ -116,4 +119,38 @@ export async function issueJwt(
 		expiresAt,
 	})
 	return { result: { ok: true, token, expiresAt, id }, auditLabel: input.label }
+}
+
+// ── revokeKey ───────────────────────────────────────────────────────────────────
+
+/** A `credential_grants` row → a delegation-check `KeyGrant` (both scope cols null = global). */
+function credentialGrantToKeyGrant(row: CredentialGrantRow): KeyGrant {
+	const scope = row.scope_type === null || row.scope_value === null ? null : { type: row.scope_type, value: row.scope_value }
+	return { action: row.action, scope }
+}
+
+/**
+ * Revoke an opaque `px_` credential by id. Authorization mirrors the old capability revoke: the
+ * original issuer may always revoke; otherwise, for an ANONYMOUS credential (a share link), the caller
+ * must be able to re-issue its grants — hold every granted action, checked with the same
+ * `findUncoveredGrant` as issue. A principal-bound credential is managed through the principal path
+ * (api-keys / service tokens), so a non-issuer caller cannot revoke it by id here. Idempotent — a
+ * second revoke returns `{ ok: true, revoked: false }`; an unknown id → `not_found`.
+ */
+export async function revokeKey(services: Services, input: RevokeKeyInput, revoker: Issuer): Promise<RevokeKeyResult> {
+	const cred = await services.db.getCredentialById(input.id)
+	if (!cred) {
+		return { ok: false, reason: 'not_found' }
+	}
+	if (cred.issued_by !== revoker.id) {
+		if (cred.principal_id !== null) {
+			return { ok: false, reason: 'not_allowed' }
+		}
+		const grants = (await services.db.getCredentialGrants(cred.id)).map(credentialGrantToKeyGrant)
+		if (findUncoveredGrant(revoker.permissions, grants) !== null) {
+			return { ok: false, reason: 'not_allowed' }
+		}
+	}
+	const revoked = await services.db.revokeCredential(cred.id)
+	return { ok: true, revoked }
 }

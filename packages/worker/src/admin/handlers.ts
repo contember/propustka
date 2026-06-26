@@ -1,13 +1,13 @@
-import type { AccessAppDecl, AccessRule, AppAccess, AppSchema, IssueCapabilityInput, PermissionEntry, RoleDef } from '@propustka/core'
+import type { AccessAppDecl, AccessRule, AppAccess, AppSchema, IssueKeyInput, KeyGrant, PermissionEntry, RoleDef } from '@propustka/core'
 import { API_KEY_PREFIX, isActionAllowed } from '@propustka/core'
 import type { ResolveOutcome } from '../auth'
 import { resolveRequest } from '../auth'
-import { generateToken, hashToken, issueCapability } from '../capabilities'
 import { CfAccessError, type MintedServiceToken, type PolicyInclusion } from '../cfaccess'
 import {
 	type AuditEventRow,
 	type AuthLogRow,
-	type CapabilityTokenRow,
+	type CredentialGrantRow,
+	type CredentialRow,
 	type GrantRow,
 	type GroupMappingRow,
 	type PrincipalRow,
@@ -15,9 +15,11 @@ import {
 	type RoleRow,
 } from '../db'
 import { normalizeGroupRef } from '../identity'
+import { issueKey } from '../issue'
 import { arrayField, booleanField, nullableStringField, numberField, parseJson, prop, stringField } from '../json'
 import { computePermissions } from '../resolve'
 import { BUILTIN_ROLES, isKnownRole, makeRoleSource } from '../roles'
+import { generateToken, hashToken } from '../secret'
 import type { Services } from '../services'
 import { error, json, readJson } from './http'
 import { type AppAccessReadback, readAppAccess, reconcileAccess, ReconcileAccessError } from './reconcile-access'
@@ -28,10 +30,9 @@ import type {
 	AppSchemaDto,
 	AuditEventDto,
 	AuthLogDto,
-	CapabilityListItem,
 	GrantDto,
 	GroupMappingDto,
-	IssuedCapabilityResponse,
+	IssuedShareLinkResponse,
 	MeDto,
 	PolicyDto,
 	PrincipalDetail,
@@ -39,6 +40,7 @@ import type {
 	ProvisionApiKeyResponse,
 	RoleDto,
 	RotateApiKeyResponse,
+	ShareLinkListItem,
 } from './types'
 
 /**
@@ -55,7 +57,7 @@ export interface AdminContext {
 	app: string
 	/** The full resolve outcome, reused so handlers can forward the admin's credentials. */
 	outcome: ResolveOutcome
-	/** The original RPC-shaped authenticate input (forwarded for issueCapability). */
+	/** The original RPC-shaped authenticate input (forwarded for issueKey / share-link issue). */
 	authInput: { token: string | null; cookie: string | null; origin: string | null; requestId: string }
 	ctx: ExecutionContext
 }
@@ -177,7 +179,7 @@ function toAuditEventDto(row: AuditEventRow): AuditEventDto {
 		requestId: row.request_id,
 		principalId: row.principal_id,
 		principalLabel: row.principal_label,
-		capabilityTokenId: row.capability_token_id,
+		credentialId: row.credential_id,
 		app: row.app,
 		action: row.action,
 		resourceType: row.resource_type,
@@ -195,24 +197,25 @@ function toAuthLogDto(row: AuthLogRow): AuthLogDto {
 		app: row.app,
 		kind: row.kind,
 		principalId: row.principal_id,
-		capabilityTokenId: row.capability_token_id,
+		credentialId: row.credential_id,
 		decision: row.decision,
 		reason: row.reason,
 		createdAt: row.created_at,
 	}
 }
 
-function toCapabilityListItem(row: CapabilityTokenRow, grants: { action: string; resource: string }[]): CapabilityListItem {
+function toShareLinkListItem(row: CredentialRow, grants: CredentialGrantRow[]): ShareLinkListItem {
 	return {
 		id: row.id,
 		label: row.label,
 		issuedBy: row.issued_by,
 		expiresAt: row.expires_at,
-		maxUses: row.max_uses,
-		usedCount: row.used_count,
 		revokedAt: row.revoked_at,
 		createdAt: row.created_at,
-		grants,
+		grants: grants.map((g) => ({
+			action: g.action,
+			scope: g.scope_type === null || g.scope_value === null ? null : { type: g.scope_type, value: g.scope_value },
+		})),
 	}
 }
 
@@ -1291,77 +1294,74 @@ export async function rotateApiKey(c: AdminContext, principalId: string): Promis
 	return json(response)
 }
 
-// ── Capability tokens ─────────────────────────────────────────────────────────
+// ── Share links (anonymous credentials) ─────────────────────────────────────────
 
-export async function listCapabilities(c: AdminContext): Promise<Response> {
-	const tokens = await c.services.db.listCapabilityTokens()
-	const items: CapabilityListItem[] = []
-	for (const token of tokens) {
-		const grants = await c.services.db.getCapabilityGrants(token.id)
-		items.push(toCapabilityListItem(token, grants.map((g) => ({ action: g.action, resource: g.resource }))))
+export async function listShareLinks(c: AdminContext): Promise<Response> {
+	const creds = await c.services.db.listAnonymousCredentials()
+	const items: ShareLinkListItem[] = []
+	for (const cred of creds) {
+		const grants = await c.services.db.getCredentialGrants(cred.id)
+		items.push(toShareLinkListItem(cred, grants))
 	}
-	return json({ items } satisfies { items: CapabilityListItem[] })
+	return json({ items } satisfies { items: ShareLinkListItem[] })
 }
 
-export async function createCapability(c: AdminContext): Promise<Response> {
+export async function createShareLink(c: AdminContext): Promise<Response> {
 	const body = await readJson(c.request)
-	const grants = parseIssueGrants(prop(body, 'grants'))
+	const grants = parseShareLinkGrants(prop(body, 'grants'))
 	if (grants === undefined || grants.length === 0) {
-		return error(400, 'grants required (each: { action, resource, scope? })')
+		return error(400, 'grants required (each: { action, scope? })')
 	}
 	const label = stringField(body, 'label')
 	const expiresAt = numberField(body, 'expiresAt')
-	const maxUses = numberField(body, 'maxUses')
 
-	// Issue with the ADMIN'S OWN forwarded credentials — the delegation rule applies
-	// to admins like everyone else (admins typically hold `*`, so it passes).
-	const issueInput: IssueCapabilityInput = {
+	// Issue an anonymous credential with the ADMIN'S OWN forwarded credentials as issuer — the
+	// delegation rule applies to admins like everyone else (admins typically hold `*`, so it passes).
+	const issueInput: IssueKeyInput = {
 		app: c.app,
 		token: c.authInput.token,
 		cookie: c.authInput.cookie,
 		origin: c.authInput.origin,
 		requestId: c.authInput.requestId,
-		grants,
+		permissions: grants,
 		...(label !== undefined ? { label } : {}),
 		...(expiresAt !== undefined ? { expiresAt } : {}),
-		...(maxUses !== undefined ? { maxUses } : {}),
 	}
 
-	const { result, auditLabel } = await issueCapability(c.services, issueInput, c.admin)
+	const { result, auditLabel } = await issueKey(c.services, issueInput, c.admin)
 	if (!result.ok) {
 		// Admin already gated; the only failure here is the delegation rule.
 		return error(403, `not allowed: ${result.reason}`)
 	}
 	await adminAudit(c, {
-		action: 'iam.capability.create',
-		resourceType: 'capability',
+		action: 'iam.credential.create',
+		resourceType: 'credential',
 		resourceId: result.id,
-		metadata: { label: auditLabel ?? null, grants: grants.map((g) => ({ action: g.action, resource: g.resource })) },
+		metadata: { label: auditLabel ?? null, grants },
 	})
-	const issued: IssuedCapabilityResponse = { id: result.id, token: result.token }
+	const issued: IssuedShareLinkResponse = { id: result.id, token: result.token }
 	return json(issued, { status: 201 })
 }
 
 /**
- * Parse the `grants` array from an issue request; undefined when malformed. Each grant
- * may carry an optional `scope` ({ type, value }) — the delegation-check coordinate
- * (not stored). A `scope` present but not a well-formed coordinate makes the whole
- * parse fail (undefined → 400) rather than silently dropping it.
+ * Parse the `grants` array from a share-link issue request; undefined when malformed. Each grant is
+ * an `action` + an optional `scope` ({ type, value }) — the credential's frozen inline grant, matched
+ * by `permits` at use time. A `scope` present but not a well-formed coordinate fails the whole parse
+ * (undefined → 400) rather than silently dropping it.
  */
-function parseIssueGrants(value: unknown): IssueCapabilityInput['grants'] | undefined {
+function parseShareLinkGrants(value: unknown): KeyGrant[] | undefined {
 	if (!Array.isArray(value)) {
 		return undefined
 	}
-	const out: IssueCapabilityInput['grants'] = []
+	const out: KeyGrant[] = []
 	for (const item of value) {
 		const action = stringField(item, 'action')
-		const resource = stringField(item, 'resource')
-		if (!action || !resource) {
+		if (!action) {
 			return undefined
 		}
 		const scopeRaw = prop(item, 'scope')
 		if (scopeRaw === undefined || scopeRaw === null) {
-			out.push({ action, resource })
+			out.push({ action, scope: null })
 			continue
 		}
 		const type = stringField(scopeRaw, 'type')
@@ -1369,22 +1369,24 @@ function parseIssueGrants(value: unknown): IssueCapabilityInput['grants'] | unde
 		if (type === undefined || scopeValue === undefined) {
 			return undefined
 		}
-		out.push({ action, resource, scope: { type, value: scopeValue } })
+		out.push({ action, scope: { type, value: scopeValue } })
 	}
 	return out
 }
 
-export async function revokeCapability(c: AdminContext, id: string): Promise<Response> {
-	const token = await c.services.db.getCapabilityTokenById(id)
-	if (!token) {
-		return error(404, 'capability not found')
+export async function revokeShareLink(c: AdminContext, id: string): Promise<Response> {
+	// Only anonymous credentials are share links; a principal-bound key is managed on the api-keys
+	// page, so it reads as not-found here.
+	const cred = await c.services.db.getCredentialById(id)
+	if (!cred || cred.principal_id !== null) {
+		return error(404, 'share link not found')
 	}
-	await c.services.db.revokeCapabilityToken(id)
+	await c.services.db.revokeCredential(id)
 	await adminAudit(c, {
-		action: 'iam.capability.revoke',
-		resourceType: 'capability',
+		action: 'iam.credential.revoke',
+		resourceType: 'credential',
 		resourceId: id,
-		metadata: { label: token.label },
+		metadata: { label: cred.label },
 	})
 	return json({ ok: true })
 }
