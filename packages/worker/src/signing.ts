@@ -12,7 +12,7 @@
  * One Signer per isolate, memoised like the `JwtValidator` (jose imports the key once).
  */
 
-import { type Jwks, type PropustkaTokenClaims, type PublicJwk, TOKEN_ALG } from '@propustka/core'
+import { type AccessTokenClaims, type Jwks, type PublicJwk, TOKEN_ALG } from '@propustka/core'
 import { calculateJwkThumbprint, exportJWK, generateKeyPair, importJWK, type JWK, type KeyLike, SignJWT } from 'jose'
 import type { Env } from './env'
 import { stringField } from './json'
@@ -35,7 +35,7 @@ export class Signer {
 	 * Sign a claims object with the ACTIVE key. The `kid` goes in the protected header so the SDK
 	 * picks the matching public JWK. The claims already carry `iss`/`aud`/`exp` (built in core).
 	 */
-	sign(claims: PropustkaTokenClaims): Promise<string> {
+	sign(claims: AccessTokenClaims): Promise<string> {
 		const active = this.keys[0]
 		if (!active) {
 			throw new Error('Signer has no keys')

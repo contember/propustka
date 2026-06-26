@@ -26,13 +26,13 @@ two things that actually differ, and one of them turned out not to matter:
 
 1. **Stateful opaque credential vs stateless signed JWT.** This is the ONE axis that matters:
 
-   |                         | **key** (opaque, stored)                       | **jwt** (passthrough)                  |
-   | ----------------------- | ---------------------------------------------- | -------------------------------------- |
-   | revocation              | yes, instant (delete the row)                  | no — TTL only                          |
-   | propustka in the path   | resolve + cache                                | **never**                              |
-   | permissions             | may be **live** (via a principal) or inline    | inline, **frozen at issue**            |
-   | state stored            | a row (+ audit)                                | **audit only**                         |
-   | when to choose          | long-lived / revocable: CI key, personal token, a share link you may want to kill | fire-and-forget, high-volume passthrough, zero per-request dependency on propustka |
+   |                       | **key** (opaque, stored)                                                          | **jwt** (passthrough)                                                              |
+   | --------------------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+   | revocation            | yes, instant (delete the row)                                                     | no — TTL only                                                                      |
+   | propustka in the path | resolve + cache                                                                   | **never**                                                                          |
+   | permissions           | may be **live** (via a principal) or inline                                       | inline, **frozen at issue**                                                        |
+   | state stored          | a row (+ audit)                                                                   | **audit only**                                                                     |
+   | when to choose        | long-lived / revocable: CI key, personal token, a share link you may want to kill | fire-and-forget, high-volume passthrough, zero per-request dependency on propustka |
 
    This mirrors AWS exactly: an opaque key ≈ an IAM access key (stored, revocable); a passthrough JWT
    ≈ an STS token (stateless, TTL-bounded, frozen).
@@ -104,15 +104,16 @@ A signed ES256 JWT (EC P-256, `PROPUSTKA_SIGNING_KEYS`, public set via `getJwks`
   iss,                       // propustka origin
   aud,                       // the app id; the SDK REJECTS a token whose aud is not its app
   iat, exp,
+  sub,                       // subject id: a principal id when ptype is set, else the credential/token id
   perms: PermissionEntry[],  // resolved/effective permissions; can() = permits(perms, action, scope?)
-  sub?:   principalId,       // present  ⇔ principal-bound
-  ptype?: 'user' | 'service',// present  ⇔ principal-bound
-  label:  string | null      // principal label, or the credential/jwt label; the audit actor
+  ptype?: 'user' | 'service',// present ⇔ sub is a principal (bound); absent ⇔ anonymous credential
+  label:  string | null      // audit actor: principal label, or credential/jwt label, or null
 }
 ```
 
-- `sub` present → an identified principal; `audit` attributes to it.
-- `sub` absent → anonymous (a share link / standalone JWT); `audit` attributes to `label`.
+- `ptype` present → `sub` is an identified principal; `audit` attributes to it.
+- `ptype` absent → anonymous (a share link / standalone JWT); `audit` attributes to `label`, and `sub`
+  is the issuing credential/token id.
 - `can(action, scope?)` is `permits()` everywhere — the exact-match `can(action, resource)` of the
   old capability is gone; a share-link grant is a `PermissionEntry { action, scope: {type, value} }`.
 
@@ -142,12 +143,12 @@ credential_grants                    -- inline perms: a frozen grant and/or a do
 
 **Resolution → effective perms** (the 2×2 the maintainer settled):
 
-| `principal_id` | inline grants | effective permissions                              |
-| -------------- | ------------- | -------------------------------------------------- |
-| set            | set           | `resolve(principal, app) ∩ grants` — personal token / downscope |
+| `principal_id` | inline grants | effective permissions                                             |
+| -------------- | ------------- | ----------------------------------------------------------------- |
+| set            | set           | `resolve(principal, app) ∩ grants` — personal token / downscope   |
 | set            | —             | `resolve(principal, app)` — service / personal token (live perms) |
-| —              | set           | `grants` — share link / standalone (frozen)        |
-| —              | —             | reject (grants nothing)                            |
+| —              | set           | `grants` — share link / standalone (frozen)                       |
+| —              | —             | reject (grants nothing)                                           |
 
 Then sign an access token with `sub = principal_id ?? absent`, `perms = effective`,
 `exp = min(now + ttl, credential.expires_at)`. No use counter.

@@ -17,11 +17,11 @@
  */
 
 import {
+	accessClaimsToResolved,
+	type AccessTokenClaims,
 	type IamRpc,
 	type Jwks,
-	parseTokenClaims,
-	principalClaimsToResolved,
-	type PrincipalTokenClaims,
+	parseAccessClaims,
 	SESSION_COOKIE,
 	TOKEN_COOKIE,
 	TOKEN_REFRESH_SKEW_SECONDS,
@@ -70,7 +70,10 @@ export class PropustkaAuth {
 		if (tokenCookie) {
 			const claims = await this.verify(tokenCookie)
 			if (claims && claims.exp - now > TOKEN_REFRESH_SKEW_SECONDS) {
-				return { ok: true, context: this.context(claims, requestId) }
+				const context = this.context(claims, requestId)
+				if (context) {
+					return { ok: true, context }
+				}
 			}
 		}
 
@@ -81,13 +84,14 @@ export class PropustkaAuth {
 			return { ok: false, reason: minted.reason, loginUrl: this.loginUrl(request) }
 		}
 		const claims = await this.verify(minted.token)
-		if (!claims) {
+		const context = claims && this.context(claims, requestId)
+		if (!context) {
 			// We just minted it — a verification miss means a config/clock problem; force re-login.
 			return { ok: false, reason: 'invalid_session', loginUrl: this.loginUrl(request) }
 		}
 		return {
 			ok: true,
-			context: this.context(claims, requestId),
+			context,
 			setCookie: tokenCookieHeader(minted.token, minted.expiresAt - now, this.secure(request)),
 		}
 	}
@@ -97,12 +101,14 @@ export class PropustkaAuth {
 		return `${trimSlash(this.config.issuer)}/auth/login?redirect=${encodeURIComponent(request.url)}`
 	}
 
-	private context(claims: PrincipalTokenClaims, requestId: string): AuthContext {
-		return buildAuthContext(this.binding, this.appId, principalClaimsToResolved(claims, requestId))
+	/** Build an AuthContext from verified claims; null for an anonymous token (no principal). */
+	private context(claims: AccessTokenClaims, requestId: string): AuthContext | null {
+		const resolved = accessClaimsToResolved(claims, requestId)
+		return resolved ? buildAuthContext(this.binding, this.appId, resolved) : null
 	}
 
-	/** Verify a token against the published JWKS and narrow it to principal claims; null on any miss. */
-	private async verify(token: string): Promise<PrincipalTokenClaims | null> {
+	/** Verify a token against the published JWKS and narrow it to access claims; null on any miss. */
+	private async verify(token: string): Promise<AccessTokenClaims | null> {
 		let payload = await this.verifyWith(token, false)
 		if (payload === NO_KEY) {
 			// Unknown kid — a key was rotated in. Refetch the JWKS once and retry.
@@ -111,8 +117,7 @@ export class PropustkaAuth {
 		if (payload === NO_KEY || payload === null) {
 			return null
 		}
-		const claims = parseTokenClaims(payload)
-		return claims && claims.kind === 'principal' ? claims : null
+		return parseAccessClaims(payload)
 	}
 
 	/** Returns the payload, `null` on a genuine verification failure, or `NO_KEY` on a kid miss. */

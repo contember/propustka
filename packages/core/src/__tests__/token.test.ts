@@ -1,12 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import {
-	buildCapabilityClaims,
-	buildPrincipalClaims,
-	type CapabilityTokenClaims,
-	parseTokenClaims,
-	principalClaimsToResolved,
-	type PrincipalTokenClaims,
-} from '../token'
+import { accessClaimsToResolved, type AccessTokenClaims, buildAccessClaims, parseAccessClaims } from '../token'
 import type { PermissionEntry } from '../types'
 
 const ISS = 'https://propustka.example.com'
@@ -17,12 +10,12 @@ const perms: PermissionEntry[] = [
 	{ action: 'report.*', scope: null, source: 'group:acme/core' },
 ]
 
-function principalClaims(overrides: Partial<PrincipalTokenClaims> = {}): PrincipalTokenClaims {
+function principalClaims(overrides: Partial<AccessTokenClaims> = {}): AccessTokenClaims {
 	return {
-		...buildPrincipalClaims({
+		...buildAccessClaims({
 			iss: ISS,
 			app: 'example-app',
-			principalId: 'user-1',
+			subject: 'user-1',
 			type: 'user',
 			label: 'a@b.cz',
 			permissions: perms,
@@ -33,10 +26,10 @@ function principalClaims(overrides: Partial<PrincipalTokenClaims> = {}): Princip
 	}
 }
 
-describe('buildPrincipalClaims', () => {
-	test('maps app→aud, principalId→sub and carries the resolved permissions', () => {
+describe('buildAccessClaims', () => {
+	test('maps app→aud, subject→sub, type→ptype and carries the resolved permissions — no `kind`', () => {
 		const claims = principalClaims()
-		expect(claims.kind).toBe('principal')
+		expect('kind' in claims).toBe(false)
 		expect(claims.aud).toBe('example-app')
 		expect(claims.sub).toBe('user-1')
 		expect(claims.iss).toBe(ISS)
@@ -45,23 +38,34 @@ describe('buildPrincipalClaims', () => {
 		expect(claims.ptype).toBe('user')
 		expect(claims.perms).toEqual(perms)
 	})
+
+	test('an anonymous token omits ptype and may carry a null label', () => {
+		const claims = buildAccessClaims({
+			iss: ISS,
+			app: 'a',
+			subject: 'cred-1',
+			label: null,
+			permissions: [{ action: 'report.read', scope: { type: 'report', value: 'q2' }, source: 'grant' }],
+			issuedAt: 1,
+			expiresAt: 2,
+		})
+		expect(claims.ptype).toBeUndefined()
+		expect(claims.label).toBeNull()
+	})
 })
 
-describe('parseTokenClaims — principal round-trip', () => {
+describe('parseAccessClaims — principal round-trip', () => {
 	test('a built principal token parses back to identical claims', () => {
 		const built = principalClaims()
 		// Serialize → parse, exactly the JSON round-trip a JWT payload goes through.
 		const onWire: unknown = JSON.parse(JSON.stringify(built))
-		expect(parseTokenClaims(onWire)).toEqual(built)
+		expect(parseAccessClaims(onWire)).toEqual(built)
 	})
 
 	test('parsed claims map into a ResolvedPrincipal the AuthContext consumes', () => {
-		const parsed = parseTokenClaims(JSON.parse(JSON.stringify(principalClaims())))
-		expect(parsed?.kind).toBe('principal')
-		if (parsed?.kind !== 'principal') {
-			throw new Error('expected principal')
-		}
-		expect(principalClaimsToResolved(parsed, 'req-9')).toEqual({
+		const parsed = parseAccessClaims(JSON.parse(JSON.stringify(principalClaims())))
+		expect(parsed?.ptype).toBe('user')
+		expect(parsed && accessClaimsToResolved(parsed, 'req-9')).toEqual({
 			id: 'user-1',
 			type: 'user',
 			label: 'a@b.cz',
@@ -71,89 +75,78 @@ describe('parseTokenClaims — principal round-trip', () => {
 	})
 })
 
-describe('parseTokenClaims — capability round-trip', () => {
-	test('a built capability token parses back to identical claims', () => {
-		const built: CapabilityTokenClaims = buildCapabilityClaims({
+describe('parseAccessClaims — anonymous round-trip', () => {
+	test('an anonymous (no-ptype) token round-trips, and resolves to no principal', () => {
+		const built = buildAccessClaims({
 			iss: ISS,
 			app: 'example-app',
-			tokenId: 'cap-1',
+			subject: 'cred-1',
 			label: 'Client ACME — report Q2',
-			caps: [{ action: 'report.read', resource: 'report:q2' }],
+			permissions: [{ action: 'report.read', scope: { type: 'report', value: 'q2' }, source: 'grant' }],
 			issuedAt: 1000,
 			expiresAt: 1300,
 		})
-		expect(parseTokenClaims(JSON.parse(JSON.stringify(built)))).toEqual(built)
+		const parsed = parseAccessClaims(JSON.parse(JSON.stringify(built)))
+		expect(parsed).toEqual(built)
+		expect(parsed && accessClaimsToResolved(parsed, 'req-1')).toBeNull()
 	})
 
 	test('a null label survives the round-trip', () => {
-		const built = buildCapabilityClaims({
+		const built = buildAccessClaims({
 			iss: ISS,
 			app: 'a',
-			tokenId: 'cap-2',
+			subject: 'cred-2',
 			label: null,
-			caps: [{ action: 'x', resource: 'y' }],
+			permissions: [{ action: 'x', scope: null, source: 'grant' }],
 			issuedAt: 1,
 			expiresAt: 2,
 		})
-		const parsed = parseTokenClaims(JSON.parse(JSON.stringify(built)))
-		expect(parsed?.kind === 'capability' && parsed.label).toBeNull()
+		expect(parseAccessClaims(JSON.parse(JSON.stringify(built)))?.label).toBeNull()
 	})
 })
 
-describe('parseTokenClaims — rejects malformed', () => {
-	test('unknown kind', () => {
-		expect(parseTokenClaims({ ...principalClaims(), kind: 'other' })).toBeNull()
-	})
-
+describe('parseAccessClaims — rejects malformed', () => {
 	test('missing standard claim (aud)', () => {
 		const { aud: _aud, ...rest } = principalClaims()
-		expect(parseTokenClaims(rest)).toBeNull()
+		expect(parseAccessClaims(rest)).toBeNull()
 	})
 
 	test('non-numeric exp', () => {
-		expect(parseTokenClaims({ ...principalClaims(), exp: 'soon' })).toBeNull()
+		expect(parseAccessClaims({ ...principalClaims(), exp: 'soon' })).toBeNull()
 	})
 
 	test('bad principal type', () => {
-		expect(parseTokenClaims({ ...principalClaims(), ptype: 'robot' })).toBeNull()
+		expect(parseAccessClaims({ ...principalClaims(), ptype: 'robot' })).toBeNull()
+	})
+
+	test('missing perms', () => {
+		const { perms: _perms, ...rest } = principalClaims()
+		expect(parseAccessClaims(rest)).toBeNull()
 	})
 
 	test('malformed permission entry (missing action)', () => {
-		expect(parseTokenClaims({ ...principalClaims(), perms: [{ scope: null, source: 'grant' }] })).toBeNull()
+		expect(parseAccessClaims({ ...principalClaims(), perms: [{ scope: null, source: 'grant' }] })).toBeNull()
 	})
 
 	test('malformed permission source', () => {
-		expect(
-			parseTokenClaims({ ...principalClaims(), perms: [{ action: 'x', scope: null, source: 'nope' }] }),
-		).toBeNull()
+		expect(parseAccessClaims({ ...principalClaims(), perms: [{ action: 'x', scope: null, source: 'nope' }] })).toBeNull()
 	})
 
 	test('malformed scope (value not a string)', () => {
 		expect(
-			parseTokenClaims({
+			parseAccessClaims({
 				...principalClaims(),
 				perms: [{ action: 'x', scope: { type: 'project', value: 5 }, source: 'grant' }],
 			}),
 		).toBeNull()
 	})
 
-	test('capability with a non-string label', () => {
-		expect(
-			parseTokenClaims({
-				iss: ISS,
-				aud: 'a',
-				sub: 'c',
-				iat: 1,
-				exp: 2,
-				kind: 'capability',
-				label: 7,
-				caps: [],
-			}),
-		).toBeNull()
+	test('a non-string label', () => {
+		expect(parseAccessClaims({ ...principalClaims(), label: 7 })).toBeNull()
 	})
 
 	test('non-object payload', () => {
-		expect(parseTokenClaims(null)).toBeNull()
-		expect(parseTokenClaims('a string')).toBeNull()
+		expect(parseAccessClaims(null)).toBeNull()
+		expect(parseAccessClaims('a string')).toBeNull()
 	})
 })

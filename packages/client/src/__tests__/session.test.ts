@@ -1,4 +1,4 @@
-import { buildPrincipalClaims, type Jwks, type PermissionEntry } from '@propustka/core'
+import { buildAccessClaims, type Jwks, type PermissionEntry } from '@propustka/core'
 import { describe, expect, test } from 'bun:test'
 import { exportJWK, generateKeyPair, type KeyLike, SignJWT } from 'jose'
 import { PropustkaAuth } from '../session'
@@ -15,10 +15,10 @@ const JWKS: Jwks = { keys: [{ kty: 'EC', crv: 'P-256', x: pub.x, y: pub.y, kid: 
 
 async function signToken(key: KeyLike, ttlSeconds: number): Promise<string> {
 	const now = Math.floor(Date.now() / 1000)
-	const claims = buildPrincipalClaims({
+	const claims = buildAccessClaims({
 		iss: ISSUER,
 		app: APP,
-		principalId: 'user-1',
+		subject: 'user-1',
 		type: 'user',
 		label: 'a@b.cz',
 		permissions: perms,

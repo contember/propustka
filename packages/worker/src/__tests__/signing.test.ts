@@ -1,4 +1,4 @@
-import { buildPrincipalClaims, parseTokenClaims, type PermissionEntry, TOKEN_ALG } from '@propustka/core'
+import { buildAccessClaims, parseAccessClaims, type PermissionEntry, TOKEN_ALG } from '@propustka/core'
 import { describe, expect, test } from 'bun:test'
 import { createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify } from 'jose'
 import { parseSigningKeys, Signer } from '../signing'
@@ -17,10 +17,10 @@ async function privateJwk(kid?: string) {
 }
 
 function principalClaims() {
-	return buildPrincipalClaims({
+	return buildAccessClaims({
 		iss: ISS,
 		app: 'example-app',
-		principalId: 'user-1',
+		subject: 'user-1',
 		type: 'user',
 		label: 'a@b.cz',
 		permissions: perms,
@@ -40,9 +40,9 @@ describe('Signer.fromPrivateJwks', () => {
 		const localJwks = createLocalJWKSet(signer.jwks())
 		const { payload } = await jwtVerify(token, localJwks, { issuer: ISS, audience: 'example-app' })
 
-		const claims = parseTokenClaims(payload)
-		expect(claims?.kind).toBe('principal')
-		expect(claims?.kind === 'principal' && claims.perms).toEqual(perms)
+		const claims = parseAccessClaims(payload)
+		expect(claims?.ptype).toBe('user')
+		expect(claims?.perms).toEqual(perms)
 	})
 
 	test('jwks() publishes the public half only (no private `d`) and carries the kid', async () => {
@@ -81,7 +81,7 @@ describe('Signer.ephemeral', () => {
 		const signer = await Signer.ephemeral()
 		const token = await signer.sign(principalClaims())
 		const { payload } = await jwtVerify(token, createLocalJWKSet(signer.jwks()), { issuer: ISS, audience: 'example-app' })
-		expect(parseTokenClaims(payload)?.sub).toBe('user-1')
+		expect(parseAccessClaims(payload)?.sub).toBe('user-1')
 	})
 })
 

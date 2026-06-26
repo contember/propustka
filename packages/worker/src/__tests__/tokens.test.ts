@@ -1,4 +1,4 @@
-import { parseTokenClaims, permits } from '@propustka/core'
+import { parseAccessClaims, permits } from '@propustka/core'
 import { describe, expect, test } from 'bun:test'
 import { createLocalJWKSet, jwtVerify } from 'jose'
 import { hashToken } from '../capabilities'
@@ -37,10 +37,10 @@ describe('mintToken', () => {
 			issuer: 'https://propustka.test',
 			audience: 'example-app',
 		})
-		const claims = parseTokenClaims(payload)
-		expect(claims?.kind).toBe('principal')
-		if (claims?.kind !== 'principal') {
-			throw new Error('expected principal claims')
+		const claims = parseAccessClaims(payload)
+		expect(claims?.ptype).toBe('user')
+		if (!claims) {
+			throw new Error('expected access claims')
 		}
 		expect(claims.sub).toBe(principalId)
 		// The granted action is authorized by the same matcher the SDK's can() uses.
@@ -56,10 +56,10 @@ describe('mintToken', () => {
 		if (!result.ok) {
 			throw new Error('expected ok')
 		}
-		const claims = parseTokenClaims(
+		const claims = parseAccessClaims(
 			(await jwtVerify(result.token, createLocalJWKSet((await getSigner(ENV)).jwks()), { issuer: 'https://propustka.test', audience: 'app-b' })).payload,
 		)
-		expect(claims?.kind === 'principal' && claims.perms).toEqual([])
+		expect(claims?.perms).toEqual([])
 	})
 
 	test('no session → no_session', async () => {

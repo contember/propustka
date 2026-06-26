@@ -8,7 +8,7 @@
  * token until it expires, so this runs ≈ once per TTL per app, not per request.
  */
 
-import { buildPrincipalClaims, DEFAULT_TOKEN_TTL_SECONDS, type MintTokenInput, type MintTokenResult } from '@propustka/core'
+import { buildAccessClaims, DEFAULT_TOKEN_TTL_SECONDS, type MintTokenInput, type MintTokenResult } from '@propustka/core'
 import { hashToken } from './capabilities'
 import { principalStatus } from './db'
 import type { Env } from './env'
@@ -60,10 +60,10 @@ export async function mintToken(services: Services, env: MintEnv, input: MintTok
 	const now = Math.floor(Date.now() / 1000)
 	const expiresAt = now + DEFAULT_TOKEN_TTL_SECONDS
 	const token = await signer.sign(
-		buildPrincipalClaims({
+		buildAccessClaims({
 			iss: services.config.issuer,
 			app: input.app,
-			principalId: principal.id,
+			subject: principal.id,
 			type: principal.type,
 			label: principal.label,
 			permissions,

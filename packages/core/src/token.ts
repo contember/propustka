@@ -7,16 +7,17 @@
  * propustka issues its OWN token it can embed the already-resolved permission set, and the SDK
  * authorizes LOCALLY — no per-request round-trip. This module is the wire shape of that token:
  *
- *   - the Worker BUILDS claims here and signs them (`buildPrincipalClaims` / `buildCapabilityClaims`);
+ *   - the Worker BUILDS claims here and signs them (`buildAccessClaims`);
  *   - the SDK verifies the signature with jose, then PARSES the payload back into typed claims
- *     here (`parseTokenClaims`) — structurally, so it reads them without an `as` cast — and maps a
- *     principal token straight into the `ResolvedPrincipal` the existing `AuthContext` consumes.
+ *     here (`parseAccessClaims`) — structurally, so it reads them without an `as` cast — and maps a
+ *     principal-bound token into the `ResolvedPrincipal` the existing `AuthContext` consumes.
  *
- * Two token kinds mirror the two existing auth shapes:
- *   - `principal`  — a user or service principal, carrying the resolved `PermissionEntry[]`
- *     (wildcard `can(action, scope?)`). Backs the session cookie AND API-key paths.
- *   - `capability` — an anonymous share-link grant: exact-match `(action, resource)` pairs, no
- *     identity. Backs the public share-link path.
+ * ONE shape, no `kind` discriminator (see `propustka-native-spec.md`). Every token carries
+ * `perms: PermissionEntry[]` (authorized via `permits` — scopes + wildcards) and an OPTIONAL
+ * principal (`ptype`): present means the token is bound to a user/service principal; absent means an
+ * anonymous credential (a share link / standalone JWT), whose `perms` are narrow scoped entries and
+ * whose audit actor is `label`. `sub` is the subject id either way — a principal id when bound, else
+ * the issuing credential/token id.
  *
  * Pure: no jose, no I/O. Signing/verifying (key material) stays in the packages that own it.
  */
@@ -29,62 +30,47 @@ import type { PermissionEntry, PermissionSource, PrincipalType, Scope } from './
 
 /** Long-lived opaque SSO session id; propustka sets it on its parent cookie domain at login. */
 export const SESSION_COOKIE = 'px_session'
-/** Short-lived per-app permission JWT; a host-only cookie the app's middleware sets and reads. */
+/** Short-lived per-app access JWT; a host-only cookie the app's middleware sets and reads. */
 export const TOKEN_COOKIE = 'px_token'
-/** Prefix marking a propustka API key, presented as `Authorization: Bearer px_<random>`. */
+/** Prefix marking a propustka opaque credential (API key / share link), e.g. `Bearer px_<random>`. */
 export const API_KEY_PREFIX = 'px_'
 
 /** Signing algorithm propustka issues with and the SDK verifies (ECDSA P-256 — compact, ubiquitous). */
 export const TOKEN_ALG = 'ES256'
 
-/** Default per-app permission-token lifetime. Revocation/role changes take effect within this. */
+/** Default per-app access-token lifetime. Revocation/role changes take effect within this. */
 export const DEFAULT_TOKEN_TTL_SECONDS = 300
 /**
- * The SDK refreshes a permission token this many seconds BEFORE it expires, so a request never
- * rides a token that expires mid-flight. Must be < DEFAULT_TOKEN_TTL_SECONDS.
+ * The SDK refreshes an access token this many seconds BEFORE it expires, so a request never rides a
+ * token that expires mid-flight. Must be < the token TTL.
  */
 export const TOKEN_REFRESH_SKEW_SECONDS = 30
 
-// ── Claim shapes ───────────────────────────────────────────────────────────────
+// ── Claim shape (one, no discriminator) ────────────────────────────────────────
 
-export type TokenKind = 'principal' | 'capability'
-
-/** Standard claims every propustka token carries. */
-interface BaseClaims {
+/**
+ * The propustka access token. `perms` is always present (matched via `permits`); `ptype` is present
+ * only when `sub` is a principal. `label` is the audit actor — the principal's label when bound, the
+ * credential/jwt label otherwise (or null).
+ */
+export interface AccessTokenClaims {
 	/** Issuer — propustka's own origin (e.g. `https://propustka.example.com`). */
 	iss: string
 	/** The app id this token is scoped to. The SDK REJECTS a token whose `aud` is not its app. */
 	aud: string
-	/** principal id (kind=`principal`) or capability token id (kind=`capability`). */
+	/** Subject id: a principal id when `ptype` is set, else the issuing credential/token id. */
 	sub: string
 	/** Issued-at (unix seconds). */
 	iat: number
 	/** Expiry (unix seconds). */
 	exp: number
-}
-
-/** A principal-backed token — carries the resolved permission set so the SDK authorizes locally. */
-export interface PrincipalTokenClaims extends BaseClaims {
-	kind: 'principal'
-	ptype: PrincipalType
-	label: string
+	/** Resolved/effective permissions; `can(action, scope?)` = `permits(perms, action, scope)`. */
 	perms: PermissionEntry[]
-}
-
-/** One exact-match capability the share-link token confers. */
-export interface CapabilityClaim {
-	action: string
-	resource: string
-}
-
-/** An anonymous share-link token — exact-match `(action, resource)` grants, no identity. */
-export interface CapabilityTokenClaims extends BaseClaims {
-	kind: 'capability'
+	/** Present only when the token is bound to a principal (`sub` is that principal). */
+	ptype?: PrincipalType
+	/** Audit actor label — the principal's label, or the credential/jwt label, or null (anonymous). */
 	label: string | null
-	caps: CapabilityClaim[]
 }
-
-export type PropustkaTokenClaims = PrincipalTokenClaims | CapabilityTokenClaims
 
 // ── Public JWKS (the SDK fetches this once, then verifies tokens locally) ───────
 //
@@ -111,104 +97,81 @@ export interface Jwks {
 
 // ── Build (Worker side, pre-sign) ──────────────────────────────────────────────
 
-export interface PrincipalTokenParams {
+export interface AccessTokenParams {
 	/** Issuer (propustka origin). */
 	iss: string
 	/** App id this token is for (becomes `aud`). */
 	app: string
-	principalId: string
-	type: PrincipalType
-	label: string
+	/** Subject id (becomes `sub`) — a principal id when `type` is given, else a credential/token id. */
+	subject: string
+	/** Principal type — omit for an anonymous credential (share link / standalone JWT). */
+	type?: PrincipalType
+	/** Audit actor label, or null for an unlabeled anonymous token. */
+	label: string | null
 	permissions: PermissionEntry[]
 	issuedAt: number
 	expiresAt: number
 }
 
-/** Assemble the claim object for a principal token. Pure — the caller signs the result. */
-export function buildPrincipalClaims(params: PrincipalTokenParams): PrincipalTokenClaims {
-	return {
+/** Assemble the claim object for an access token. Pure — the caller signs the result. */
+export function buildAccessClaims(params: AccessTokenParams): AccessTokenClaims {
+	const claims: AccessTokenClaims = {
 		iss: params.iss,
 		aud: params.app,
-		sub: params.principalId,
+		sub: params.subject,
 		iat: params.issuedAt,
 		exp: params.expiresAt,
-		kind: 'principal',
-		ptype: params.type,
-		label: params.label,
 		perms: params.permissions,
-	}
-}
-
-export interface CapabilityTokenParams {
-	iss: string
-	app: string
-	/** The capability token id (becomes `sub`). */
-	tokenId: string
-	label: string | null
-	caps: CapabilityClaim[]
-	issuedAt: number
-	expiresAt: number
-}
-
-/** Assemble the claim object for a capability (share-link) token. Pure — the caller signs it. */
-export function buildCapabilityClaims(params: CapabilityTokenParams): CapabilityTokenClaims {
-	return {
-		iss: params.iss,
-		aud: params.app,
-		sub: params.tokenId,
-		iat: params.issuedAt,
-		exp: params.expiresAt,
-		kind: 'capability',
 		label: params.label,
-		caps: params.caps,
 	}
+	if (params.type !== undefined) {
+		claims.ptype = params.type
+	}
+	return claims
 }
 
 // ── Parse (SDK side, post-verify) ──────────────────────────────────────────────
 
 /**
- * Narrow a verified JWT payload into typed propustka claims WITHOUT trusting its shape. jose has
+ * Narrow a verified JWT payload into typed access-token claims WITHOUT trusting its shape. jose has
  * already checked the signature, `exp`, and `aud`; this validates the custom claims structurally so
- * the SDK reads them without an `as` cast. Returns null on any malformed/unknown claim shape.
+ * the SDK reads them without an `as` cast. Returns null on any malformed claim shape.
  */
-export function parseTokenClaims(payload: unknown): PropustkaTokenClaims | null {
+export function parseAccessClaims(payload: unknown): AccessTokenClaims | null {
 	const iss = stringField(payload, 'iss')
 	const aud = stringField(payload, 'aud')
 	const sub = stringField(payload, 'sub')
 	const iat = numberField(payload, 'iat')
 	const exp = numberField(payload, 'exp')
+	const perms = parsePermissionEntries(prop(payload, 'perms'))
+	const label = parseNullableString(prop(payload, 'label'))
+	const ptype = parseOptionalPrincipalType(prop(payload, 'ptype'))
 	if (iss === undefined || aud === undefined || sub === undefined || iat === undefined || exp === undefined) {
 		return null
 	}
-	const base: BaseClaims = { iss, aud, sub, iat, exp }
-
-	const kind = stringField(payload, 'kind')
-	if (kind === 'principal') {
-		const ptype = parsePrincipalType(prop(payload, 'ptype'))
-		const label = stringField(payload, 'label')
-		const perms = parsePermissionEntries(prop(payload, 'perms'))
-		if (ptype === null || label === undefined || perms === null) {
-			return null
-		}
-		return { ...base, kind: 'principal', ptype, label, perms }
+	if (perms === null || label === undefined || ptype === undefined) {
+		return null
 	}
-	if (kind === 'capability') {
-		const label = parseNullableString(prop(payload, 'label'))
-		const caps = parseCapabilityClaims(prop(payload, 'caps'))
-		if (label === undefined || caps === null) {
-			return null
-		}
-		return { ...base, kind: 'capability', label, caps }
+	const claims: AccessTokenClaims = { iss, aud, sub, iat, exp, perms, label }
+	if (ptype !== null) {
+		claims.ptype = ptype
 	}
-	return null
+	return claims
 }
 
-/** Map a verified principal token into the `ResolvedPrincipal` the existing `AuthContext` consumes. */
-export function principalClaimsToResolved(claims: PrincipalTokenClaims, requestId: string): ResolvedPrincipal {
+/**
+ * Map a verified PRINCIPAL-bound access token into the `ResolvedPrincipal` the existing
+ * `AuthContext` consumes. Returns null for an anonymous token (no `ptype`) — the caller handles
+ * the anonymous case separately.
+ */
+export function accessClaimsToResolved(claims: AccessTokenClaims, requestId: string): ResolvedPrincipal | null {
+	if (claims.ptype === undefined) {
+		return null
+	}
 	return {
 		id: claims.sub,
 		type: claims.ptype,
-		label: claims.label,
+		label: claims.label ?? claims.sub,
 		permissions: claims.perms,
 		requestId,
 	}
@@ -216,8 +179,12 @@ export function principalClaimsToResolved(claims: PrincipalTokenClaims, requestI
 
 // ── Structural parsers (no `as`) ───────────────────────────────────────────────
 
-function parsePrincipalType(value: unknown): PrincipalType | null {
-	return value === 'user' || value === 'service' ? value : null
+/** Read `ptype`: a valid principal type, explicit-absent (→ null), or malformed (→ undefined). */
+function parseOptionalPrincipalType(value: unknown): PrincipalType | null | undefined {
+	if (value === undefined || value === null) {
+		return null
+	}
+	return value === 'user' || value === 'service' ? value : undefined
 }
 
 /** Accept a string or explicit-null/absent (→ null); reject any other type (→ undefined). */
@@ -264,22 +231,6 @@ function parsePermissionEntries(value: unknown): PermissionEntry[] | null {
 			return null
 		}
 		out.push({ action, scope, source })
-	}
-	return out
-}
-
-function parseCapabilityClaims(value: unknown): CapabilityClaim[] | null {
-	if (!Array.isArray(value)) {
-		return null
-	}
-	const out: CapabilityClaim[] = []
-	for (const item of value) {
-		const action = stringField(item, 'action')
-		const resource = stringField(item, 'resource')
-		if (action === undefined || resource === undefined) {
-			return null
-		}
-		out.push({ action, resource })
 	}
 	return out
 }
