@@ -1,6 +1,6 @@
 import { API_KEY_PREFIX, type PermissionEntry, type PrincipalType } from '@propustka/core'
 import type { Env } from './env'
-import { hashToken } from './secret'
+import { hashToken, timingSafeEqualHex } from './secret'
 import type { Services } from './services'
 import { getSigner, verifyAccessToken } from './signing'
 import { resolveCredential } from './tokens'
@@ -10,6 +10,14 @@ import { resolveCredential } from './tokens'
  * `principals` (see `seed.dev.sql`) so audit/auth-log foreign keys resolve.
  */
 export const LOCAL_DEV_ADMIN_ID = 'local-dev-admin'
+
+/**
+ * Fixed identity for the SEEDED PROVISIONING KEY below. A stable `service` principal with this id is
+ * seeded into `principals` (migration `0008_provisioning_principal.sql`) so the audit the provisioning
+ * key drives (e.g. `iam.app.schema.reconcile`) resolves its `principal_id` FK — the prod-applied analog
+ * of the dev admin's `seed.dev.sql` row.
+ */
+export const PROVISIONING_ADMIN_ID = 'provisioning-admin'
 
 // ── Native caller resolution (propustka-native credentials, no Cloudflare Access) ──────────────
 //
@@ -32,7 +40,7 @@ export type CallerResolution =
 
 export async function resolveCaller(
 	services: Services,
-	env: Pick<Env, 'PROPUSTKA_SIGNING_KEYS' | 'ENVIRONMENT'>,
+	env: Pick<Env, 'PROPUSTKA_SIGNING_KEYS' | 'PROPUSTKA_PROVISIONING_KEY' | 'ENVIRONMENT'>,
 	input: { app: string; credential: string | null; requestId: string },
 ): Promise<CallerResolution> {
 	// LOCAL DEV BYPASS. With NO durable signing keys configured (an ephemeral key ⇒ dev-only) AND no
@@ -54,7 +62,23 @@ export async function resolveCaller(
 
 	// An opaque `px_` key → resolve its effective permissions (the same 2×2 as mintFromKey).
 	if (input.credential.startsWith(API_KEY_PREFIX)) {
-		const cred = await services.db.getActiveCredentialByHash(await hashToken(input.credential))
+		const presentedHash = await hashToken(input.credential)
+
+		// SEEDED PROVISIONING KEY. A single operator-generated `px_` held ONLY in env (never in the DB) —
+		// the machine analog of the `IAM_BOOTSTRAP_ADMINS` email bootstrap. Checked BEFORE the DB lookup so
+		// a fresh control plane can reconcile/issue before any DB-backed admin credential exists. Empty env
+		// (the default) disables it. Compared by hash in constant time; resolves the seeded `provisioning-admin`
+		// principal (migration 0008) so its audit FK holds.
+		const provisioningKey = (env.PROPUSTKA_PROVISIONING_KEY ?? '').trim()
+		if (provisioningKey !== '' && timingSafeEqualHex(presentedHash, await hashToken(provisioningKey))) {
+			return {
+				ok: true,
+				caller: { id: PROVISIONING_ADMIN_ID, type: 'service', label: 'provisioning', permissions: [{ action: '*', scope: null, source: 'bootstrap' }] },
+				verifiedApp: input.app,
+			}
+		}
+
+		const cred = await services.db.getActiveCredentialByHash(presentedHash)
 		if (!cred) {
 			return { ok: false, reason: 'invalid_token' }
 		}

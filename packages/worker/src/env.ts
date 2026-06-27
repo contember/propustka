@@ -38,6 +38,15 @@ export interface Env {
 	 */
 	PROPUSTKA_SIGNING_KEYS: string
 	/**
+	 * **Secret.** A single operator-generated provisioning `px_` key, or empty to disable (the default).
+	 * Held ONLY here — never in the DB. A bearer whose hash matches it resolves a synthetic global-admin
+	 * in `resolveCaller` (the machine analog of `IAM_BOOTSTRAP_ADMINS`): it lets a control plane bootstrap
+	 * itself — reconcile app schemas / issue the first admin key — before any DB-backed admin credential
+	 * exists. Provisioned as a Worker secret (`wrangler secret put` remote / `.dev.vars` local), never in
+	 * `vars`. Rotate by changing the env value.
+	 */
+	PROPUSTKA_PROVISIONING_KEY: string
+	/**
 	 * Cookie `Domain` for the SSO session cookie, e.g. `.example.com`, so one login is shared across
 	 * `*.example.com` apps. Empty → host-only (single-host / local dev).
 	 */

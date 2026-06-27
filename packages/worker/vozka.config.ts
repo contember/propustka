@@ -110,7 +110,9 @@ export default defineApp({
 		// Build the admin SPA into ../admin-ui/dist (the ASSETS directory) before deploy.
 		build: 'bun run --filter @propustka/admin-ui build',
 		// The native-auth secrets: the token signing keys + the OIDC client secret. Held in vozka's vault.
-		secrets: ['PROPUSTKA_SIGNING_KEYS', 'PROPUSTKA_OIDC_CLIENT_SECRET'],
+		// PROPUSTKA_PROVISIONING_KEY is the seeded provisioning bearer the control plane (vozka) uses to
+		// reconcile schemas (resolveCaller admits it as a synthetic admin); optional, empty = disabled.
+		secrets: ['PROPUSTKA_SIGNING_KEYS', 'PROPUSTKA_OIDC_CLIENT_SECRET', 'PROPUSTKA_PROVISIONING_KEY'],
 		// Non-secret, environment/account-specific config (per-app-env registry), injected into process.env
 		// before materialization. HUMAN_EMAILS + BOOTSTRAP_ADMINS are optional (default '[]'), so not required.
 		vars: REQUIRED_VARS,

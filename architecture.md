@@ -282,6 +282,7 @@ ever needed.)
 | `SESSION_COOKIE_DOMAIN`       | var        | `Domain` for `px_session` (e.g. `.example.com`); empty → host-only      |
 | `PROPUSTKA_SIGNING_KEYS`      | **secret** | JSON array of EC P-256 private JWKs — signs the per-app access tokens   |
 | `OIDC_CLIENT_SECRET`          | **secret** | OIDC code-exchange credential                                           |
+| `PROPUSTKA_PROVISIONING_KEY`  | **secret** | optional seeded `px_` — `resolveCaller` admits it as a synthetic admin  |
 | `ENVIRONMENT`                 | var        | `local` / `stage` / `prod`                                              |
 
 Local provides safe inline values; stage/prod read from `process.env` in `oblaka.ts` and throw
@@ -322,6 +323,12 @@ The remaining operator scripts reconcile state that lives outside the Worker's o
 run by hand (the operator holds the credentials; nothing is committed), and support `--dry-run`.
 Both authenticate to `/admin/*` with a propustka-issued `px_` admin key
 (`PROPUSTKA_ADMIN_KEY`, sent as `Authorization: Bearer`); a local run uses the dev bypass instead.
+
+> **Control-plane bootstrap — the seeded `PROPUSTKA_PROVISIONING_KEY`.** Instead of minting + storing a
+> per-app key, a control plane (vozka) can present the single env-held `PROPUSTKA_PROVISIONING_KEY` as
+> its admin bearer: `resolveCaller` admits a matching token as a synthetic global-admin
+> (`provisioning-admin`, seeded by migration `0008`) — the machine analog of `IAM_BOOTSTRAP_ADMINS`. No
+> mint-then-store chicken-and-egg, idempotent, rotatable. Optional; empty = disabled.
 
 - **`scripts/provision-key.ts` — mint a per-app PROVISIONING KEY.** Thin wrapper over
   `POST /admin/api-keys` (`type: 'service'`): it creates a NATIVE service principal (`external_id`

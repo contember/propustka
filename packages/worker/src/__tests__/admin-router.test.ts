@@ -18,7 +18,11 @@ const IAM_APP = 'propustka'
 
 // env slice handleAdmin needs. ENVIRONMENT='stage' keeps the local-dev bypass off, so the
 // session/credential paths are exercised for real.
-const ADMIN_ENV: Pick<Env, 'PROPUSTKA_SIGNING_KEYS' | 'ENVIRONMENT'> = { PROPUSTKA_SIGNING_KEYS: '', ENVIRONMENT: 'stage' }
+const ADMIN_ENV: Pick<Env, 'PROPUSTKA_SIGNING_KEYS' | 'PROPUSTKA_PROVISIONING_KEY' | 'ENVIRONMENT'> = {
+	PROPUSTKA_SIGNING_KEYS: '',
+	PROPUSTKA_PROVISIONING_KEY: '',
+	ENVIRONMENT: 'stage',
+}
 
 // A minimal ExecutionContext. `handleAdmin` only ever calls ctx.waitUntil /
 // passThroughOnException (via handlers); we record waitUntil promises but never

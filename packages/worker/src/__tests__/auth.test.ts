@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { LOCAL_DEV_ADMIN_ID, resolveCaller } from '../auth'
+import { LOCAL_DEV_ADMIN_ID, PROVISIONING_ADMIN_ID, resolveCaller } from '../auth'
 import type { Env } from '../env'
 import { hashToken } from '../secret'
 import { createHarness, seedUser } from './helpers/harness'
@@ -11,9 +11,9 @@ import { createHarness, seedUser } from './helpers/harness'
 
 const REQUEST = 'r1'
 
-/** env slice resolveCaller needs. Default: no durable signing keys (the dev signal). */
-function env(signingKeys = ''): Pick<Env, 'PROPUSTKA_SIGNING_KEYS' | 'ENVIRONMENT'> {
-	return { PROPUSTKA_SIGNING_KEYS: signingKeys, ENVIRONMENT: 'local' }
+/** env slice resolveCaller needs. Default: no durable signing keys (the dev signal), no provisioning key. */
+function env(signingKeys = '', provisioningKey = ''): Pick<Env, 'PROPUSTKA_SIGNING_KEYS' | 'PROPUSTKA_PROVISIONING_KEY' | 'ENVIRONMENT'> {
+	return { PROPUSTKA_SIGNING_KEYS: signingKeys, PROPUSTKA_PROVISIONING_KEY: provisioningKey, ENVIRONMENT: 'local' }
 }
 
 describe('resolveCaller — local dev bypass (SEC-1 guard)', () => {
@@ -70,5 +70,43 @@ describe('resolveCaller — px_ key resolution', () => {
 		expect(res.caller.type).toBeUndefined()
 		expect(res.caller.id).toBe(credId)
 		expect(res.caller.permissions).toEqual([{ action: 'report.read', scope: null, source: 'grant' }])
+	})
+})
+
+// The SEEDED PROVISIONING KEY: a single operator-generated `px_` held only in env (PROPUSTKA_PROVISIONING_KEY),
+// never in the DB. Recognized at resolution time BEFORE the DB lookup — the machine analog of
+// IAM_BOOTSTRAP_ADMINS, so a fresh control plane can reconcile/issue before any admin credential exists.
+describe('resolveCaller — seeded provisioning key', () => {
+	const PROVISIONING_KEY = 'px_provisioning-secret'
+
+	test('a bearer matching PROPUSTKA_PROVISIONING_KEY → synthetic global-admin, no DB row', async () => {
+		const h = createHarness()
+		const services = h.makeServices({ environment: 'stage' })
+		const res = await resolveCaller(services, env('', PROVISIONING_KEY), { app: 'vozka', credential: PROVISIONING_KEY, requestId: REQUEST })
+		expect(res.ok).toBe(true)
+		if (!res.ok) throw new Error('unreachable')
+		expect(res.caller.id).toBe(PROVISIONING_ADMIN_ID)
+		expect(res.caller.type).toBe('service')
+		expect(res.caller.label).toBe('provisioning')
+		expect(res.caller.permissions).toEqual([{ action: '*', scope: null, source: 'bootstrap' }])
+		expect(res.verifiedApp).toBe('vozka')
+	})
+
+	test('a different px_ key does NOT match → falls through to the DB path (invalid_token)', async () => {
+		const h = createHarness()
+		const services = h.makeServices({ environment: 'stage' })
+		const res = await resolveCaller(services, env('', PROVISIONING_KEY), {
+			app: 'vozka',
+			credential: 'px_not-the-provisioning-key',
+			requestId: REQUEST,
+		})
+		expect(res).toEqual({ ok: false, reason: 'invalid_token' })
+	})
+
+	test('empty PROPUSTKA_PROVISIONING_KEY disables the seed (the same token resolves via the DB → invalid)', async () => {
+		const h = createHarness()
+		const services = h.makeServices({ environment: 'stage' })
+		const res = await resolveCaller(services, env('', ''), { app: 'vozka', credential: PROVISIONING_KEY, requestId: REQUEST })
+		expect(res).toEqual({ ok: false, reason: 'invalid_token' })
 	})
 })

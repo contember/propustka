@@ -5,7 +5,11 @@ import type { Env } from '../env'
 import type { Services } from '../services'
 import { createHarness, type Harness, seedAppAction, seedGrant, seedUser } from './helpers/harness'
 
-const ADMIN_ENV: Pick<Env, 'PROPUSTKA_SIGNING_KEYS' | 'ENVIRONMENT'> = { PROPUSTKA_SIGNING_KEYS: '', ENVIRONMENT: 'stage' }
+const ADMIN_ENV: Pick<Env, 'PROPUSTKA_SIGNING_KEYS' | 'PROPUSTKA_PROVISIONING_KEY' | 'ENVIRONMENT'> = {
+	PROPUSTKA_SIGNING_KEYS: '',
+	PROPUSTKA_PROVISIONING_KEY: '',
+	ENVIRONMENT: 'stage',
+}
 
 // End-to-end admin tests for the NEW surfaces introduced by the generic-scopes refactor:
 //   - PUT/GET /admin/apps/:app/schema   — idempotent vocabulary reconcile + readback;

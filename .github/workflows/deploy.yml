@@ -120,15 +120,21 @@ jobs:
       # The native-auth runtime secrets: the ES256 token signing keys + the OIDC client
       # secret. oblaka can't express secrets, so push them as Worker secrets AFTER deploy.
       # Idempotent; persists across deploys. The wrangler secret names are the Worker
-      # binding names (env.ts): PROPUSTKA_SIGNING_KEYS + OIDC_CLIENT_SECRET.
+      # binding names (env.ts): PROPUSTKA_SIGNING_KEYS + OIDC_CLIENT_SECRET. The seeded
+      # PROPUSTKA_PROVISIONING_KEY (the control-plane bootstrap bearer) is OPTIONAL — pushed
+      # only when set; unset = the provisioning bypass stays disabled.
       - name: Set Worker secrets (native auth)
         working-directory: packages/worker
         env:
           PROPUSTKA_SIGNING_KEYS: ${{ secrets.PROPUSTKA_SIGNING_KEYS }}
           PROPUSTKA_OIDC_CLIENT_SECRET: ${{ secrets.PROPUSTKA_OIDC_CLIENT_SECRET }}
+          PROPUSTKA_PROVISIONING_KEY: ${{ secrets.PROPUSTKA_PROVISIONING_KEY }}
         run: |
           printf '%s' "$PROPUSTKA_SIGNING_KEYS" | bunx wrangler secret put PROPUSTKA_SIGNING_KEYS
           printf '%s' "$PROPUSTKA_OIDC_CLIENT_SECRET" | bunx wrangler secret put OIDC_CLIENT_SECRET
+          if [ -n "$PROPUSTKA_PROVISIONING_KEY" ]; then
+            printf '%s' "$PROPUSTKA_PROVISIONING_KEY" | bunx wrangler secret put PROPUSTKA_PROVISIONING_KEY
+          fi
 
       - name: Summary
         run: |

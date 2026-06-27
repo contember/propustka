@@ -160,6 +160,7 @@ function makeEnv(db: Database, overrides: Partial<Pick<Env, 'ENVIRONMENT'>> = {}
 		ENVIRONMENT: overrides.ENVIRONMENT ?? 'local',
 		ISSUER: 'http://localhost:18191',
 		PROPUSTKA_SIGNING_KEYS: '',
+		PROPUSTKA_PROVISIONING_KEY: '',
 		SESSION_COOKIE_DOMAIN: '',
 		OIDC_ISSUER: 'https://idp.test',
 		OIDC_CLIENT_ID: '',

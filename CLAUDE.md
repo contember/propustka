@@ -66,6 +66,13 @@ no service tokens, no Access Teams, no `ACCESS_APPS`/`TEAM`/`CF_API_TOKEN`/`CF_A
   **propustka-issued `px_` admin key** sent as `Authorization: Bearer`. Mint one per app with
   `scripts/provision-key.ts` (or the admin UI's api-keys page) — it creates a native service principal
   - bound `px_` key — and store the returned key as the app's `PROPUSTKA_ADMIN_KEY` CI secret.
+- **Seeded provisioning key (control-plane bootstrap).** Setting the `PROPUSTKA_PROVISIONING_KEY` secret
+  (one operator-generated `px_`, held only in env — never in the DB) makes `resolveCaller` admit a bearer
+  matching it as a synthetic global-admin `provisioning-admin` — the MACHINE analog of
+  `IAM_BOOTSTRAP_ADMINS`. It lets a control plane (vozka) reconcile schemas / issue the first admin key
+  BEFORE any DB-backed admin credential exists, so there's no mint-then-store chicken-and-egg. Optional
+  (empty = disabled), idempotent, rotatable (change the env). Migration `0008` seeds the stable
+  `provisioning-admin` principal so its audit `principal_id` FK resolves.
 - `group_role_mappings` is **dropped** (migration `0007`): no IdP-group→role resolution. Permission
   resolution is explicit grants ∪ bootstrap only.
 
@@ -77,7 +84,8 @@ no service tokens, no Access Teams, no `ACCESS_APPS`/`TEAM`/`CF_API_TOKEN`/`CF_A
   `PROPUSTKA_OIDC_REQUIRE_VERIFIED_EMAIL`, `PROPUSTKA_SESSION_COOKIE_DOMAIN`,
   `PROPUSTKA_BOOTSTRAP_ADMINS`).
 - Secrets (out-of-band: `wrangler secret put` remote / `.dev.vars` local, never in `vars`):
-  `PROPUSTKA_SIGNING_KEYS` (JSON array of EC P-256 private JWKs) + `PROPUSTKA_OIDC_CLIENT_SECRET`.
+  `PROPUSTKA_SIGNING_KEYS` (JSON array of EC P-256 private JWKs) + `PROPUSTKA_OIDC_CLIENT_SECRET`
+  (+ optional `PROPUSTKA_PROVISIONING_KEY`, the seeded control-plane bootstrap bearer).
 
 **Design docs:** `propustka-native-spec.md` (the auth model — unified credential primitive, the
 access token shape, the login flow, per-path gates) + `architecture.md` (repository layout, package
