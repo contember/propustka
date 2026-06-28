@@ -124,6 +124,18 @@ export class PropustkaAuth {
 		return { ok: false, reason: 'no_credential', status: 401 }
 	}
 
+	/**
+	 * Redeem an opaque `px_` credential (or a passthrough JWT) into an `AuthContext` OFF the gate path —
+	 * the seam a capability/share token uses (the token rides a query param or cookie, not a gated path).
+	 * Reuses the exact `service`-bearer logic: a `px_` key is exchanged via `mintFromKey` (cached) and
+	 * verified locally; a passthrough JWT is verified locally with no binding call. Never throws — a
+	 * failure is a typed `ok:false` result the caller maps (a capability surface maps it to 404).
+	 */
+	redeemKey(token: string): Promise<SessionAuthResult> {
+		const now = Math.floor(Date.now() / 1000)
+		return this.authenticateBearer(token, crypto.randomUUID(), now)
+	}
+
 	/** The raw `service`-rule credential: the declared location, else `Authorization: Bearer`. Null if absent. */
 	private extractServiceCredential(request: Request, url: URL, location: CredentialLocation | undefined): string | null {
 		if (location !== undefined) {

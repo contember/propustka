@@ -7,6 +7,22 @@ export { IamClient } from './client'
 export { FakeIamClient } from './fake'
 export type { FakeIamConfig, FakePersona } from './fake'
 export { applyScope } from './scope'
+// Request-time surface: the single `createIam` entry point + its middleware factories, the dev persona
+// model (`makeDevContext`), the shared `Middleware`/`AuthCarrier` contract, and the typed HTTP errors.
+// All additive — every export above keeps working.
+export { ForbiddenError, LoginRequiredError, requirePermission, UnauthenticatedError } from './errors'
+export type { HttpError } from './errors'
+export { createIam, Iam, makeDevContext } from './iam'
+export type {
+	ApiKeyMiddlewareConfig,
+	AuthFailure,
+	AuthMiddlewareConfig,
+	CapabilityMiddlewareConfig,
+	CreateIamOptions,
+	IamEnv,
+	PersonaSpec,
+} from './iam'
+export type { AuthCarrier, Middleware } from './middleware'
 // propustka-native session auth: the middleware an app puts in front of its request handler. It
 // enforces the per-path gate schema (`AppGates`) in-process, then verifies a per-app permission
 // token LOCALLY (no per-request RPC), minting a fresh one from the SSO session when needed.
