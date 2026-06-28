@@ -225,13 +225,27 @@ describe('authMiddleware — service failure (no loginUrl)', () => {
 		expect(body.error.loginUrl).toBeUndefined()
 	})
 
-	test('a no-rule path → 403 JSON', async () => {
+	test('a no-rule path → public pass-through by default (anonymous ctx.auth, next called)', async () => {
 		const stub = new IamRpcStub({ jwks: JWKS })
 		const iam = createIam(offLocalEnv(stub))
-		const { response } = await run(
+		const { ctx, nextCalled } = await run(
 			iam.authMiddleware({ gates: { rules: [{ path: '/api/*', kind: 'service' }] } }),
 			new Request('https://app/elsewhere'),
 		)
+		expect(nextCalled).toBe(true)
+		expect(ctx.auth?.ok).toBe(true)
+		expect(ctx.auth?.principal).toBeNull()
+		expect(ctx.auth?.can('anything')).toBe(false)
+	})
+
+	test('a no-rule path with unmatched:deny → 403 JSON (fail closed)', async () => {
+		const stub = new IamRpcStub({ jwks: JWKS })
+		const iam = createIam(offLocalEnv(stub))
+		const { response, nextCalled } = await run(
+			iam.authMiddleware({ gates: { rules: [{ path: '/api/*', kind: 'service' }] }, unmatched: 'deny' }),
+			new Request('https://app/elsewhere'),
+		)
+		expect(nextCalled).toBe(false)
 		expect(response.status).toBe(403)
 		const body = await response.json() as { error: { type: string } }
 		expect(body.error.type).toBe('no_rule')

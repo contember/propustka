@@ -81,6 +81,15 @@ export interface AuthMiddlewareConfig {
 	/** The ordered per-path gate rules enforced in-process (the successor to the CF Access edge). */
 	gates: AppGates
 	/**
+	 * What to do for a path that matches NO gate rule (`no_rule`). As a GLOBAL middleware the auth front
+	 * door runs for every request, so unmatched paths (the SPA shell, health, public endpoints) must pass
+	 * through — `'public'` (the default) sets an anonymous `ctx.auth` and continues. `'deny'` fails closed
+	 * with 403 (selective fronting). Gated paths (those WITH a matching rule) are unaffected either way —
+	 * a human miss there still yields the 401 + `loginUrl` bounce. This is why no `*` public catch-all is
+	 * needed (and why one would be WRONG: it also matches gated paths and swallows the human-miss bounce).
+	 */
+	unmatched?: 'public' | 'deny'
+	/**
 	 * Optional override for a failed authentication. Returns a Response to short-circuit with your own
 	 * shape, or `undefined` to fall through to the default (302/401-JSON for a human miss; status+JSON
 	 * otherwise). Never called on success.
@@ -175,6 +184,21 @@ function openCapabilityContext(): AuthContext {
 		principal: null,
 		can: () => true,
 		scopedTo: () => null,
+		audit: () => Promise.resolve(),
+	}
+}
+
+/**
+ * The ANONYMOUS context for an ungated path (`unmatched: 'public'`). No principal, NO permissions
+ * (`can` → false, `scopedTo` → [] = none), `audit` a no-op. The SPA shell / health / public endpoints
+ * read nothing off it; an RPC procedure's `.require` on such a path would (correctly) 403.
+ */
+function anonymousContext(): AuthContext {
+	return {
+		ok: true,
+		principal: null,
+		can: () => false,
+		scopedTo: () => [],
 		audit: () => Promise.resolve(),
 	}
 }
@@ -372,6 +396,14 @@ export class Iam {
 				if (override !== undefined) {
 					return override
 				}
+			}
+
+			// Unmatched path (no gate rule) → public pass-through by default: anonymous ctx.auth, continue.
+			// This lets ONE global middleware front everything (SPA/health/public) while gated paths still
+			// enforce. `unmatched: 'deny'` opts into fail-closed (403) instead.
+			if (result.reason === 'no_rule' && (cfg.unmatched ?? 'public') === 'public') {
+				ctx.auth = anonymousContext()
+				return next()
 			}
 
 			if (result.loginUrl !== undefined) {
