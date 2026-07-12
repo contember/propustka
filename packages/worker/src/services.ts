@@ -26,6 +26,12 @@ export interface Config {
 	}
 	/** Bootstrap-admin emails (normally empty). Always admitted; resolve to the global `admin` role. */
 	readonly bootstrapAdmins: ReadonlySet<string>
+	/**
+	 * Default role grants keyed by email domain (deploy var `PROPUSTKA_DOMAIN_DEFAULT_GRANTS`).
+	 * Ensured (grant-if-missing) at every `/auth/callback` login for a matching human — the
+	 * "everyone on the company domain is a user of app X" knob. Empty = feature off.
+	 */
+	readonly domainDefaultGrants: readonly DomainDefaultGrant[]
 	readonly environment: string
 	// ── propustka-native auth ──
 	/** propustka's own origin — the `iss` of minted tokens and the OIDC redirect base. */
@@ -34,11 +40,46 @@ export interface Config {
 	readonly sessionCookieDomain: string
 }
 
+/** One `DOMAIN_DEFAULT_GRANTS` entry: users on `domain` get `role` in `app` at login. */
+export interface DomainDefaultGrant {
+	readonly domain: string
+	readonly app: string
+	readonly role: string
+}
+
 /** Parse a JSON array of strings (the central human-domain/email lists); [] on anything malformed. */
 function parseStringArray(raw: string): string[] {
 	try {
 		const parsed: unknown = JSON.parse(raw)
 		return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : []
+	} catch {
+		return []
+	}
+}
+
+/**
+ * Parse `DOMAIN_DEFAULT_GRANTS` (`[{ domain, app, role }]`); drops malformed entries, [] on
+ * malformed JSON. Domains are lowercased once here so login-time matching is a plain compare.
+ */
+function parseDomainDefaultGrants(raw: string): DomainDefaultGrant[] {
+	try {
+		const parsed: unknown = JSON.parse(raw)
+		if (!Array.isArray(parsed)) {
+			return []
+		}
+		const out: DomainDefaultGrant[] = []
+		for (const entry of parsed) {
+			if (typeof entry !== 'object' || entry === null) {
+				continue
+			}
+			const domain = 'domain' in entry ? entry.domain : undefined
+			const app = 'app' in entry ? entry.app : undefined
+			const role = 'role' in entry ? entry.role : undefined
+			if (typeof domain === 'string' && domain !== '' && typeof app === 'string' && app !== '' && typeof role === 'string' && role !== '') {
+				out.push({ domain: domain.toLowerCase(), app, role })
+			}
+		}
+		return out
 	} catch {
 		return []
 	}
@@ -74,6 +115,7 @@ export function buildServices(env: Env): Services {
 				emails: parseStringArray(env.HUMAN_EMAILS),
 			},
 			bootstrapAdmins: parseBootstrapAdmins(env.IAM_BOOTSTRAP_ADMINS),
+			domainDefaultGrants: parseDomainDefaultGrants(env.DOMAIN_DEFAULT_GRANTS),
 			environment: env.ENVIRONMENT,
 			issuer: env.ISSUER,
 			sessionCookieDomain: env.SESSION_COOKIE_DOMAIN,

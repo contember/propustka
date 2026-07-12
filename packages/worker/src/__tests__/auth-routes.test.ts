@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test'
 import { handleAuth } from '../auth/routes'
 import { OidcClient, type OidcIdentity, type OidcMetadata } from '../oidc'
 import { hashToken } from '../secret'
-import { createHarness, type Harness, seedUser } from './helpers/harness'
+import { createHarness, type Harness, seedGrant, seedUser } from './helpers/harness'
 
 const AUTH_ENV = { PROPUSTKA_SIGNING_KEYS: '', ENVIRONMENT: 'local' }
 const ISSUER = 'http://localhost:18191'
@@ -216,6 +216,95 @@ describe('login admission (/auth/callback allowlist)', () => {
 		expect(res.status).toBe(302)
 		// The invite was claimed by the IdP sub.
 		expect((await h.db.getUserByExternalId('inv-1'))?.email).toBe('invited@evil.example')
+	})
+})
+
+describe('domain default grants (/auth/callback DOMAIN_DEFAULT_GRANTS)', () => {
+	// Drive a full login → callback for the given services + identity, returning the callback response.
+	async function login(services: ReturnType<Harness['makeServices']>, identity: OidcIdentity): Promise<Response> {
+		const withOidc = { ...services, oidc: new FakeOidc(identity) }
+		const loginRes = await handleAuth(new Request(`${ISSUER}/auth/login`), withOidc, AUTH_ENV, ctx())
+		const state = new URL(loginRes.headers.get('location') ?? '').searchParams.get('state')
+		const flightCookie = setCookieValue(loginRes, 'px_oidc')
+		return handleAuth(
+			new Request(`${ISSUER}/auth/callback?code=abc&state=${state}`, { headers: { Cookie: `px_oidc=${flightCookie}` } }),
+			withOidc,
+			AUTH_ENV,
+			ctx(),
+		)
+	}
+
+	const REVIZOR_USER = { domain: 'contember.com', app: 'revizor', role: 'user' }
+
+	test('a domain-matched login is granted the configured per-app role', async () => {
+		const h = createHarness()
+		const services = h.makeServices({ issuer: ISSUER, domainDefaultGrants: [REVIZOR_USER] })
+		const res = await login(services, { sub: 'dd-1', email: 'new@contember.com' })
+		expect(res.status).toBe(302)
+		const principal = await h.db.getUserByExternalId('dd-1')
+		const grants = await h.db.getActiveGrants(principal?.id ?? '')
+		expect(grants).toHaveLength(1)
+		expect(grants[0]?.app).toBe('revizor')
+		expect(grants[0]?.role_key).toBe('user')
+		// No grantor principal — a config-issued grant, not an admin action.
+		expect(grants[0]?.granted_by).toBeNull()
+	})
+
+	test('a second login does not duplicate the grant', async () => {
+		const h = createHarness()
+		const services = h.makeServices({ issuer: ISSUER, domainDefaultGrants: [REVIZOR_USER] })
+		await login(services, { sub: 'dd-2', email: 'twice@contember.com' })
+		await login(services, { sub: 'dd-2', email: 'twice@contember.com' })
+		const principal = await h.db.getUserByExternalId('dd-2')
+		expect(await h.db.getActiveGrants(principal?.id ?? '')).toHaveLength(1)
+	})
+
+	test('an existing admin-granted role for the app is left alone (no extra row)', async () => {
+		const h = createHarness()
+		const principalId = seedUser(h.sqlite, { sub: 'dd-3', email: 'granted@contember.com' })
+		seedGrant(h.sqlite, principalId, 'user', null, 'revizor')
+		const services = h.makeServices({ issuer: ISSUER, domainDefaultGrants: [REVIZOR_USER] })
+		await login(services, { sub: 'dd-3', email: 'granted@contember.com' })
+		expect(await h.db.getActiveGrants(principalId)).toHaveLength(1)
+	})
+
+	test('a login outside the configured domain gets no grant', async () => {
+		const h = createHarness()
+		// Admitted via the exact-email allowlist, but the domain-default entry does not match.
+		const services = h.makeServices({
+			issuer: ISSUER,
+			human: { emailDomains: [], emails: ['vip@elsewhere.example'] },
+			domainDefaultGrants: [REVIZOR_USER],
+		})
+		const res = await login(services, { sub: 'dd-4', email: 'vip@elsewhere.example' })
+		expect(res.status).toBe(302)
+		const principal = await h.db.getUserByExternalId('dd-4')
+		expect(await h.db.getActiveGrants(principal?.id ?? '')).toHaveLength(0)
+	})
+
+	test('multiple entries: every one matching the domain is granted, others skipped', async () => {
+		const h = createHarness()
+		const services = h.makeServices({
+			issuer: ISSUER,
+			domainDefaultGrants: [
+				REVIZOR_USER,
+				{ domain: 'contember.com', app: 'poplach', role: 'viewer' },
+				{ domain: 'elsewhere.example', app: 'revizor', role: 'user' },
+			],
+		})
+		await login(services, { sub: 'dd-5', email: 'multi@contember.com' })
+		const principal = await h.db.getUserByExternalId('dd-5')
+		const grants = await h.db.getActiveGrants(principal?.id ?? '')
+		expect(grants.map((g) => `${g.app}:${g.role_key}`).sort()).toEqual(['poplach:viewer', 'revizor:user'])
+	})
+
+	test('empty config leaves the login flow untouched', async () => {
+		const h = createHarness()
+		const services = h.makeServices({ issuer: ISSUER })
+		const res = await login(services, { sub: 'dd-6', email: 'plain@contember.com' })
+		expect(res.status).toBe(302)
+		const principal = await h.db.getUserByExternalId('dd-6')
+		expect(await h.db.getActiveGrants(principal?.id ?? '')).toHaveLength(0)
 	})
 })
 

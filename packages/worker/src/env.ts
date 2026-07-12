@@ -1,8 +1,8 @@
 /**
  * The IAM Worker's CF bindings + vars/secrets. Single source of truth — every
  * other file imports from here, never re-declares the shape. JSON-typed vars
- * (`HUMAN_EMAIL_DOMAINS`, `HUMAN_EMAILS`, `IAM_BOOTSTRAP_ADMINS`) are parsed once
- * in `buildServices`.
+ * (`HUMAN_EMAIL_DOMAINS`, `HUMAN_EMAILS`, `IAM_BOOTSTRAP_ADMINS`, `DOMAIN_DEFAULT_GRANTS`)
+ * are parsed once in `buildServices`.
  */
 export interface Env {
 	/** D1 holding both policy tables and append-only audit tables (one database). */
@@ -19,6 +19,15 @@ export interface Env {
 	HUMAN_EMAILS: string
 	/** JSON array of bootstrap-admin emails (normally empty). Always admitted; resolution-time only. */
 	IAM_BOOTSTRAP_ADMINS: string
+	/**
+	 * JSON array of default role grants keyed by email domain, e.g.
+	 * `[{"domain":"contember.com","app":"revizor","role":"user"}]`. Every entry matching a
+	 * logging-in human's email domain is ensured (grant-if-missing) as a plain role grant at
+	 * EVERY `/auth/callback` login — so config additions reach existing principals on their next
+	 * sign-in. Empty (`[]`) disables the feature. Removing an entry stops future ensures but does
+	 * not revoke rows already granted (delete those in the admin UI).
+	 */
+	DOMAIN_DEFAULT_GRANTS: string
 	/** `local` / `stage` / `prod`. */
 	ENVIRONMENT: string
 

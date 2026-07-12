@@ -20,6 +20,8 @@ interface PropustkaVars {
 	HUMAN_EMAIL_DOMAINS: string
 	HUMAN_EMAILS: string
 	IAM_BOOTSTRAP_ADMINS: string
+	// Default role grants keyed by email domain (JSON `[{domain, app, role}]`; `[]` = off).
+	DOMAIN_DEFAULT_GRANTS: string
 	// propustka-native auth (propustka issues its own tokens). The signing keys + OIDC client SECRET
 	// are NOT here — they ship out-of-band (`.dev.vars` local / `wrangler secret` remote).
 	ISSUER: string
@@ -39,6 +41,7 @@ function buildVars(env: string, hostname: string | undefined): PropustkaVars {
 			HUMAN_EMAIL_DOMAINS: '[]',
 			HUMAN_EMAILS: '[]',
 			IAM_BOOTSTRAP_ADMINS: '[]',
+			DOMAIN_DEFAULT_GRANTS: '[]',
 			// `dev` serves on :18191 (see package.json).
 			ISSUER: 'http://localhost:18191',
 			SESSION_COOKIE_DOMAIN: '',
@@ -76,6 +79,8 @@ function buildVars(env: string, hostname: string | undefined): PropustkaVars {
 		HUMAN_EMAILS: process.env['PROPUSTKA_HUMAN_EMAILS'] ?? '[]',
 		// Normally empty; the first admin is bootstrapped, then the var is emptied.
 		IAM_BOOTSTRAP_ADMINS: process.env['PROPUSTKA_BOOTSTRAP_ADMINS'] ?? '[]',
+		// Optional: default per-app roles for domain-admitted humans; empty = feature off.
+		DOMAIN_DEFAULT_GRANTS: process.env['PROPUSTKA_DOMAIN_DEFAULT_GRANTS'] ?? '[]',
 		// propustka's own origin (iss + OIDC redirect base) is its admin hostname.
 		ISSUER: `https://${hostname as string}`,
 		SESSION_COOKIE_DOMAIN: process.env['PROPUSTKA_SESSION_COOKIE_DOMAIN'] ?? '',

@@ -86,6 +86,8 @@ jobs:
           # app. A `*` entry = admit-all. Domains required; emails optional.
           PROPUSTKA_HUMAN_EMAIL_DOMAINS: ${{ vars.PROPUSTKA_HUMAN_EMAIL_DOMAINS }}
           PROPUSTKA_HUMAN_EMAILS: ${{ vars.PROPUSTKA_HUMAN_EMAILS }}
+          # Optional: default per-app roles for domain-admitted humans (JSON [{domain, app, role}]).
+          PROPUSTKA_DOMAIN_DEFAULT_GRANTS: ${{ vars.PROPUSTKA_DOMAIN_DEFAULT_GRANTS }}
           # Per-target admin Custom Domain (GitHub Environment var) — also propustka's own token `iss`
           # + OIDC redirect base. Unset → *.workers.dev.
           PROPUSTKA_HOSTNAME: ${{ vars.PROPUSTKA_HOSTNAME }}

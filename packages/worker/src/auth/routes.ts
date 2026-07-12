@@ -116,6 +116,15 @@ async function handleCallback(request: Request, services: Services, secure: bool
 		return authError(`login refused (${resolved.reason})`, 403)
 	}
 
+	// Domain default grants (`DOMAIN_DEFAULT_GRANTS`): ensured before the redirect — the app's very
+	// first request follows the 302 immediately, so the grant must already be visible. A failure
+	// here must never block the login itself.
+	try {
+		await ensureDomainDefaultGrants(services, resolved.principal.id, identity.email)
+	} catch (err) {
+		console.warn(`domain default grants failed: ${err instanceof Error ? err.message : String(err)}`)
+	}
+
 	// Mint the SSO session: store only the hash, hand the browser the plaintext in a cookie.
 	const sessionToken = randomToken(32)
 	const expiresAt = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS
@@ -185,6 +194,42 @@ function admitted(email: string, config: Config): boolean {
 		return true
 	}
 	return config.bootstrapAdmins.has(email)
+}
+
+/**
+ * Ensure the configured domain-default grants for a logging-in human: every `DOMAIN_DEFAULT_GRANTS`
+ * entry matching the verified email's domain becomes a plain role grant (unscoped, non-expiring)
+ * unless the principal already holds that role for the app — whether granted here on an earlier
+ * login or by an admin. Runs at EVERY login, so config additions reach existing principals on their
+ * next sign-in; removing an entry stops future ensures but does not revoke already-granted rows.
+ * The role need not exist yet — resolution skips unknown roles until the app reconciles its schema.
+ */
+async function ensureDomainDefaultGrants(services: Services, principalId: string, email: string): Promise<void> {
+	const entries = services.config.domainDefaultGrants
+	if (entries.length === 0) {
+		return
+	}
+	const at = email.lastIndexOf('@')
+	const domain = at === -1 ? '' : email.slice(at + 1).toLowerCase()
+	if (domain === '') {
+		return
+	}
+	for (const entry of entries) {
+		// entry.domain is lowercased at parse time (services.ts).
+		if (entry.domain !== domain) {
+			continue
+		}
+		const existing = await services.db.getActiveGrantsForApp(principalId, entry.app)
+		if (existing.some((grant) => grant.role_key === entry.role)) {
+			continue
+		}
+		// granted_by stays NULL — it is an FK to principals, and this grant has no human grantor.
+		await services.db.createGrant({
+			principalId,
+			app: entry.app,
+			roleKey: entry.role,
+		})
+	}
 }
 
 /** Build the long-lived SSO session `Set-Cookie` (parent-domain when configured). */

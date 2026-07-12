@@ -2,7 +2,7 @@ import { Database, type SQLQueryBindings } from 'bun:sqlite'
 import { Db } from '../../db'
 import { OidcClient, type OidcMetadata } from '../../oidc'
 import { hashToken } from '../../secret'
-import type { Config, Services } from '../../services'
+import type { Config, DomainDefaultGrant, Services } from '../../services'
 import { allMigrations } from './migrations'
 
 /**
@@ -192,6 +192,8 @@ export interface MakeServicesOptions {
 	bootstrapAdmins?: ReadonlySet<string>
 	/** Central human-admission allowlist. Defaults to `{ emailDomains: ['contember.com'], emails: [] }`. */
 	human?: { emailDomains?: readonly string[]; emails?: readonly string[] }
+	/** DOMAIN_DEFAULT_GRANTS entries. Defaults to empty (feature off). */
+	domainDefaultGrants?: readonly DomainDefaultGrant[]
 	/** OIDC client. Defaults to one with injected (offline) discovery metadata; tests override for the callback flow. */
 	oidc?: OidcClient
 	/** propustka's own origin (token `iss` + OIDC redirect base). */
@@ -215,6 +217,7 @@ export function createHarness(): Harness {
 				emails: options.human?.emails ?? [],
 			},
 			bootstrapAdmins: options.bootstrapAdmins ?? new Set(),
+			domainDefaultGrants: options.domainDefaultGrants ?? [],
 			environment: options.environment ?? 'local',
 			issuer,
 			sessionCookieDomain: options.sessionCookieDomain ?? '',

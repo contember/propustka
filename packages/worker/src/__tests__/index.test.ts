@@ -157,6 +157,7 @@ function makeEnv(db: Database, overrides: Partial<Pick<Env, 'ENVIRONMENT'>> = {}
 		HUMAN_EMAIL_DOMAINS: '["contember.com"]',
 		HUMAN_EMAILS: '[]',
 		IAM_BOOTSTRAP_ADMINS: '[]',
+		DOMAIN_DEFAULT_GRANTS: '[]',
 		ENVIRONMENT: overrides.ENVIRONMENT ?? 'local',
 		ISSUER: 'http://localhost:18191',
 		PROPUSTKA_SIGNING_KEYS: '',
