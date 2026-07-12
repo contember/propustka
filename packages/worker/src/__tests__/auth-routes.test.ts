@@ -298,6 +298,31 @@ describe('domain default grants (/auth/callback DOMAIN_DEFAULT_GRANTS)', () => {
 		expect(grants.map((g) => `${g.app}:${g.role_key}`).sort()).toEqual(['poplach:viewer', 'revizor:user'])
 	})
 
+	test('domain matching ignores the email casing', async () => {
+		const h = createHarness()
+		// Entry domains arrive lowercased from the parser; the login-time compare lowercases the email.
+		const services = h.makeServices({ issuer: ISSUER, domainDefaultGrants: [REVIZOR_USER] })
+		const res = await login(services, { sub: 'dd-7', email: 'User@CONTEMBER.COM' })
+		expect(res.status).toBe(302)
+		const principal = await h.db.getUserByExternalId('dd-7')
+		const grants = await h.db.getActiveGrants(principal?.id ?? '')
+		expect(grants).toHaveLength(1)
+		expect(grants[0]?.role_key).toBe('user')
+	})
+
+	test('a SCOPED grant of the same role shadows the default (no unscoped widening)', async () => {
+		const h = createHarness()
+		// The admin deliberately narrowed this user to one site; the domain default must not widen
+		// that to an unscoped grant behind the admin's back.
+		const principalId = seedUser(h.sqlite, { sub: 'dd-8', email: 'narrow@contember.com' })
+		seedGrant(h.sqlite, principalId, 'user', { type: 'site', value: 'site-1' }, 'revizor')
+		const services = h.makeServices({ issuer: ISSUER, domainDefaultGrants: [REVIZOR_USER] })
+		await login(services, { sub: 'dd-8', email: 'narrow@contember.com' })
+		const grants = await h.db.getActiveGrants(principalId)
+		expect(grants).toHaveLength(1)
+		expect(grants[0]?.scope_value).toBe('site-1')
+	})
+
 	test('empty config leaves the login flow untouched', async () => {
 		const h = createHarness()
 		const services = h.makeServices({ issuer: ISSUER })
