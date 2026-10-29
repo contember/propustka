@@ -1,5 +1,7 @@
 # Propustka
 
+> **Archived.** Propustka is no longer developed. Identity, policy and audit for apps now live in [fabrika-platform](https://github.com/contember/fabrika-platform). This repository is kept read-only for reference.
+
 Internal **IAM & audit service** for apps running on Cloudflare Workers. Propustka owns the whole
 auth stack: **authentication** (its own OIDC SSO — any provider — plus opaque `px_` keys and
 passthrough JWTs for machines), **authorization** (AWS-IAM-style policies over generic, app-owned
